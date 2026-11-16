@@ -112,6 +112,9 @@ export async function preflightApi(f: Record<string, string | boolean>, d: ApiDe
 }
 
 /** Proxy port (not the daemon's), daily caps (decision 131: applied, not asked), mode, local token file. */
+/** Decision 168: how to start Claude Code with the router's (generated) plugin, for the restart hints. */
+const relaunch = (): string => { const c = readConfig(); return c?.pluginDir ? ` (claude --plugin-dir "${c.pluginDir}")` : ''; };
+
 export async function configureApi(config: CliConfig, d: Pick<ApiDeps, 'out'>): Promise<CliConfig> {
   const proxyPort = config.proxyPort && config.proxyPort !== config.daemonPort ? config.proxyPort : await pickPort(47800, 47999, new Set([config.daemonPort]));
   const proxy = {
@@ -143,8 +146,8 @@ export async function setMode(mode: ApiMode, f: Record<string, string | boolean>
   writeConfig({ ...(readConfig() ?? cfg), apiMode: mode });
   const live = (d.reload ?? realReload)();
   d.out(mode === 'direct'
-    ? `Direct mode: new Claude Code sessions talk to the API themselves with the key from the keychain (no proxy, no budget blocking). ${live ? 'The supervisor stops the proxy now. ' : ''}Restart running Claude Code sessions.`
-    : `Proxy mode: new Claude Code sessions go through the proxy. ${live ? 'The supervisor starts it now;' : 'Run `do-it-all-claude-code start` to run it;'} then restart running Claude Code sessions.`);
+    ? `Direct mode: new Claude Code sessions talk to the API themselves with the key from the keychain (no proxy, no budget blocking). ${live ? 'The supervisor stops the proxy now. ' : ''}Restart running Claude Code sessions${relaunch()}.`
+    : `Proxy mode: new Claude Code sessions go through the proxy. ${live ? 'The supervisor starts it now;' : 'Run `do-it-all-claude-code start` to run it;'} then restart running Claude Code sessions${relaunch()}.`);
   return 0;
 }
 
@@ -165,7 +168,7 @@ export async function modeSubscription(f: Record<string, string | boolean>, d: A
   writeConfig(rest);
   const live = (d.reload ?? realReload)();
   d.out(`Subscription mode: new Claude Code sessions use the claude.ai login. If you logged out for API-key mode, log in again (/login in Claude Code). ${live ? 'The supervisor stops the proxy now. ' : ''}`
-    + 'The API key stays in the keychain, so `do-it-all-claude-code mode api` switches back. Restart running Claude Code sessions.');
+    + 'The API key stays in the keychain, so `do-it-all-claude-code mode api` switches back. Restart running Claude Code sessions' + relaunch() + '.');
   return 0;
 }
 
@@ -188,7 +191,7 @@ export async function modeApi(f: Record<string, string | boolean>, d: ApiDeps): 
   change?.apply();
   writeConfig({ ...(readConfig() ?? cfg), apiMode: 'proxy' });
   const live = (d.reload ?? realReload)();
-  d.out(`API-key mode (proxy): new Claude Code sessions go through the proxy. ${live ? 'The supervisor starts it now;' : 'Run `do-it-all-claude-code start` to run it;'} then restart running Claude Code sessions.`);
+  d.out(`API-key mode (proxy): new Claude Code sessions go through the proxy. ${live ? 'The supervisor starts it now;' : 'Run `do-it-all-claude-code start` to run it;'} then restart running Claude Code sessions${relaunch()}.`);
   return 0;
 }
 

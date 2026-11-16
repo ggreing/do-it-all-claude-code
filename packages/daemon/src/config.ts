@@ -49,6 +49,7 @@ export function readConfig(file: string, warnings: string[] = []): ConfigFile {
   if (typeof o.proxyPort === 'number') out.proxyPort = o.proxyPort;
   out.fableOptIn = o.fableOptIn === true;
   if (typeof o.pluginDir === 'string' && o.pluginDir) out.pluginDir = o.pluginDir;
+  if (typeof o.pluginTemplateDir === 'string' && o.pluginTemplateDir) out.pluginTemplateDir = o.pluginTemplateDir;   // decision 168
   if (o.updateCheck === 'on' || o.updateCheck === 'off') out.updateCheck = o.updateCheck;   // decision 163
   const budgets = parseBudgets(o.budgetsUsd, warnings);
   if (budgets) out.budgetsUsd = budgets;

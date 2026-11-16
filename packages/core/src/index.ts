@@ -14,4 +14,6 @@ export * from './seal.ts';
 export * from './endpoint.ts';
 export * from './egress.ts';
 export * from './update.ts';
+export * from './settings.ts';
+export * from './role-overrides.ts';
 export type * from './proxy-wire.ts';

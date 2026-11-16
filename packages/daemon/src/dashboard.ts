@@ -22,7 +22,8 @@ import { isWithin } from './canonical.ts';
 import type { Ledger } from './ledger.ts';
 import { metricsSummary, metricsRequests, metricsRequestDetail, metricsTriageReport, type RequestsQuery } from './metrics.ts';
 import { latestLimits } from './limits.ts';
-import type { Level } from '@do-it-all-claude-code/core';
+import { MAX_SETTINGS_BODY, type Level } from '@do-it-all-claude-code/core';
+import type { SettingsService } from './settings.ts';
 
 export interface DashboardDeps {
   ledger: Ledger;
@@ -41,6 +42,14 @@ export interface DashboardDeps {
   idleTtlMs?: number;        // idle timeout (default 30m)
   codeTtlMs?: number;
   maxBodyBytes?: number;
+  /**
+   * Decision 168: the settings service the edit page writes through (the same one the CLI's sealed routes use).
+   * Its routes are their own handlers: a session cookie, the session's CSRF token in x-csrf-token, and a same-origin
+   * Origin on every write. The token is handed out only in the answer to the one-time code exchange (POST
+   * /dashboard/auth), never on a request that carries just the cookie (cookies are not port-scoped, so another local
+   * server could receive it). The metrics routes stay read-only.
+   */
+  settings?: Pick<SettingsService, 'view' | 'history' | 'apply'>;
 }
 
 const COOKIE = 'ar_dash';
@@ -87,7 +96,7 @@ export function createDashboard(d: DashboardDeps): Dashboard {
   const codeTtl = d.codeTtlMs ?? 60 * 1000;
   const maxBody = d.maxBodyBytes ?? 64 * 1024;
   const codes = new Map<string, number>();                       // one-time code -> expiry
-  const sessions = new Map<string, { created: number; seen: number }>();  // cookie session id -> timestamps
+  const sessions = new Map<string, { created: number; seen: number; csrf: string }>();  // cookie session id -> timestamps, CSRF token
 
   const sweepCodes = (): void => { const t = now(); for (const [k, exp] of codes) if (exp <= t) codes.delete(k); };
   const expired = (s: { created: number; seen: number }): boolean => now() - s.created >= absoluteTtl || now() - s.seen >= idleTtl;
@@ -127,6 +136,12 @@ export function createDashboard(d: DashboardDeps): Dashboard {
     }
     return null;
   }
+  /** The live session of the request's cookie (its last use refreshed), or null. */
+  function sessionOf(req: http.IncomingMessage): { created: number; seen: number; csrf: string } | null {
+    if (!sessionOk(req)) return null;
+    return sessions.get(cookieSid(req)!) ?? null;
+  }
+
   function sessionOk(req: http.IncomingMessage): boolean {
     const sid = cookieSid(req);
     if (!sid) return false;
@@ -177,11 +192,13 @@ export function createDashboard(d: DashboardDeps): Dashboard {
     codes.delete(code);                                     // single use
     sweepSessions();
     const sid = randomBytes(32).toString('base64url');
-    sessions.set(sid, { created: now(), seen: now() });
+    // decision 168: sent with every settings write; the page keeps it in memory. Only this answer carries it.
+    const csrf = randomBytes(32).toString('base64url');
+    sessions.set(sid, { created: now(), seen: now(), csrf });
     // Path=/dashboard keeps the cookie off other local servers (cookies are not port-scoped); Max-Age is the
     // absolute lifetime, and the server also enforces the idle timeout and absolute lifetime (C2).
     res.setHeader('set-cookie', `${COOKIE}=${sid}; HttpOnly; SameSite=Strict; Path=${COOKIE_PATH}; Max-Age=${Math.floor(absoluteTtl / 1000)}`);
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, csrf });
   }
 
   function logout(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -231,6 +248,59 @@ export function createDashboard(d: DashboardDeps): Dashboard {
       return sendJson(res, 500, { error: 'metrics query failed' });
     }
     sendJson(res, 404, { error: 'not found' });
+  }
+
+  // ------------------------------------------------------------------ settings (decision 168)
+
+  /**
+   * GET /dashboard/session: whether the cookie is a live session (for reads). Never the CSRF token: a page that was
+   * reloaded reads with its cookie, and needs a fresh `dashboard` code to write again.
+   */
+  function session(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (req.method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' });
+    const s = sessionOf(req);
+    if (!s) return sendJson(res, 401, { error: 'no dashboard session; open the dashboard with `do-it-all-claude-code dashboard`' });
+    sendJson(res, 200, { ok: true });
+  }
+
+  /** A JSON body for a settings write: 415 when it is not JSON, 413 when larger than a settings write may be, 400 when not an object. */
+  async function readSettingsBody(req: http.IncomingMessage): Promise<{ status: number; error?: string; body?: Record<string, unknown> }> {
+    const type = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+    if (type !== 'application/json') { req.resume(); return { status: 415, error: 'content-type must be application/json' }; }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const c of req) { size += (c as Buffer).length; if (size > MAX_SETTINGS_BODY) return { status: 413, error: `body larger than ${MAX_SETTINGS_BODY} bytes` }; chunks.push(c as Buffer); }
+    try {
+      const v = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+      return v && typeof v === 'object' && !Array.isArray(v) ? { status: 200, body: v as Record<string, unknown> } : { status: 400, error: 'body must be a JSON object' };
+    } catch { return { status: 400, error: 'body is not valid JSON' }; }
+  }
+
+  async function settingsRoute(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+    const s = sessionOf(req);
+    if (!d.settings) return sendJson(res, 404, { error: 'not found' });
+    const sub = url.pathname.slice(`${COOKIE_PATH}/settings`.length).replace(/^\//, '');
+    if (req.method === 'GET' && (sub === '' || sub === 'history')) {
+      if (!s) return sendJson(res, 401, { error: 'no dashboard session; open the dashboard with `do-it-all-claude-code dashboard`' });
+      if (sub === 'history') {
+        const limit = Number(url.searchParams.get('limit') ?? 50);
+        return sendJson(res, 200, { entries: d.settings.history(Number.isFinite(limit) ? limit : 50) });
+      }
+      return sendJson(res, 200, d.settings.view());          // no CSRF token on a cookie-only GET (review M4)
+    }
+    if (sub !== 'config' && sub !== 'presets' && sub !== 'role') return sendJson(res, 404, { error: 'not found' });
+    if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' });
+    if (!s) { req.resume(); return sendJson(res, 401, { error: 'no dashboard session; open the dashboard with `do-it-all-claude-code dashboard`' }); }
+    // a write needs the page's own Origin (a browser sends it on every POST) and the session's CSRF token
+    const origin = req.headers.origin;
+    if (origin === undefined || !origins().includes(String(origin).toLowerCase())) { req.resume(); return sendJson(res, 403, { error: 'a settings write must come from the dashboard page' }); }
+    if (req.headers['sec-fetch-site'] !== undefined && req.headers['sec-fetch-site'] !== 'same-origin') { req.resume(); return sendJson(res, 403, { error: 'cross-site requests are not allowed' }); }
+    const token = req.headers['x-csrf-token'];
+    if (typeof token !== 'string' || !safeEqual(token, s.csrf)) { req.resume(); return sendJson(res, 403, { error: 'missing or wrong CSRF token' }); }
+    const read = await readSettingsBody(req);
+    if (!read.body) return sendJson(res, read.status, { error: read.error });
+    const [status, answer] = await d.settings.apply(sub, read.body, 'dashboard');
+    sendJson(res, status, answer);
   }
 
   function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, pathname: string): void {
@@ -295,6 +365,12 @@ export function createDashboard(d: DashboardDeps): Dashboard {
     }
     if (p === '/dashboard/logout') { if (strict()) logout(req, res); return true; }
     if (p === '/dashboard/metrics' || p.startsWith('/dashboard/metrics/')) { if (strict()) metrics(req, res, url); return true; }
+    if (p === '/dashboard/session') { if (strict()) session(req, res); return true; }
+    if (p === '/dashboard/settings' || p.startsWith('/dashboard/settings/')) {
+      if (!strict()) return true;
+      settingsRoute(req, res, url).catch(() => { try { if (!res.headersSent && res.writable) sendJson(res, 500, { error: 'internal error' }); } catch { /* socket gone */ } });
+      return true;
+    }
     // static shell / assets: a top-level document navigation may be cross-site (N2); anything else stays strict.
     if (!navToDocument && !strict()) return true;
     serveStatic(req, res, p);

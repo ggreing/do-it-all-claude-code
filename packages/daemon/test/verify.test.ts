@@ -146,7 +146,9 @@ test('role file x-router.verify is read with core parseRoleFile (strings and obj
   try {
     write(plugin, 'agents/coder.md', ['---', 'name: coder', 'tools: Read, Edit', 'x-router:', '  role: coder', '  verify:', '    - npm test',
       '    - command: npx tsc --noEmit', '      kind: typecheck', '      timeoutMs: 60000', '---', 'body'].join('\n'));
-    write(plugin, 'agents/tester.md', ['---', 'name: tester', '---', 'no x-router'].join('\n'));
+    write(plugin, 'agents/tester.md', ['---', 'name: tester', 'tools: Read', 'x-router:', '  role: tester', '---', 'no verify'].join('\n'));
+    // decision 168: a role file that breaks the floor (here a forbidden tool) gives no commands, and says why
+    write(plugin, 'agents/architect.md', ['---', 'name: architect', 'tools: Read, WebFetch', 'x-router:', '  role: architect', '  verify:', '    - npm test', '---', 'b'].join('\n'));
     write(plugin, 'agents/reviewer.md', 'no front matter at all');
     assert.deepEqual(await resolveVerifyCommands({ role: 'coder', pluginDir: plugin }), {
       source: 'role', commands: [{ kind: 'test', command: 'npm test' }, { kind: 'typecheck', command: 'npx tsc --noEmit', timeoutMs: 60000 }],
@@ -155,7 +157,10 @@ test('role file x-router.verify is read with core parseRoleFile (strings and obj
     const bad = await resolveVerifyCommands({ role: 'reviewer', pluginDir: plugin });
     assert.equal(bad.source, 'none');
     assert.match(bad.warning ?? '', /role file .*reviewer\.md ignored/);
-    assert.equal((await resolveVerifyCommands({ role: 'architect', pluginDir: plugin })).source, 'none');
+    const floor = await resolveVerifyCommands({ role: 'architect', pluginDir: plugin });
+    assert.equal(floor.source, 'none');
+    assert.match(floor.warning ?? '', /architect\.md ignored: it breaks the role floor \(tools\)/);
+    assert.equal((await resolveVerifyCommands({ role: 'ui-designer', pluginDir: plugin })).source, 'none');
   } finally { rmrf(plugin); }
 });
 
@@ -173,8 +178,8 @@ test('project file overrides the role file and is read from the start commit, no
   const plugin = tmpDir('plugin');
   const dir = makeRepo({ '.do-it-all-claude-code/verify.json': JSON.stringify({ coder: ['node check.cjs'] }) });
   try {
-    write(plugin, 'agents/coder.md', '---\nname: coder\nx-router:\n  verify:\n    - npm test\n---\n');
-    write(plugin, 'agents/tester.md', '---\nname: tester\nx-router:\n  verify:\n    - npm test\n---\n');
+    write(plugin, 'agents/coder.md', '---\nname: coder\ntools: Read, Edit\nx-router:\n  role: coder\n  verify:\n    - npm test\n---\n');
+    write(plugin, 'agents/tester.md', '---\nname: tester\ntools: Read\nx-router:\n  role: tester\n  verify:\n    - npm test\n---\n');
     const base = git(dir, 'rev-parse', 'HEAD').trim();
     // the subagent weakens the project file in its work tree
     write(dir, '.do-it-all-claude-code/verify.json', JSON.stringify({ coder: [] }));

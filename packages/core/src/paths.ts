@@ -72,6 +72,7 @@ export interface RouterConfig {
   proxyPort?: number;
   fableOptIn: boolean;
   pluginDir?: string;        // where the plugin's agents/*.md live (verify defaults); written by `init`
+  pluginTemplateDir?: string;   // decision 168: the plugin as shipped (templates); pluginDir is then the generated <home>/plugin
   budgetsUsd?: Partial<Record<Level, number>>;   // per-request budgets set by `init`; override preset defaults (positive finite only)
   forceLevel?: Level;        // benchmarks / debugging only (decision 107): plan every new request at this level
   recordPrompts?: boolean;   // decision 109: store redacted prompt text in request records (opt-in; default false)

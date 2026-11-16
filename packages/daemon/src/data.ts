@@ -198,8 +198,8 @@ export function scrubProse(db: DatabaseSync): number {
 }
 
 /** Decision 141 (a): how long events are kept; 0 keeps them. */
-export const DEFAULT_EVENT_RETENTION_DAYS = 30;
-export const MAX_EVENT_RETENTION_DAYS = 3650;
+// decision 168: the limits live in core, where the settings validator checks them
+export { DEFAULT_EVENT_RETENTION_DAYS, MAX_EVENT_RETENTION_DAYS } from '@do-it-all-claude-code/core';
 
 /**
  * Drops events older than `days` (decision 141 (a)), outside sessions with an open or awaiting request (the

@@ -50,9 +50,20 @@ const presetFile = z.partialRecord(z.enum(['L0', 'L1', 'L2', 'L3']), z.object({
  * file over it). Fields a level does not set come from `base`. Throws on invalid files.
  */
 export function loadPresets(file?: string, base: Record<Level, TeamPreset> = DEFAULT_PRESETS): Record<Level, TeamPreset> {
+  if (!file || !fs.existsSync(file)) return structuredClone(base);
+  return applyPresetFile(parsePresetsText(fs.readFileSync(file, 'utf8')), base);
+}
+
+/** A teams.yaml as written: every level and field optional (decision 168: the settings core validates with this). */
+export type PresetFile = z.infer<typeof presetFile>;
+/** The content of a teams.yaml text. Throws (YAML or zod errors) on an invalid one; empty text is no change. */
+export function parsePresetsText(text: string): PresetFile {
+  return presetFile.parse(parse(text) ?? {});
+}
+
+/** `parsed` on top of `base`: fields a level does not set come from `base`. */
+export function applyPresetFile(parsed: PresetFile, base: Record<Level, TeamPreset> = DEFAULT_PRESETS): Record<Level, TeamPreset> {
   const out: Record<Level, TeamPreset> = structuredClone(base);
-  if (!file || !fs.existsSync(file)) return out;
-  const parsed = presetFile.parse(parse(fs.readFileSync(file, 'utf8')) ?? {});
   for (const [lvl, p] of Object.entries(parsed) as Array<[Level, z.infer<typeof presetFile>[Level]]>) {
     if (!p) continue;
     const prev = out[lvl];

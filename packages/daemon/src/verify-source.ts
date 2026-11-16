@@ -7,7 +7,7 @@
 // cannot weaken its own verification by editing the file.
 import fs from 'node:fs';
 import path from 'node:path';
-import { PROJECT_DIR, parseRoleFile, type Role, type SignalKind } from '@do-it-all-claude-code/core';
+import { PROJECT_DIR, parseRoleFile, roleFloorProblems, type Role, type SignalKind } from '@do-it-all-claude-code/core';
 import { showFile } from './git.ts';
 import { validTreePath, type VerifyCommand } from './verify.ts';
 
@@ -19,6 +19,8 @@ export type VerifySource = 'project' | 'role' | 'none';
 export interface VerifySourceInput {
   role: Role;
   pluginDir?: string;
+  /** Reads a role's file; undefined when there is none (the router's: with the generated plugin, the expected text, review L3). */
+  readRole?: (role: Role) => string | undefined;
   repoRoot?: string;
   baseRef?: string;
 }
@@ -41,9 +43,14 @@ export async function resolveVerifyCommands(i: VerifySourceInput): Promise<{ com
   }
   if (i.pluginDir) {
     const file = path.join(i.pluginDir, 'agents', `${i.role}.md`);
-    const text = readIfExists(file);
+    let text: string | undefined;
+    try { text = i.readRole ? i.readRole(i.role) : readIfExists(file); }
+    catch (e) { warnings.push(`role file ${file} ignored: ${why(e)}`); }
     if (text !== undefined) {
-      try {
+      // decision 168: a role file that breaks the floor (a hand edit of the generated plugin) gives no commands
+      const floor = roleFloorProblems(text, i.role);
+      if (floor.length) warnings.push(`role file ${file} ignored: it breaks the role floor (${floor.map(p => p.path).join(', ')})`);
+      else try {
         return done(parseRoleFile(text).verify.map(x => toCommand(parseItem(x))), 'role');
       } catch (e) {
         warnings.push(`role file ${file} ignored: ${why(e)}`);

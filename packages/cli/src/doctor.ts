@@ -3,7 +3,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { paths, routerHome } from '@do-it-all-claude-code/core';
+import { GENERATED_STAMP, ROLE_NAMES, expectedRole, paths, pluginRoleProblems, readText, routerHome, templateHash } from '@do-it-all-claude-code/core';
 import { keyStatus, noProxyCovers, shownProxyUrl, splitNoProxy, upstreamProxy, type VaultErrorCode } from '@do-it-all-claude-code/proxy';
 import { HINT_HEADERS_ENV, claudeCodeProxy, isRouterHelper, proxyBaseUrl, uncoveredNoProxy } from './apimode.ts';
 import { SettingsParseError, backupCredentials, backupFile, defaultClaudeSettings, promptStorageSummary, readConfig, readJsonFile, type CliConfig } from './setup.ts';
@@ -291,6 +291,37 @@ export async function apiChecks(i: ApiCheckInput): Promise<Check[]> {
   return out;
 }
 
+/**
+ * Decision 168: the plugin Claude Code and the daemon use. An install made by this release's init uses the effective
+ * plugin generated in the router home (templates plus role overrides): it must be generated from the current
+ * templates, and every role file in it must hold the role floor (one that does not is blocking: Claude Code would
+ * load it). An older install keeps using the plugin as shipped until init is run again.
+ */
+export function effectivePluginCheck(cfg: CliConfig): Check {
+  const name = 'plugin';
+  if (!cfg.pluginTemplateDir) return { name, ok: true, blocking: false, detail: `${cfg.pluginDir ?? 'not set'} (as shipped); run do-it-all-claude-code init again to use role edits` };
+  const dir = cfg.pluginDir ?? '';
+  if (!fs.existsSync(path.join(dir, '.claude-plugin', 'plugin.json'))) return { name, ok: false, blocking: true, detail: `${dir} is missing: run do-it-all-claude-code init (or start: the daemon generates it)` };
+  const problems = pluginRoleProblems(dir);
+  if (problems.length) return { name, ok: false, blocking: true, detail: `${problems.map(p => `${p.role}: ${p.errors.map(e => `${e.path}: ${e.message}`).join('; ')}`).join(' | ')}: run do-it-all-claude-code reload (it regenerates the files)` };
+  let stamp: { templateHash?: string } = {};
+  try { stamp = JSON.parse(fs.readFileSync(path.join(dir, GENERATED_STAMP), 'utf8')) as { templateHash?: string }; } catch { /* below */ }
+  let current = '';
+  try { current = templateHash(cfg.pluginTemplateDir); } catch { /* below */ }
+  if (!current) return { name, ok: false, blocking: false, detail: `the templates at ${cfg.pluginTemplateDir} cannot be read: ${dir} stays as it was generated` };
+  if (stamp.templateHash !== current) return { name, ok: false, blocking: false, detail: `${dir} was generated from older templates: run do-it-all-claude-code reload (or restart the daemon)` };
+  // review L3: each role file must be exactly what its template and override give (the daemon regenerates otherwise)
+  const differs = ROLE_NAMES.filter(role => {
+    const template = readText(path.join(cfg.pluginTemplateDir!, 'agents', `${role}.md`));
+    if (template === null) return false;
+    let actual: string | null = null;
+    try { const f = path.join(dir, 'agents', `${role}.md`); if (fs.lstatSync(f).isFile()) actual = fs.readFileSync(f, 'utf8'); } catch { /* missing */ }
+    return actual !== expectedRole(routerHome(), role, template).text;
+  });
+  if (differs.length) return { name, ok: false, blocking: false, detail: `${differs.join(', ')}: not what the template and your changes give (edited by hand?): run do-it-all-claude-code reload, and make role changes with \`role edit\`` };
+  return { name, ok: true, blocking: false, detail: `${dir} (generated from ${cfg.pluginTemplateDir})` };
+}
+
 /** Decision 164: the Bearer switch is off by default and stays for this release only; a warning while it is on. */
 export function bearerApiCheck(cfg: CliConfig): Check | null {
   return cfg.bearerApi === 'on' ? { name: 'bearerApi', ok: false, blocking: false,
@@ -339,6 +370,7 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Chec
   checks.push(...environmentChecks(env));
   if (cfg) checks.push({ name: 'prompt text', ok: true, blocking: false, detail: promptStorageSummary(cfg.recordPrompts) });   // decision 142
   if (cfg) checks.push(updateCheckLine(cfg));   // decision 163
+  if (cfg) checks.push(effectivePluginCheck(cfg));   // decision 168
   const bearer = cfg ? bearerApiCheck(cfg) : null;   // decision 164
   if (bearer) checks.push(bearer);
   // audit C6: the dashboard is served from its build; the router works without it (loaded here only, so other

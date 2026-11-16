@@ -35,6 +35,7 @@ import { recordLimits } from './limits.ts';
 import { errorText, type Logger } from './log.ts';
 import type { ProxyUsage } from './proxyusage.ts';
 import type { Router } from './router.ts';
+import type { SettingsService } from './settings.ts';
 
 export const MAX_BODY_BYTES = 1024 * 1024;
 /** A sealed envelope is base64 around the request it carries, so it may be this much larger. */
@@ -53,6 +54,13 @@ export const API = {
   routingReset: '/router/v1/routing/reset',
   dataExport: '/router/v1/data/export',
   dataPurge: '/router/v1/data/purge',
+  // decision 168: settings, the CLI's front door (sealed); the dashboard's is /dashboard/settings/*
+  settings: '/router/v1/settings',
+  settingsHistory: '/router/v1/settings/history',
+  config: '/router/v1/config',
+  presets: '/router/v1/presets',
+  role: '/router/v1/role',
+  reload: '/router/v1/reload',
 } as const;
 
 /** The built dashboard (packages/dashboard/dist) next to this package in the workspace. */
@@ -60,6 +68,8 @@ export const DEFAULT_DASHBOARD_DIST = fileURLToPath(new URL('../../dashboard/dis
 
 export interface ServerDeps {
   router: Router;
+  /** Decision 168: the settings service both front doors use. */
+  settings?: SettingsService;
   adapter: ClientAdapter;
   token: string;
   logger: Logger;
@@ -134,6 +144,7 @@ export function createHttpServer(d: ServerDeps): http.Server {
       ledger: d.ledger, token: bearer, distDir: d.dashboardDir ?? DEFAULT_DASHBOARD_DIST,
       port: () => { const a = server.address(); return a && typeof a !== 'string' ? a.port : null; },
       statusView: sessionId => d.router.status(sessionId),
+      ...(d.settings ? { settings: d.settings } : {}),   // decision 168: the edit page's writes, behind session + CSRF
       recordPrompts: d.data?.recordPrompts === true,   // decision 142: a stored prompt shows only while the option is on
     });
   }
@@ -254,9 +265,24 @@ export function createHttpServer(d: ServerDeps): http.Server {
       return send(res, 200, answer);
     }
 
+    // ------------------------------------------------------------------ settings (decision 168), the CLI's front door
+    if (route === API.settings || route === API.settingsHistory) {
+      if (req.method !== 'GET') throw methodNotAllowed(res, 'GET');
+      if (!d.settings) throw new HttpError(404, 'not found');
+      if (route === API.settings) return send(res, 200, d.settings.view());
+      const limit = Number(url.searchParams.get('limit') ?? 50);
+      return send(res, 200, { entries: d.settings.history(Number.isFinite(limit) ? limit : 50) });
+    }
+
     if (req.method !== 'POST') throw methodNotAllowed(res, 'POST');
     const body = await readJson(req, maxBody);
     if (route === API.tools) return send(res, 200, await d.router.tool(body));
+    if (route === API.config || route === API.presets || route === API.role || route === API.reload) {
+      if (!d.settings) throw new HttpError(404, 'not found');
+      const kind = route === API.config ? 'config' : route === API.presets ? 'presets' : route === API.role ? 'role' : 'reload';
+      const [status, answer] = await d.settings.apply(kind, body, 'cli');
+      return send(res, status, answer);
+    }
     if (route === API.dataPurge) {
       if (!d.ledger) throw new HttpError(404, 'not found');
       const all = body.all === true;

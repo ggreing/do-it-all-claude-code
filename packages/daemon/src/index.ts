@@ -17,6 +17,7 @@ import { createHttpServer } from './server.ts';
 import { ProxyUsage } from './proxyusage.ts';
 import { replaySpool, type ReplayResult } from './spool.ts';
 import { UpdateWatcher, type UpdateWatcherOptions } from './updates.ts';
+import { SettingsService } from './settings.ts';
 
 export interface StartOptions {
   home?: string;
@@ -91,6 +92,9 @@ export async function createDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       ...(opts.verify ? { verify: opts.verify } : {}),
       ...(opts.now ? { now: opts.now } : {}),
     });
+    // decision 168: the effective plugin regenerated from the templates and the overrides, the role floor checked
+    const settings = new SettingsService({ home, router, logger, ...(opts.now ? { now: opts.now } : {}) });
+    settings.regenerate(config);
     const replay = await replaySpool(home.spoolDir, adapter, router, logger, opts.now);
     // decision 141 (a): events older than eventRetentionDays go at start and then daily (live sessions are kept)
     const retentionDays = config.eventRetentionDays ?? DEFAULT_EVENT_RETENTION_DAYS;
@@ -108,7 +112,7 @@ export async function createDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     let close: () => Promise<void> = async () => {};
     const proxyUsage = new ProxyUsage(ledger, logger, opts.now);
     const srv = createHttpServer({
-      router, adapter, token, logger, version: DAEMON_VERSION, proxyUsage, ledger, home, ...(opts.now ? { now: opts.now } : {}),
+      router, adapter, token, logger, version: DAEMON_VERSION, proxyUsage, ledger, home, settings, ...(opts.now ? { now: opts.now } : {}),
       acceptBearer: config.bearerApi === 'on',       // decisions 156, 164: off unless asked for
       // data export (spec 4.4): stored prompts only with recordPrompts; the proxy token is masked like the daemon's
       data: { recordPrompts: config.recordPrompts === true, secrets: () => { try { return [fs.readFileSync(path.join(home.root, 'proxy-token'), 'utf8').trim()]; } catch { return []; } } },

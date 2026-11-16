@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ACCEPTANCE_RULE_VERSION, ACCEPT_WINDOW_PROMPTS, MAX_STEP_UPS, PRICING_PER_MTOK, ROUTER_TOOL_PREFIX, RouterToolCall, dissatisfactionRule, holdoutDraw, isReask, promptSimilarity, afterEasyPass, afterOtherResult, afterRaise, atDispatch, costUsd, decideEscalation, formatTriageContext, isRouterToolName, l3SignalRoles, ladderStep,
-  leadModelClass, normalizeLeadTriage, readRoleFile, redact, routerToolDef, routerToolErrorText, routerToolName, stepIndex, stepUp, triage,
+  effectiveRoleText, isRoleName, leadModelClass, normalizeLeadTriage, parseRoleFile, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, stepIndex, stepUp, triage,
   type LeadModelClass, type Level, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
   type RouterEvent, type RouterToolErrorCode, type RouterToolName, type RouterToolResult, type Step, type TeamPreset, type TriageResult, type Usage,
   type UpdateNotice, type VerifySignal,
@@ -99,9 +99,9 @@ export interface StatusView {
 export class Router {
   readonly ledger: Ledger;
   readonly #home: HomeLayout;
-  readonly #config: ConfigFile;
+  #config: ConfigFile;
   readonly #log: Logger;
-  readonly #resolver: PresetResolver;
+  #resolver: PresetResolver;
   readonly #verify: VerifySettings;
   readonly #secrets: string[];
   /** Decision 142: each agent's forwarded verify variables, for its lifetime; the ledger keeps the names only. */
@@ -122,16 +122,32 @@ export class Router {
     this.#home = o.home;
     this.#config = o.config ?? {};
     this.#log = o.logger ?? nullLogger;
-    // review #5 (budgets) and the teams.yaml layers (decision 88 gap)
-    this.#resolver = new PresetResolver({
-      ...(o.presets ? { base: o.presets } : {}), homeRoot: o.home.root, log: this.#log,
-      ...(this.#config.budgetsUsd ? { budgets: this.#config.budgetsUsd } : {}),
-      ...(this.#config.delegateFrom ? { delegateFrom: this.#config.delegateFrom } : {}),
-    });
+    this.#basePresets = o.presets;
+    this.#resolver = this.#makeResolver();
     this.#verify = { commandTimeoutMs: COMMAND_TIMEOUT_MS, totalTimeoutMs: TOTAL_TIMEOUT_MS, ...o.verify };
     this.#secrets = o.secrets ?? [];
     this.#now = o.now ?? (() => new Date());
     this.#updates = o.updates;
+  }
+
+  readonly #basePresets: Record<Level, TeamPreset> | undefined;
+  /** review #5 (budgets) and the teams.yaml layers (decision 88 gap) */
+  #makeResolver(): PresetResolver {
+    return new PresetResolver({
+      ...(this.#basePresets ? { base: this.#basePresets } : {}), homeRoot: this.#home.root, log: this.#log,
+      ...(this.#config.budgetsUsd ? { budgets: this.#config.budgetsUsd } : {}),
+      ...(this.#config.delegateFrom ? { delegateFrom: this.#config.delegateFrom } : {}),
+    });
+  }
+
+  /**
+   * Decision 168: config.json as written by the settings core, from the next event on. What is read at start only
+   * (recordPrompts' cleanup, eventRetentionDays' timer, bearerApi) waits for the next daemon start.
+   */
+  applyConfig(config: ConfigFile): void {
+    this.#config = config;
+    this.#resolver = this.#makeResolver();
+    this.#roleTools.clear();
   }
 
   /** Handles one event in session order and returns what the client should do. */
@@ -999,7 +1015,7 @@ export class Router {
       const src = { role: sub.role, cwd: plan.cwd, ...(root ? { repoRoot: root } : {}), ...(baseRef ? { baseRef } : {}) };
       if (this.#verify.resolveCommands) plan.commands = await this.#verify.resolveCommands(src);
       else {
-        const r = await resolveVerifyCommands({ ...src, ...(this.#config.pluginDir ? { pluginDir: this.#config.pluginDir } : {}) });
+        const r = await resolveVerifyCommands({ ...src, ...(this.#config.pluginDir ? { pluginDir: this.#config.pluginDir } : {}), readRole: role => { try { return this.#roleText(role); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e; } } });
         plan.commands = r.commands;
         if (r.warning) this.#log.warn('verify source', { subtaskId: sub.id, warning: r.warning });
       }
@@ -1202,7 +1218,34 @@ export class Router {
     return NONE;
   }
 
-  readonly #roleTools = new Map<string, { mtimeMs: number; writes: boolean }>();
+  readonly #roleTools = new Map<string, { stamp: string; writes: boolean }>();
+
+  /**
+   * A role file's text. With the generated plugin (config.pluginTemplateDir, decision 168), what generation makes of
+   * (template, override): a generated file that is anything else is not used, and the folder is regenerated (review
+   * L3). An install from before reads the plugin folder's file as it is.
+   */
+  #roleText(role: Role): string {
+    const c = this.#config;
+    if (c.pluginTemplateDir) {
+      const r = effectiveRoleText(this.#home.root, c.pluginTemplateDir, role);
+      if (r.regenerated) this.#log.warn('a generated role file was not what its template and override give: the plugin folder was regenerated', { role });
+      return r.text;
+    }
+    if (!c.pluginDir) throw new Error('no plugin folder configured');
+    return fs.readFileSync(path.join(c.pluginDir, 'agents', `${role}.md`), 'utf8');
+  }
+
+  /** What #roleText depends on, for the cache: the generated file, its template and its override. */
+  #roleStamp(role: Role): string {
+    const mt = (p: string | undefined): string => { if (!p) return ''; try { return String(fs.statSync(p).mtimeMs); } catch { return '-'; } };
+    const c = this.#config;
+    return [
+      mt(c.pluginDir && path.join(c.pluginDir, 'agents', `${role}.md`)),
+      mt(c.pluginTemplateDir && path.join(c.pluginTemplateDir, 'agents', `${role}.md`)),
+      mt(c.pluginTemplateDir && path.join(this.#home.root, 'roles', `${role}.json`)),
+    ].join(':');
+  }
 
   /**
    * Decision 103 (audit #6): whether a role can write files, from its role file's `tools`
@@ -1210,16 +1253,17 @@ export class Router {
    * A role file that cannot be read counts as read-only: an unknown sibling never excuses a change.
    */
   #roleWrites(role: string): boolean {
-    const dir = this.#config.pluginDir;
-    if (!dir) return false;
-    const file = path.join(dir, 'agents', `${role}.md`);
+    if (!this.#config.pluginDir || !isRoleName(role)) return false;
     try {
-      const { mtimeMs } = fs.statSync(file);
-      const hit = this.#roleTools.get(file);
-      if (hit?.mtimeMs === mtimeMs) return hit.writes;
-      const tools = readRoleFile(file).tools.map(x => x.replace(/\(.*$/, '').trim());
+      const hit = this.#roleTools.get(role);
+      if (hit && hit.stamp === this.#roleStamp(role)) return hit.writes;
+      // decision 168: the runtime floor over the (generated) role file; one that breaks it excuses nothing
+      const text = this.#roleText(role);
+      const floor = roleFloorProblems(text, role);
+      if (floor.length) throw new Error(`breaks the role floor: ${floor.map(p => `${p.path}: ${p.message}`).join('; ')}`);
+      const tools = parseRoleFile(text).tools.map(x => x.replace(/\(.*$/, '').trim());
       const writes = tools.length === 0 || tools.some(x => EDIT_TOOLS.has(x));
-      this.#roleTools.set(file, { mtimeMs, writes });
+      this.#roleTools.set(role, { stamp: this.#roleStamp(role), writes });
       return writes;
     } catch (e) {
       this.#log.warn('role file unreadable: its subagents do not excuse changes of siblings', { role, error: errorText(e) });

@@ -45,6 +45,8 @@ const frontMatter = z.object({
 }).passthrough();
 
 export type VerifyEntry = z.infer<typeof verifyEntry>;
+/** One verify step as a role file or a role override holds it (decision 168 checks override files with it). */
+export const verifyEntrySchema = verifyEntry;
 
 export interface RoleFile {
   name: string;
@@ -61,7 +63,7 @@ export interface RoleFile {
 
 /** Parses a subagent .md file. Throws if the front matter is missing or invalid. */
 export function parseRoleFile(text: string): RoleFile {
-  const m = text.replace(/^﻿/, '').match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  const m = text.replace(/^\uFEFF/, '').match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) throw new Error('role file has no YAML front matter');
   const fm = frontMatter.parse(parse(m[1]!) ?? {});
   const tools = Array.isArray(fm.tools) ? fm.tools : (fm.tools ?? '').split(',').map(s => s.trim()).filter(Boolean);
@@ -80,3 +82,10 @@ export function readRoleFile(file: string): RoleFile {
 
 /** Tools a router role must never have (decisions 34, 58): no nested subagents, no web egress. */
 export const FORBIDDEN_ROLE_TOOLS = ['Agent', 'Task', 'WebFetch', 'WebSearch'];
+
+/**
+ * Decision 168 (review M1): the only tools a router role may list, each optionally with a rule in parentheses
+ * ("Bash(npm test)"). An allow list, so a tool Claude Code adds later never passes on its own. The shipped role
+ * files use a subset (a contract test checks that); anything else is refused on write, generation and runtime.
+ */
+export const ROLE_TOOL_ALLOWLIST = ['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'Grep', 'Glob', 'TodoWrite'] as const;

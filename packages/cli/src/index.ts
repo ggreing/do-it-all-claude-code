@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { paths, type Level } from '@do-it-all-claude-code/core';
+import { effectivePluginDir, generateEffectivePlugin, paths, routerHome, templateDirProblem, type Level } from '@do-it-all-claude-code/core';
+import { configCommand, presetCommand, reloadCommand, roleCommand, type SettingsDeps } from './settings.ts';
 import { SettingsParseError, defaultClaudeSettings, ensureLocalState, planBackupClean, planProject, planStatusLine, promptStorageSummary, readConfig, writeConfig, type PlannedChange } from './setup.ts';
 import { UPDATE_QUESTION, updateCommand } from './update.ts';
 import { start, status, stop } from './daemonctl.ts';
@@ -76,7 +77,12 @@ async function init(f: Record<string, string | boolean>) {
   const mode = f.mode;
   if (mode !== undefined && mode !== 'api') { console.error('--mode takes "api" (subscription mode is the default)'); process.exitCode = 2; return; }
   const api = mode === 'api' ? apiDeps(f) : undefined;
-  const pluginDir = typeof f['plugin-dir'] === 'string' ? path.resolve(f['plugin-dir']) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../plugin');
+  // decision 168: the plugin as shipped is the template; Claude Code and the daemon use the effective plugin generated
+  // from it (and the role overrides) in the router home
+  const templateDir = typeof f['plugin-dir'] === 'string' ? path.resolve(f['plugin-dir']) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../plugin');
+  const pluginDir = effectivePluginDir(routerHome());
+  const templateProblem = templateDirProblem(routerHome(), templateDir);   // review L5: never a folder inside the home
+  if (templateProblem) { console.error(`init: ${templateProblem}`); process.exitCode = 2; return; }
   // decision 161: the previous release's home is moved first (everything below works on the new one)
   const migrated = await migrateHome({
     env: process.env, settingsFile: typeof f['claude-settings'] === 'string' ? f['claude-settings'] : defaultClaudeSettings(),
@@ -98,9 +104,14 @@ async function init(f: Record<string, string | boolean>) {
     budgets[l] = v;
   }
   const local = await ensureLocalState(budgets, pluginDir, { newPort: f['new-port'] === true });
+  try {
+    const g = generateEffectivePlugin(routerHome(), templateDir);
+    for (const r of g.refused) console.log(`role ${r.role}: your override does not hold against this template (${r.errors.map(e => `${e.path}: ${e.message}`).join('; ')}); the role uses the template's file until it is fixed. \`do-it-all-claude-code role edit ${r.role}\` fixes it.`);
+  } catch (e) { console.error(`could not generate the plugin from ${templateDir}: ${(e as Error).message}`); process.exitCode = 1; return; }
+  if (local.config.pluginTemplateDir !== templateDir) { local.config.pluginTemplateDir = templateDir; writeConfig(local.config); }
   const token = local.token;
   const config = api ? await configureApi(local.config, api) : local.config;
-  console.log(`local state ready: daemon port ${config.daemonPort}, token ${token}, plugin ${pluginDir}`);
+  console.log(`local state ready: daemon port ${config.daemonPort}, token ${token}, plugin ${pluginDir} (generated from ${templateDir})`);
   console.log(`per-request budgets (provisional): ${Object.entries(config.budgetsUsd).map(([k, v]) => `${k} $${v}`).join(', ')}`);
   // decision 138: the holdout changes how some requests are handled, so init says so
   const ar = configuredAutoRelease(config);
@@ -140,7 +151,7 @@ async function init(f: Record<string, string | boolean>) {
     // L1: a running supervisor restarts the proxy when its TLS setting changed (as mode api does)
     if (api && realReload()) console.log('The supervisor applies the new API-key settings to the running proxy.');
   }
-  console.log(`\nLoad the plugin in Claude Code: claude --plugin-dir "${pluginDir}"  (marketplace install comes with the first release)`);
+  console.log(`\nLoad the plugin in Claude Code: claude --plugin-dir "${pluginDir}"  (generated from ${templateDir}; \`do-it-all-claude-code role edit <role>\` changes a role there)`);
   if (api) console.log('API-key mode: run `do-it-all-claude-code start` (daemon and proxy), then start new Claude Code sessions. `do-it-all-claude-code doctor` checks the setup.');
 }
 
@@ -202,5 +213,13 @@ if (isMain) {
   }
   else if (cmd === 'mode' || cmd === 'token' || cmd === 'key' || cmd === 'proxy') process.exitCode = await apiCommand(cmd, positional, f);
   else if (cmd === 'update') process.exitCode = await updateCommand(positional[0], { out: line => console.log(line) });   // decision 163
-  else console.log('usage: do-it-all-claude-code <init [--mode api]|start|stop|status|doctor|dashboard [--no-open]|routing reset|data export|data purge|uninstall [--keep-key]|policy show|accept|revoke|mode subscription|api|direct|proxy|token rotate [--no-grace]|key set|proxy allow-upstream <origin>|update on|off|check>');
+  else if (cmd === 'config' || cmd === 'preset' || cmd === 'role' || cmd === 'reload') {   // decision 168
+    const d: SettingsDeps = { out: line => console.log(line), isTTY: process.stdin.isTTY === true, ask: q => askDefaultYes(q) };
+    try {
+      process.exitCode = cmd === 'config' ? await configCommand(positional[0], positional.slice(1), d)
+        : cmd === 'preset' ? await presetCommand(positional[0], positional.slice(1), d)
+        : cmd === 'role' ? await roleCommand(positional[0], positional.slice(1), d) : await reloadCommand(d);
+    } catch (e) { console.error((e as Error).message); process.exitCode = 1; }
+  }
+  else console.log('usage: do-it-all-claude-code <init [--mode api]|start|stop|status|doctor|dashboard [--no-open]|routing reset|data export|data purge|uninstall [--keep-key]|policy show|accept|revoke|mode subscription|api|direct|proxy|token rotate [--no-grace]|key set|proxy allow-upstream <origin>|update on|off|check|config list|get|set|edit|preset show|edit|role show|edit <role>|reload>');
 }
