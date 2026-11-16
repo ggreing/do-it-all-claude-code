@@ -1,5 +1,6 @@
-// Sample data so the SPA runs and builds without a daemon (VITE_USE_MOCK defaults on). The shapes match
-// src/types.ts exactly; swapping VITE_USE_MOCK=false points the same screens at the live metrics API.
+// Sample data so the SPA runs in dev without a daemon. Loaded only through a dev-only dynamic import (see
+// api.ts: `import.meta.env.DEV && VITE_USE_MOCK === 'true'`), so it never reaches a production build. The
+// shapes match src/types.ts exactly. Run it with `VITE_USE_MOCK=true npm run dev`.
 import type { MetricsSummary, RequestsPage, RequestDetail, TriageReport, NowView, Cursor, TimelineRow, Level } from './types';
 
 const LEVELS: Level[] = ['L0', 'L1', 'L2', 'L3'];

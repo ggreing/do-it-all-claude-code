@@ -52,15 +52,18 @@ step-up numbers alongside them.
 ## Develop
 
 ```
-npm run -w @do-it-all-claude-code/dashboard dev         # Vite dev server (mock data by default)
-npm run -w @do-it-all-claude-code/dashboard typecheck   # vue-tsc (see the TypeScript note)
-npm run -w @do-it-all-claude-code/dashboard build       # typecheck + vite build -> dist/
+npm run -w @do-it-all-claude-code/dashboard dev                      # Vite dev server (talks to the daemon)
+VITE_USE_MOCK=true npm run -w @do-it-all-claude-code/dashboard dev    # dev with sample data, no daemon
+npm run -w @do-it-all-claude-code/dashboard typecheck                 # vue-tsc (see the TypeScript note)
+npm run -w @do-it-all-claude-code/dashboard build                     # typecheck + vite build -> dist/
 ```
 
-Data source: `VITE_USE_MOCK` defaults on, so the SPA runs and builds with sample data and no daemon
-(the one-time-code exchange is skipped in mock mode). Set `VITE_USE_MOCK=false` to call the live metrics
-API (`/router/v1/metrics/*`), proxied in dev to `VITE_DAEMON_PORT` (default 8787). Charts are inline SVG
-(no chart library).
+Data source: the SPA talks to the live daemon by default (`/dashboard/metrics/*`, `/dashboard/settings`,
+proxied in dev to `VITE_DAEMON_PORT`, default 8787). For development without a daemon, set
+**`VITE_USE_MOCK=true`** to use the sample data in `mock.ts` / `settings-mock.ts` (the one-time-code exchange
+is skipped). The flag is **dev-only and opt-in**: a production build (`npm run build` / the root
+`npm run build:dashboard`) folds it off and drops the mock through a dynamic import, so the shipped dashboard
+never serves sample data — the `no-mock-in-build` test guards this. Charts are inline SVG (no chart library).
 
 ## Dependencies
 

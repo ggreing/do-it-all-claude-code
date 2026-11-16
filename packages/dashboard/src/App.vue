@@ -5,18 +5,20 @@ import Timeline from './views/Timeline.vue';
 import Learning from './views/Learning.vue';
 import Routing from './views/Routing.vue';
 import Now from './views/Now.vue';
+import Settings from './views/Settings.vue';
 import LanguageSwitcher from './components/LanguageSwitcher.vue';
 import { t, type MessageKey } from './i18n';
 
-type TabId = 'overview' | 'timeline' | 'learning' | 'routing' | 'now';
+type TabId = 'overview' | 'timeline' | 'learning' | 'routing' | 'now' | 'settings';
 const tabs: Array<{ id: TabId; labelKey: MessageKey }> = [
   { id: 'overview', labelKey: 'tab.overview' },
   { id: 'timeline', labelKey: 'tab.requests' },
   { id: 'learning', labelKey: 'tab.learning' },
   { id: 'routing', labelKey: 'tab.routing' },
   { id: 'now', labelKey: 'tab.now' },
+  { id: 'settings', labelKey: 'tab.settings' },
 ];
-const views = { overview: Overview, timeline: Timeline, learning: Learning, routing: Routing, now: Now };
+const views = { overview: Overview, timeline: Timeline, learning: Learning, routing: Routing, now: Now, settings: Settings };
 const active = ref<TabId>('overview');
 </script>
 

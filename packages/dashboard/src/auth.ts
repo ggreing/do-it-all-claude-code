@@ -3,19 +3,27 @@
 // receive the HttpOnly session cookie, then clears the fragment with history.replaceState so the code never
 // lingers in the address bar or history. The code is single-use and short-lived; the long-lived token
 // never reaches the browser. In mock mode (no daemon) this is a no-op.
-const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false';
+//
+// M4: the per-session CSRF token is returned only here, in the auth answer. A returning viewer who reloads
+// with only the session cookie (no code) gets no token: reads work, but the UI disables writes until the
+// page is reopened with `do-it-all-claude-code dashboard`.
+import { setCsrf } from './settings';
+
+// Mock is dev-only and opt-in; a production build runs the real auth exchange (see api.ts).
+const USE_MOCK = import.meta.env.DEV && import.meta.env.VITE_USE_MOCK === 'true';
 
 export async function bootstrapAuth(): Promise<void> {
   if (USE_MOCK || typeof window === 'undefined') return;
   const m = (window.location.hash || '').match(/(?:^#|&)code=([^&]+)/);
-  if (!m) return;                       // returning viewer with an existing cookie, or no code
+  if (!m) return;   // returning viewer with only the cookie: reads work, writes stay disabled until reopened
   const code = decodeURIComponent(m[1]!);
   try {
-    await fetch('/dashboard/auth', {
+    const res = await fetch('/dashboard/auth', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code }),
     });
+    try { const b = (await res.json()) as { csrf?: string }; if (typeof b.csrf === 'string') setCsrf(b.csrf); } catch { /* the response may carry no body */ }
   } catch {
     // the daemon may be down; the views then show their daemon-not-running / session state
   } finally {
