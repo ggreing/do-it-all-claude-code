@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { effectivePluginDir, generateEffectivePlugin, paths, resolveLayout, routerHome, templateDirProblem, type Level } from '@do-it-all-claude-code/core';
+import { WINDOWS_TERMINAL_HINT, classicWindowsConsole, effectivePluginDir, generateEffectivePlugin, paths, resolveLayout, routerHome, templateDirProblem, type Level } from '@do-it-all-claude-code/core';
 import { copyAppToHome } from './appcopy.ts';
 import { projectCommand } from './project.ts';
 import { configCommand, presetCommand, reloadCommand, roleCommand, type SettingsDeps } from './settings.ts';
@@ -262,6 +262,7 @@ async function setup(f: Record<string, string | boolean>) {
   else console.log(await start());
   console.log('\nSetup complete. Now run `claude` — then `/office demo` previews the team office.');
   console.log('The daemon starts itself when a Claude Code session starts; turn that off with `do-it-all-claude-code config set autoStart off`.');
+  if (classicWindowsConsole(process.env)) console.log(`\n${WINDOWS_TERMINAL_HINT}`);   // decision 206
   if (api) console.log('API-key mode: `do-it-all-claude-code doctor` checks the key and the proxy.');
 }
 

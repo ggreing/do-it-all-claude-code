@@ -3,7 +3,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { GENERATED_STAMP, ROLE_NAMES, expectedRole, paths, pluginRoleProblems, readText, resolveHomeApp, resolveLayout, routerHome, templateHash, type LayoutMode } from '@do-it-all-claude-code/core';
+import { GENERATED_STAMP, ROLE_NAMES, WINDOWS_TERMINAL_HINT, classicWindowsConsole, expectedRole, paths, pluginRoleProblems, readText, resolveHomeApp, resolveLayout, routerHome, templateHash, type LayoutMode } from '@do-it-all-claude-code/core';
 import { keyStatus, noProxyCovers, shownProxyUrl, splitNoProxy, upstreamProxy, type VaultErrorCode } from '@do-it-all-claude-code/proxy';
 import { HINT_HEADERS_ENV, claudeCodeProxy, isRouterHelper, proxyBaseUrl, staleHelpers, uncoveredNoProxy } from './apimode.ts';
 import { SettingsParseError, backupCredentials, backupFile, defaultClaudeSettings, promptStorageSummary, readConfig, readJsonFile, type CliConfig } from './setup.ts';
@@ -378,6 +378,15 @@ export function bearerApiCheck(cfg: CliConfig): Check | null {
  * auto-start) spawn from a stable path. Packaged only — in the workspace the checkout runs in place. Non-blocking:
  * a daemon already running is unaffected; this points a packaged install that skipped `setup` at it.
  */
+/**
+ * decision 206: on the classic Windows console the team office characters do not draw (they show as a list). An
+ * info item (ok, non-blocking — not a problem), pointing at Windows Terminal, based on the shell doctor runs in.
+ */
+export function windowsTerminalCheck(env: NodeJS.ProcessEnv): Check | null {
+  if (!classicWindowsConsole(env)) return null;
+  return { name: 'terminal (team office)', ok: true, blocking: false, detail: `doctor is running in what looks like the classic Windows console. ${WINDOWS_TERMINAL_HINT}` };
+}
+
 export function homeAppCheck(mode: LayoutMode, present: boolean): Check | null {
   if (mode !== 'packaged') return null;
   return { name: 'installed app (home copy)', ok: present, blocking: false,
@@ -421,6 +430,7 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Chec
     }));
   }
   checks.push(...environmentChecks(env));
+  const term = windowsTerminalCheck(env); if (term) checks.push(term);   // decision 206
   if (cfg) checks.push({ name: 'prompt text', ok: true, blocking: false, detail: promptStorageSummary(cfg.recordPrompts) });   // decision 142
   if (cfg) checks.push(updateCheckLine(cfg));   // decision 163
   if (cfg) checks.push(effectivePluginCheck(cfg));   // decision 168

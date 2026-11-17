@@ -42,7 +42,14 @@ router workers: they can only write while the daemon is up, so they never edit o
 ## Getting started
 
 You need Node 24.5+, Claude Code 2.1.325 or newer, and — on Windows — Git Bash (Claude Code itself
-requires it). There are two ways in.
+requires it).
+
+On Windows, run Claude Code in **Windows Terminal** — the classic console window can't draw the team office
+characters (they show as a list). Make it the default: Windows Terminal → Settings → Startup → Default
+terminal application → Windows Terminal (or Windows Settings → System → Advanced (For developers on older versions) → Terminal); PowerShell
+then opens inside it.
+
+There are two ways in.
 
 **One command (npm).** Installs the plugin and a status line, starts the daemon, and routes on your Claude
 subscription by default:
@@ -186,6 +193,9 @@ If the panel doesn't behave:
 - **The panel above the prompt is only a few rows high.** Claude Code keeps the height you last gave a plugin's
   panel, for every plugin's panel, and it wins over the height the panel asks for. Press ctrl+x then tab, then
   ctrl+x ↑ to make it taller.
+- **A list where the characters should be.** The default console window (Windows PowerShell, Command Prompt)
+  draws the characters' marks two cells wide, which breaks the drawing, so the office shows a list there. Open
+  Claude Code in Windows Terminal; [Getting started](#getting-started) says how to make it the default terminal.
 
 `do-it-all-claude-code config set office off` turns the panel off for sessions started after that. It needs
 Claude Code 2.1.325 or newer. Versions before 0.5.0 had a browser dashboard instead; it's gone.

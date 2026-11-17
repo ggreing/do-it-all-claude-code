@@ -16,7 +16,7 @@ import {
 } from '../src/marketplace.ts';
 import { copyHelpersToHome, keyHelper, localTokenHelper, proxyEntry } from '../src/apimode.ts';
 import { cliEntry, daemonEntry, isOurChildCmd } from '../src/daemonctl.ts';
-import { homeAppCheck } from '../src/doctor.ts';
+import { homeAppCheck, windowsTerminalCheck } from '../src/doctor.ts';
 import { copyTreeIfChanged } from '../src/appcopy.ts';
 import { CLI_VERSION } from '../src/update.ts';
 
@@ -121,6 +121,17 @@ test('the removed `dashboard` command prints a one-line /office pointer and exit
   const out = execFileSync(process.execPath, [index, 'dashboard'], { encoding: 'utf8', env: { ...process.env, DO_IT_ALL_CLAUDE_CODE_HOME: h } });
   fs.rmSync(h, { recursive: true, force: true });
   assert.match(out, /\/office/);
+});
+
+// ------------------------------------------------------------------ decision 206: the Windows terminal hint
+test('windowsTerminalCheck: an info item on the classic Windows console, nothing elsewhere', () => {
+  assert.equal(windowsTerminalCheck({ OS: 'Windows_NT', WT_SESSION: '1' } as NodeJS.ProcessEnv), null, 'Windows Terminal: no item');
+  assert.equal(windowsTerminalCheck({} as NodeJS.ProcessEnv), null, 'not Windows: no item');
+  const c = windowsTerminalCheck({ OS: 'Windows_NT' } as NodeJS.ProcessEnv);
+  assert.ok(c);
+  assert.equal(c!.ok, true, 'an info item, not a warning or failure');
+  assert.equal(c!.blocking, false);
+  assert.match(c!.detail, /Windows Terminal/);
 });
 
 // ------------------------------------------------------------------ decision 192: the home app copy

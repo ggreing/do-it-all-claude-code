@@ -19,4 +19,5 @@ export * from './settings.ts';
 export * from './role-overrides.ts';
 export * from './layout.ts';
 export * from './project-state.ts';
+export * from './terminal.ts';
 export type * from './proxy-wire.ts';

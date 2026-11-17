@@ -65,7 +65,11 @@ panel, never the router.
   - its marks are ones that console draws one cell wide (`*`, `v`, `-`, `x`, `>`, `->`), with single-line
     frames. Measured in that console, `●`, `○` and `→` take two cells where Claude Code counts one, so a row
     holding one is shifted and its later updates land beside it;
-  - the scene and the pointer are left out.
+  - the scene and the pointer are left out;
+  - a dim line over the list says where the desks show ("Open in Windows Terminal to see the desks: this console
+    draws them too wide"; decision 206: the person is pointed to Windows Terminal, and there is no ASCII drawing of
+    the members for that console). A list for want of room has no such line. Only the terminal surface counts as
+    that console: the desktop app draws the scene on the same machine.
   - The numbers seen in the prompt there come from Claude Code's own mouse tracking. Fullscreen turns it on with
     or without the office, and `CLAUDE_CODE_DISABLE_MOUSE=1` turns it off.
 - `scripts/office-screen` (development only) runs Claude Code in a virtual terminal and checks these screens.

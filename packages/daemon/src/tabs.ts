@@ -12,6 +12,7 @@ import {
 } from '@do-it-all-claude-code/core';
 import fs from 'node:fs';
 import path from 'node:path';
+import { checksByKind } from './checks.ts';
 import type { ConfigFile } from './config.ts';
 import type { Ledger, RequestRow, StepChangeRow, SubtaskFile, SubtaskRow } from './ledger.ts';
 import { latestLimits, type SessionLimits } from './limits.ts';
@@ -242,7 +243,6 @@ export interface WorkDetail {
 
 /** Signals that are not a verify check of the subtask's work. */
 const NOT_A_CHECK = new Set(['review', 'error_repeat', 'max_turns', 'tool_error', 'repro']);
-const skipped = (detail: string | undefined) => /: skipped \(/.test(detail ?? '');
 
 /** The length of the union of time spans, in milliseconds. */
 function unionMs(spans: Array<[number, number]>): number {
@@ -291,11 +291,8 @@ export function workDetail(c: TabsContext, requestId: string): WorkDetail | null
       stepChanges: steps.filter(k => k.subtaskId === x.id),
       scope: x.writeScope, unscoped: x.unscoped,
       files: x.changes ? { list: x.changes.files, total: x.changes.total, truncated: x.changes.truncated, approximate: x.changes.approximate } : null,
-      checks: sig.filter(g => !NOT_A_CHECK.has(g.kind)).map(g => ({
-        kind: String(g.kind), attempt: g.attempt, result: !g.ok ? 'failed' as const : skipped(g.detail) ? 'skipped' as const : 'ok' as const,
-        ...(g.testsPassed !== undefined ? { testsPassed: g.testsPassed } : {}), ...(g.testsFailed !== undefined ? { testsFailed: g.testsFailed } : {}),
-        ...(g.durationMs !== undefined ? { durationMs: g.durationMs } : {}),
-      })),
+      // one entry per attempt and kind of check (checks.ts): two commands of a kind are one check
+      checks: checksByKind(sig.filter(g => !NOT_A_CHECK.has(g.kind))),
       repro: x.repro ? {
         required: x.repro.required, state: x.repro.state ?? (x.repro.required ? 'pending' : 'off'),
         ...(x.repro.reason ? { reason: x.repro.reason } : {}), ...(reproFiles.length ? { files: reproFiles } : {}),

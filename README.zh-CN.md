@@ -35,6 +35,11 @@ CLI 和软件包都叫 `do-it-all-claude-code`。
 ## 开始使用
 
 需要 Node 24.5 以上、Claude Code 2.1.325 或更新版本，Windows 上还要有 Git Bash（Claude Code 本身就要求它）。
+
+在 Windows 上，请在 **Windows Terminal** 中运行 Claude Code。默认的控制台窗口画不出团队办公室的字符（会显示成
+一个列表）。设为默认：Windows Terminal → 设置 → 启动 → 默认终端应用程序 → Windows 终端（或 Windows 设置 →
+系统 → 高级（旧版本为开发者选项）→ 终端）。这样打开 PowerShell 也会在 Windows Terminal 里打开。
+
 有两种方式。
 
 **一条命令（npm）。** 装好插件和一行状态栏，启动守护进程，默认在你的 Claude 订阅上路由：
@@ -161,6 +166,9 @@ Enter 切换当前行的取值，改动以“原值 → 新值”显示并等待
   提示符上方，并把键盘交还给提示符。按 ctrl+x 再按 tab，键盘就回到面板。
 - **提示符上方的面板只有几行高。** Claude Code 会把你最后一次给插件面板定的高度用在所有插件的面板上，并且优先于
   面板自己请求的高度。按 ctrl+x 再按 tab，然后按 ctrl+x ↑ 把它调高。
+- **该显示角色的地方显示成了列表。** 默认的控制台窗口（Windows PowerShell、命令提示符）会把角色的符号画成两格宽，
+  画面会乱掉，所以办公室在那里显示为列表。请在 Windows Terminal 里打开 Claude Code；怎样把它设为默认终端，见
+  [开始使用](#开始使用)一节。
 
 运行 `do-it-all-claude-code config set office off` 后，之后启动的会话不再显示面板。它需要 Claude Code 2.1.325
 或更新的版本。0.5.0 之前版本里的浏览器仪表板已经移除。

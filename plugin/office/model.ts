@@ -430,12 +430,13 @@ export const TINY_STEP = LAYOUT_STEPS.length;
  * question, a list of tasks) takes rows from the pane while it is open. The office goes down a step as soon as its
  * step no longer fits, and back up only once the bigger one fits with LAYOUT_SPARE rows to spare.
  */
-export function officeLayout(o: { columns: number; rows: number; members: number; routerLine: boolean; classic: boolean; prev?: number }): OfficeLayout {
+export function officeLayout(o: { columns: number; rows: number; members: number; routerLine: boolean; classic: boolean; prev?: number; notice?: boolean }): OfficeLayout {
   const width = Math.max(20, o.columns - SLACK);
   const inner = width - 4;
   const per = { full: Math.floor((inner + 2) / DESK_W), small: Math.floor((inner + 1) / SMALL_DESK_W), narrow: Math.floor((inner + 1) / NARROW_DESK_W), list: 1 };
   const deskH = { full: DESK_H, small: SMALL_DESK_H, narrow: NARROW_DESK_H, list: 1 };
-  const top = 1 + (o.routerLine ? 1 : 0) + 2 + 1;
+  // `notice`: one more line in the office's frame (the classic console's, on where the desks show)
+  const top = 1 + (o.routerLine ? 1 : 0) + 2 + 1 + (o.notice ? 1 : 0);
   // cramped: the rows of narrow desks that fit under the tab row, the router's line and the frame (no title line),
   // and, when members are left over, their line under the desks
   const cramped = (spare: number) => {

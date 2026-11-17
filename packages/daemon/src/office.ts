@@ -8,6 +8,7 @@
 import type { Ledger } from './ledger.ts';
 import type { RoleView, StatusView } from './router.ts';
 import { latestLimits, type SessionLimits } from './limits.ts';
+import { checksByKind } from './checks.ts';
 import { ladderStep, type Step } from '@do-it-all-claude-code/core';
 
 export const OFFICE_PATH = '/router/v1/office';
@@ -64,7 +65,6 @@ export interface OfficeContext {
 
 /** Signals that are not a verify check: a review score, a repeated error, a tool error, a scope note. */
 const NOT_A_CHECK = new Set(['review', 'error_repeat', 'max_turns', 'tool_error', 'repro']);
-const skipped = (detail: string | undefined) => /: skipped \(/.test(detail ?? '');
 
 export function officeView(ctx: OfficeContext, sessionId: string): OfficeView {
   const st = ctx.status(sessionId);
@@ -80,9 +80,10 @@ export function officeView(ctx: OfficeContext, sessionId: string): OfficeView {
   const subtasks = ledger.listSubtasks(st.request.id).map((s): OfficeSubtask => {
     const mine = signals.filter(x => x.subtaskId === s.id);
     const last = mine.reduce((m, x) => Math.max(m, x.attempt), 0);
-    const checks = mine.filter(x => x.attempt === last && !NOT_A_CHECK.has(x.kind)).map((x): OfficeCheck => ({
+    // one entry per kind of check (checks.ts): two commands of a kind are one check
+    const checks = checksByKind(mine.filter(x => x.attempt === last && !NOT_A_CHECK.has(x.kind))).map((x): OfficeCheck => ({
       kind: x.kind,
-      result: !x.ok ? 'failed' : skipped(x.detail) ? 'skipped' : 'ok',
+      result: x.result,
       ...(x.testsPassed !== undefined ? { testsPassed: x.testsPassed } : {}),
       ...(x.testsFailed !== undefined ? { testsFailed: x.testsFailed } : {}),
     }));

@@ -41,7 +41,14 @@ CLI와 패키지 이름은 `do-it-all-claude-code`입니다.
 ## 시작하기
 
 Node 24.5 이상, Claude Code 2.1.325 이상이 필요하고, Windows라면 Git Bash도 있어야 합니다(Claude Code
-자체가 요구합니다). 들어가는 길은 두 가지입니다.
+자체가 요구합니다).
+
+Windows에서는 Claude Code를 **Windows Terminal**에서 실행하세요. 기본 콘솔 창은 팀 사무실 캐릭터를
+그리지 못해 목록처럼 보입니다. 기본으로 지정: Windows Terminal → 설정 → 시작 → 기본 터미널 애플리케이션
+→ Windows 터미널(또는 Windows 설정 → 시스템 → 고급(이전 버전은 개발자용) → 터미널). 그러면 PowerShell을 열어도 Windows
+Terminal 안에서 열립니다.
+
+들어가는 길은 두 가지입니다.
 
 **한 줄(npm).** 플러그인과 상태 라인을 깔고, 데몬을 띄우고, 기본으로 Claude 구독에서 라우팅합니다:
 
@@ -180,6 +187,9 @@ Claude Code에서 `/office`를 입력하면 대화 옆에 팀이 일하는 모�
 - **프롬프트 위 패널이 몇 줄밖에 안 됩니다.** Claude Code는 마지막으로 정한 플러그인 패널 높이를 모든
   플러그인의 패널에 쓰고, 패널이 요청하는 높이보다 그 값을 앞세웁니다. ctrl+x 다음 tab을 누른 뒤 ctrl+x ↑로
   키우세요.
+- **캐릭터 대신 목록이 보입니다.** 기본 콘솔 창(Windows PowerShell, 명령 프롬프트)은 캐릭터 기호를 두 칸 폭으로
+  그려 화면이 깨지므로, 그 창에서는 사무실을 목록으로 보여 줍니다. Claude Code를 Windows Terminal에서 여세요.
+  Windows Terminal을 기본 터미널로 지정하는 방법은 [시작하기](#시작하기) 절에 있습니다.
 
 `do-it-all-claude-code config set office off`를 실행하면 그 뒤에 시작하는 세션부터 패널이 꺼집니다. Claude
 Code 2.1.325 이상이 필요합니다. 0.5.0 이전 버전에 있던 브라우저 대시보드는 없어졌습니다.

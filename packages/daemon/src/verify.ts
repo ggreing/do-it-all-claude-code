@@ -142,6 +142,13 @@ export async function runVerify(plan: VerifyPlan): Promise<VerifySignal[]> {
       if (present === 'invalid') { out.push({ kind: c.kind, ok: false, detail: `${c.command}: invalid ifMissing path "${c.ifMissing}"` }); continue; }
       if (present) { out.push({ kind: c.kind, ok: true, detail: `${c.command}: skipped (${c.ifMissing} present)` }); continue; }
     }
+    // `npm run build --if-present` exits 0 when package.json has no such script: nothing ran, so it is skipped,
+    // not a pass (a project with only a test script used to read "build ok, typecheck ok, lint ok")
+    const script = ifPresentScript(c.command);
+    if (script !== undefined && hasPackageScript(plan.cwd, script) === false) {
+      out.push({ kind: c.kind, ok: true, detail: `${c.command}: skipped (no "${script}" script in package.json)` });
+      continue;
+    }
     const left = deadline - Date.now();
     if (left <= 0) {
       out.push({ kind: c.kind, ok: false, detail: `${c.command}: not run, total verify time limit (${Math.round(total / 1000)}s) reached` });
@@ -298,6 +305,29 @@ export function existsInTree(root: string, rel: string): boolean | 'invalid' {
     return inside === '' || (!inside.startsWith('..') && !path.isAbsolute(inside));
   } catch {
     return false;   // missing, or a dangling link
+  }
+}
+
+const IF_PRESENT = /^\s*(?:npm|pnpm)\s+(?:run(?:-script)?\s+(?:--if-present\s+([\w:.-]+)|([\w:.-]+)\s+--if-present)|(test)\s+--if-present)\s*$/;
+
+/**
+ * The package.json script a command runs only when it exists: `npm run <name> --if-present`, `npm test
+ * --if-present` (pnpm too). Undefined for any other command, a compound one included.
+ */
+export function ifPresentScript(command: string): string | undefined {
+  const m = IF_PRESENT.exec(command);
+  return m ? m[1] ?? m[2] ?? m[3] : undefined;
+}
+
+/** Whether the package.json of a folder has the script. Undefined when the file is missing or cannot be read as JSON (the command then runs). */
+export function hasPackageScript(dir: string, name: string): boolean | undefined {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as { scripts?: unknown };
+    if (!j || typeof j !== 'object') return undefined;
+    const scripts = j.scripts && typeof j.scripts === 'object' ? j.scripts as Record<string, unknown> : {};
+    return typeof scripts[name] === 'string' && scripts[name] !== '';
+  } catch {
+    return undefined;
   }
 }
 

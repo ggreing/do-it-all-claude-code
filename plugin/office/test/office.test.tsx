@@ -510,6 +510,8 @@ test('in a lower room the desks stay and the session shrinks to its last line, t
   must('the list', await ui.find({ key: 'member-demo-a' }))
   must('no scene', !(await ui.find({ key: 'office-scene' })))
   must('model and effort', await ui.find({ type: 'Text', text: /· Haiku low/ }))
+  // a list for want of room says nothing of the console
+  must('no console line', !(await ui.find({ type: 'Text', text: /Windows Terminal/ })))
   await ui.press({ key: 'member-demo-b' })
   await ui.advance(200)
   must('coder B picked', await ui.find({ key: 'member-demo-b', text: /▸ coder B/ }))
@@ -525,6 +527,8 @@ test('in the classic Windows console the office is the list with marks that cons
   must('no scene', !(await ui.find({ key: 'office-scene' })))
   must('one-cell marks', await ui.find({ type: 'Text', text: /\* working/ }))
   must('no two-cell marks', !(await ui.find({ type: 'Text', text: /[●○→]/ })))
+  // why it is a list, and where the desks show (decision 206)
+  must('the console line', await ui.find({ type: 'Text', text: /^Open in Windows Terminal to see the desks/ }))
   // a press follows that member in the session below
   await ui.press({ key: 'member-demo-b' })
   await ui.advance(200)

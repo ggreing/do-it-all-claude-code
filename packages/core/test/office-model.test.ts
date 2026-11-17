@@ -156,6 +156,9 @@ test("office: the members drawn wherever desks fit, small ones before a line a m
   // line, 7 with none, 6 not at all
   const classic10 = officeLayout({ columns: 98, rows: 10, members: 2, routerLine: true, classic: true });
   assert.deepEqual([classic10.mode, classic10.sessionRows], ['list', 1]);
+  // the console's line about Windows Terminal (decision 206) takes its row: the session gives it up
+  const noticed = officeLayout({ columns: 98, rows: 10, members: 2, routerLine: true, classic: true, notice: true });
+  assert.deepEqual([noticed.mode, noticed.sessionRows], ['list', 0]);
   assert.deepEqual(tag(officeLayout({ columns: 98, rows: 7, members: 2, routerLine: true, classic: true })), 'list/no session');
   assert.equal(officeLayout({ columns: 98, rows: 6, members: 2, routerLine: true, classic: true }).mode, 'tiny');
   // narrower than a full desk: a small one

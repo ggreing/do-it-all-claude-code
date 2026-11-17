@@ -14,6 +14,7 @@ import {
 import type { ConfigFile } from './config.ts';
 import { AWAITING_USER_MARKER, agentMessageFrom, awaitsUser, classifyPrompt } from './continuation.ts';
 import { LeadNotes, type LeadNote } from './lead-notes.ts';
+import { checksByKind, checksPhrase, notRun } from './checks.ts';
 import { changedFiles, fileFingerprint, takeSnapshot } from './git.ts';
 import { writeJsonAtomic, type HomeLayout } from './home.ts';
 import type { AcceptState, AgentRow, ClientRow, Holdout, Ledger, RequestRow, SlotRow, SubtaskChanges, SubtaskFile, SubtaskReview, SubtaskRow } from './ledger.ts';
@@ -1094,9 +1095,10 @@ export class Router {
     const st = ladderStep(sub.step);
     const head = `[do-it-all-claude-code] subtask ${sub.id} (${sub.role} @${sub.step}, model=${st.alias}, effort=${st.effort})`;
     const signals = this.ledger.listSignals(agent.requestId, sub.id).filter(x => x.agentId === agentId && x.attempt === agent.stopCount);
-    const skipped = (x: { detail?: string | undefined }) => /: skipped \(/.test(x.detail ?? '');
-    // decision 178 (가): the test count goes with "test ok", so the lead sees what verify covered
-    const checks = signals.map(x => `${x.kind} ${!x.ok ? 'failed' : skipped(x) ? 'skipped' : 'ok'}${x.kind === 'test' && !skipped(x) && x.testsPassed !== undefined ? ` (${x.testsPassed} passed${x.testsFailed ? `, ${x.testsFailed} failed` : ''})` : ''}`).join(', ');
+    const skipped = (x: { detail?: string | undefined }) => notRun(x.detail);
+    // decision 178 (가): the test count goes with "test ok", so the lead sees what verify covered. One entry per
+    // kind of check (checks.ts): two commands of a kind are not told as two checks with two answers.
+    const checks = checksPhrase(checksByKind(signals));
     const testsRan = signals.some(x => x.kind === 'test' && x.ok && !skipped(x) && (x.testsPassed === undefined || x.testsPassed > 0));
     const scope = signals.find(x => x.kind === 'scope');
     const files = /(\d+) file\(s\) changed/.exec(scope?.detail ?? '')?.[1];

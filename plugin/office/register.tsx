@@ -573,8 +573,10 @@ type RenderEvent = Parameters<Engine['ui']['resolve']>[0]
 async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderElement> {
   const els = $.ui.resolve(e)
   const { Box, Text, Button } = els
-  // the scene is a surface module; the classic console gets the list instead (its marks and its redraws)
-  const Client = 'Client' in els && !classic ? els.Client : undefined
+  // the scene is a surface module; the classic console gets the list instead (its marks and its redraws), with a
+  // line saying where the desks show (decision 206). The console is the terminal's: another surface draws its own.
+  const inConsole = classic && e.surface === 'terminal'
+  const Client = 'Client' in els && !inConsole ? els.Client : undefined
   const g = glyphs()
   const list = await read($, agents)
   const all = await read($, rows)
@@ -599,7 +601,7 @@ async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderE
   // edge: a frame taller than the room cannot be redrawn in place, and a line that reaches the terminal's last
   // column is the first a narrower window wraps. Desks when they fit, else a line a member (model.ts: officeLayout).
   // from the step drawn last on this surface, so a dialog under the chat that opens and closes does not flip it
-  const layout = officeLayout({ columns: room.columns, rows: room.rows, members: list.length, routerLine: Boolean(daemonLine), classic: !Client, prev: layoutStep[e.surface] })
+  const layout = officeLayout({ columns: room.columns, rows: room.rows, members: list.length, routerLine: Boolean(daemonLine), classic: !Client, prev: layoutStep[e.surface], notice: inConsole })
   layoutStep[e.surface] = layout.step
   const summary = list.length ? `${list.length} member${list.length === 1 ? '' : 's'} · ${working} working` : ''
   const doing = (a: OfficeAgent) => (a.status === 'working' ? lastTool(a.id) : '')
@@ -669,6 +671,8 @@ async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderE
     : (
       <Box key="office-list" flexDirection="column">
         <Text key="office-title" wrap="truncate-end"><Text bold>DO IT ALL · team office</Text><Text dimColor>{summary ? `  ${summary}` : ''}</Text></Text>
+        {/* the classic console only, never a list for want of room: what it says first holds when a narrow pane cuts it */}
+        {inConsole ? <Text key="office-console" dimColor wrap="truncate-end">Open in Windows Terminal to see the desks: this console draws them too wide</Text> : null}
         {list.length === 0 ? <Text key="office-empty" dimColor wrap="truncate-end">The team takes its desks when a request gets one · /office demo for a preview</Text> : null}
         {list.map(memberLine)}
       </Box>

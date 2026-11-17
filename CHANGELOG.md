@@ -62,7 +62,10 @@ All notable changes to this project are documented here. This project adheres to
   starts. A level set with `/router level` is kept.
 - **No second test run.** A worker's passed notification lists each check with its result and how many tests
   passed, and tells the lead not to run the test suite again. When verify ran no tests for the change (none
-  configured, skipped, or 0 tests), the lead runs only the changed code's tests, once.
+  configured, skipped, or 0 tests), the lead runs only the changed code's tests, once. Each kind of check is
+  listed once, in the lead's line, the office and the Work tab: two commands of a kind (the install and the
+  build script, `npm test` and pytest) are one entry. A package.json script that does not exist
+  (`npm run build --if-present` in a project without a build script) is not run and reads "skipped", not "ok".
 - **Independent parts run at the same time.** The lead and the architect split a larger change into writer
   subtasks with write scopes that share no file and send them together; the architect's report lists each
   subtask's scope and what must finish before it. The router refuses a second writer whose scope can name a
