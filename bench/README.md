@@ -11,7 +11,7 @@
 | `config/estimates.json` | 계획용 사전 추정치 (시범 실행 후 실측으로 교체) |
 | `tasks/custom/` | 직접 만든 과제 13개: `task.json`, 숨김 테스트(`hidden/`), 정답 풀이(`oracle/`) |
 | `fixtures/` | 직접 만든 과제가 쓰는 작은 TypeScript 저장소 (의존성 없음, `node --test`) |
-| `tasks/public/manifest.json` | SWE-bench Verified 7개 (L2 2 · L3 5)와 선정 규칙 |
+| `tasks/public/manifest.json` | SWE-bench Verified 20개 (L2 12 · L3 8)와 선정 규칙 |
 | `src/` | 하네스 (Node 24가 TypeScript를 바로 실행, 빌드 없음) |
 | `scripts/set-key.ps1`, `get-key.ps1` | API 키를 Windows 자격 증명 보관함에 넣고 꺼내는 스크립트 |
 
@@ -38,6 +38,7 @@ node bench/src/cli.ts doctor   [--leak-test]
 - Windows에서는 하네스가 `patch.diff`와 `eval.sh`를 CRLF로 써서 컨테이너 안에서 적용이 실패합니다. 그래서 `scripts/swebench_lf.py`로 감싸 LF를 고정합니다(채점기가 자동으로 사용).
 - 채점 이미지는 과제당 약 4~7.5GB이며, 디스크 여유가 20GB 아래면 채점을 시작하지 않습니다.
 - 검증 결과(2026-11-10): 직접 제작 13개와 공개 7개가 모두 통과했습니다. 공개 과제는 무관한 패치(no-op)로는 미해결, 정답 패치로는 해결되었습니다.
+- 2026-11-16에 공개 과제 13개를 더했습니다(결정 175). 처음 7개와 같은 저장소 버전에서 골라 채점 이미지가 맨 위 층만 다릅니다(과제당 약 0.2GB). 이 13개는 아직 검증 전입니다.
 
 ## API 키와 구독 정보 보호
 
@@ -52,3 +53,20 @@ node bench/src/cli.ts doctor   [--leak-test]
   - 웹 도구를 빼고, Bash는 허용 목록의 명령만 실행
 - **결과 마스킹:** `results/`에 쓰는 모든 기록은 키·토큰 패턴 마스킹을 거칩니다.
 - `results/`와 `.cache/`는 git에 올리지 않습니다.
+
+## 구독 한도 측정 (`sub`)
+
+라우터를 켰을 때 같은 작업이 Pro·Max 구독의 5시간·주간 한도를 덜 쓰는지 잽니다. 설계는 `docs/design/subscription-measurement.md`에 있습니다.
+
+```
+node bench/src/cli.ts sub --pilot --dry-run                          시범 실행 계획과 예상 한도 사용량 (claude를 실행하지 않음)
+node bench/src/cli.ts sub --pilot --subscription --plan max-20x      시범 실행: 과제 4개, 라우터 없는 쪽, 확인 3가지
+node bench/src/cli.ts sub --levels L2,L3 --pairs 3 --dry-run         본 측정 계획 (--subscription을 붙이면 실행)
+node bench/src/cli.ts sub-report                                     results/subscription 집계
+```
+
+- **사용자 본인의 Claude Code 로그인으로 실행되므로 `--subscription`을 붙여야만 실행합니다.** 하네스는 자격증명을 읽거나 복사하지 않습니다. `--bare`와 전용 `CLAUDE_CONFIG_DIR`을 쓰지 않고, Claude Code가 자기 로그인을 읽습니다. 자식 프로세스 환경은 허용 목록만 넘기므로 `ANTHROPIC_API_KEY` 같은 값은 닿지 않으며, 실행마다 init 메시지의 `apiKeySource`가 `none`(claude.ai 로그인)인지 확인하고 아니면 멈춥니다.
+- 사용자 설정은 읽지 않습니다(`--setting-sources project,local`). CLAUDE.md·자동 메모리·세션 기록·claude.ai MCP 서버도 끄고, 측정 중 버전이 바뀌지 않도록 자동 업데이트도 끕니다. 라우터 쪽은 `--plugin-dir`로 플러그인만 더합니다.
+- 계기는 `/usage`의 `usage_report`로 읽습니다. 블록마다 앞뒤로 읽고, 두 방식을 같은 5시간 창 안에서 짝지어 번갈아 돌립니다. 읽는 사이 창이 초기화됐거나, 블록이 쓴 토큰으로 설명되지 않을 만큼 계기가 움직였으면 그 블록은 세지 않습니다.
+- 계기가 80%를 넘게 되거나 창에 남은 시간이 모자라면 블록을 시작하지 않고 멈춥니다. 다시 실행하면 기록된 블록은 건너뛰고 이어서 돕니다.
+- 측정 중에는 그 계정을 다른 곳(claude.ai, 다른 Claude Code 세션, 다른 기기)에서 쓰지 않아야 합니다.

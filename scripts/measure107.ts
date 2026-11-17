@@ -3,7 +3,7 @@
 // in the format the triage scorer reads (packages/core/src/triage-eval-cli.ts regret runs.jsonl --tasks tasks.jsonl).
 //
 //   node scripts/measure107.ts --api-key-helper "<keychain cmd>" [--tasks id,id] [--arrangements direct,team-L2,team-L3,auto]
-//        [--lead opus] [--effort high] [--budget 50] [--cap-scale 1] [--out dir] [--dry-run] [--setup-only] [--only-plan]
+//        [--lead opus] [--effort high] [--budget 50] [--cap-scale 1] [--out dir] [--work dir] [--dry-run] [--setup-only] [--only-plan]
 //
 // - direct   : plain Claude Code, no plugin (the lead does the work alone) = router OFF
 // - team-L2/3: plugin + daemon with config.forceLevel = L2 / L3 (decision 107 harness switch)
@@ -14,7 +14,9 @@
 // no workspace, no daemon, no API call. --setup-only prepares the workspaces and starts the daemons, no API call.
 // Auth: isolated CLAUDE_CONFIG_DIR + apiKeyHelper via --settings (the key never passes through this script).
 // No --bare in team runs: hooks must run. Transcripts are kept (the daemon reads them for costs).
-import { execFileSync, spawn } from 'node:child_process';
+// Decision 174: each run's record carries `phases` (bench/src/kpi/phases.ts), from its stream-json, stamped on
+// arrival and kept in <out>/streams/, and the daemon ledger; `node scripts/kpi-phases.ts` reports them.
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -26,13 +28,16 @@ import { gradeSwebench, workspacePatch } from '../bench/src/graders/swebench.ts'
 import { childEnv, CREDENTIAL_DENY } from '../bench/src/secrets.ts';
 import { loadPublicManifest } from '../bench/src/tasks.ts';
 import type { Task } from '../bench/src/types.ts';
+import { claudeBin, runCaptured, TIMING_FLAGS } from '../bench/src/kpi/capture.ts';
+import { analysePhases, type LedgerTiming, type StreamLine } from '../bench/src/kpi/phases.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
 const arg = (k: string, d?: string) => { const i = argv.indexOf(`--${k}`); return i >= 0 && argv[i + 1] && !argv[i + 1]!.startsWith('--') ? argv[i + 1]! : d; };
 // --out for smoke tests, so their spend does not enter the decision-107 ledger
 const OUT = path.resolve(arg('out', path.join(ROOT, 'bench', 'results', 'measure107'))!);
-const WORK = path.join(path.parse(ROOT).root, 'ar-m107');            // short path: Windows MAX_PATH with worktrees
+// short path: Windows MAX_PATH with worktrees (--work moves it, for smoke tests)
+const WORK = path.resolve(arg('work', path.join(path.parse(ROOT).root, 'ar-m107'))!);
 const flag = (k: string) => argv.includes(`--${k}`);
 
 const DEFAULT_TASKS = [
@@ -88,9 +93,11 @@ function settingsFor(): string {
   return JSON.stringify({ apiKeyHelper: HELPER, permissions: { deny: CREDENTIAL_DENY } });
 }
 
-function runClaude(repo: string, configDir: string, prompt: string, a: Arrangement, capUsd: number, timeoutSec: number, home?: string)
-  : Promise<{ code: number | null; out: any; ms: number; timedOut: boolean; stderr: string }> {
-  const args = ['-p', '--output-format', 'json', '--model', LEAD, '--effort', EFFORT, '--max-budget-usd', String(capUsd),
+async function runClaude(repo: string, configDir: string, prompt: string, a: Arrangement, capUsd: number, timeoutSec: number, home: string | undefined, streamFile: string)
+  : Promise<{ code: number | null; out: any; ms: number; timedOut: boolean; stderr: string; lines: StreamLine[]; startedAt: string }> {
+  // decision 174: stream-json with hook events and the workers' messages, each line stamped on arrival (phase timings);
+  // its result message is what --output-format json printed
+  const args = ['-p', ...TIMING_FLAGS, '--model', LEAD, '--effort', EFFORT, '--max-budget-usd', String(capUsd),
     '--permission-mode', 'acceptEdits', '--strict-mcp-config', '--setting-sources', 'project,local', '--settings', settingsFor(),
     '--tools', a === 'direct' ? 'Read,Edit,Write,Glob,Grep,Bash' : 'Read,Edit,Write,Glob,Grep,Bash,Agent',
     '--allowedTools', 'Agent', 'Bash(npm *)', 'Bash(node *)', 'Bash(npx tsc *)', 'Bash(git status*)', 'Bash(git diff*)', 'Bash(git log*)',
@@ -103,15 +110,26 @@ function runClaude(repo: string, configDir: string, prompt: string, a: Arrangeme
     args.push('--append-system-prompt', 'This is a non-interactive run: before you give your final answer, wait until every subagent you started has finished and you have read its result.');
   }
   const env = { ...childEnv(configDir, { kind: 'api-key-helper' } as never), ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
-  return new Promise(resolve => {
-    const t0 = Date.now();
-    const p = spawn('claude', args, { cwd: repo, env, windowsHide: true });
-    let so = '', se = '', timedOut = false;
-    p.stdout.on('data', d => { so += d; }); p.stderr.on('data', d => { se += d; });
-    const timer = setTimeout(() => { timedOut = true; p.kill(); }, timeoutSec * 1000);
-    p.on('close', code => { clearTimeout(timer); let out: any = null; try { out = JSON.parse(so); } catch { out = null; } resolve({ code, out, ms: Date.now() - t0, timedOut, stderr: se.slice(-1500) }); });
-    p.stdin.end(prompt);
-  });
+  const bin = claudeBin();
+  const c = await runCaptured(bin.cmd, [...bin.prefix, ...args], { cwd: repo, env, input: prompt, timeoutSec, streamFile });
+  return { code: c.code, out: c.result, ms: c.ms, timedOut: c.timedOut, stderr: c.stderr, lines: c.lines, startedAt: c.startedAt };
+}
+
+/** Decision 174: the daemon ledger's timing rows (verify commands, workers, subtasks, hook events) for the phases. */
+function routerTiming(home: string, startedAt: string): LedgerTiming | null {
+  const dbFile = path.join(home, 'router.db');
+  if (!fs.existsSync(dbFile)) return null;
+  const db = new DatabaseSync(dbFile, { readOnly: true });
+  const q = (sql: string) => { try { return db.prepare(sql).all() as any[]; } catch { return []; } };
+  const t: LedgerTiming = {
+    startedAt,
+    events: q('SELECT type, tool_name, agent_id, received_at FROM events').map(e => ({ type: String(e.type), toolName: e.tool_name ?? null, agentId: e.agent_id ?? null, at: String(e.received_at) })),
+    signals: q('SELECT agent_id, subtask_id, kind, duration_ms, attempt, created_at FROM signals').map(s => ({ agentId: s.agent_id ?? null, subtaskId: s.subtask_id ?? null, kind: String(s.kind), durationMs: s.duration_ms ?? null, attempt: Number(s.attempt ?? 0), at: String(s.created_at) })),
+    agents: q('SELECT agent_id, role, subtask_id, started_at, stopped_at, worktree_path FROM agents').map(x => ({ agentId: String(x.agent_id), role: x.role ?? null, subtaskId: x.subtask_id ?? null, startedAt: String(x.started_at), stoppedAt: x.stopped_at ?? null, worktreePath: x.worktree_path ?? null })),
+    subtasks: q('SELECT id, attempts, up_count FROM subtasks').map(s => ({ id: String(s.id), attempts: Number(s.attempts ?? 0), upCount: Number(s.up_count ?? 0) })),
+  };
+  db.close();
+  return t;
 }
 
 function diffStats(repo: string, base: string) {
@@ -219,11 +237,13 @@ for (const [task, a] of order) {
   }
   if (flag('setup-only')) { console.log(`setup-only ${key} in ${ws.repo}`); if (home) cli(home, 'stop'); continue; }
   console.log(`run ${key} (cap $${cap.toFixed(2)})`);
-  const r = await runClaude(ws.repo, ws.configDir, ws.prompt, a, cap, task.limits.timeoutSec, home);
+  const streamFile = path.join(OUT, 'streams', `${key.replace(/[^A-Za-z0-9_.-]/g, '_')}.jsonl`);
+  const r = await runClaude(ws.repo, ws.configDir, ws.prompt, a, cap, task.limits.timeoutSec, home, streamFile);
   const costUsd = Number(r.out?.total_cost_usd ?? 0);
   fs.appendFileSync(ledgerFile, JSON.stringify({ key, costUsd, at: new Date().toISOString() }) + '\n');
   if (home) { try { cli(home, 'stop'); } catch { /* already down */ } }
   const facts = home ? routerFacts(home) : {};
+  const phases = analysePhases(r.lines, r.ms, home ? routerTiming(home, r.startedAt) : null);
   const stats = diffStats(ws.repo, base);
   let graded;
   if (task.source === 'custom') graded = await gradeNodeTest(task, ws.repo);
@@ -235,11 +255,14 @@ for (const [task, a] of order) {
     costLeadUsd: a === 'direct' ? costUsd : (facts as any).costLeadUsd, costSubagentsUsd: a === 'direct' ? 0 : (facts as any).costSubagentsUsd,
     leadCalls: r.out?.num_turns ?? null, models, ...stats, ...(a === 'direct' ? { outcome: 'router-off', levelChosen: null } : {}), ...facts,
     timedOut: r.timedOut, error: r.out?.is_error ? String(r.out?.subtype ?? r.out?.result ?? '').slice(0, 300) : (r.out ? undefined : r.stderr.slice(-300)),
+    phases,
   };
   fs.appendFileSync(runsFile, JSON.stringify(rec) + '\n');
   const f = facts as { levelChosen?: string | null; outcome?: string | null; leadEdits?: number; noChanges?: number };
   const routed = a === 'direct' ? '' : ` ${f.levelChosen ?? '?'} ${f.outcome ?? '?'}${f.leadEdits ? ` lead-edits=${f.leadEdits}` : ''}${f.noChanges ? ` no-changes=${f.noChanges}` : ''}`
     + ` lead $${Number(rec.costLeadUsd ?? 0).toFixed(3)} / workers $${Number(rec.costSubagentsUsd ?? 0).toFixed(3)}`;
   console.log(`  -> ${graded.pass ? 'PASS' : 'FAIL'} ${graded.detail} $${costUsd.toFixed(3)} ${rec.wallSeconds}s${routed}; spent $${spent().toFixed(2)} / $${BUDGET}`);
+  const ws1 = phases.workers;
+  console.log(`     phases: startup ${phases.startupSeconds ?? '?'}s, lead before 1st worker ${phases.leadBeforeFirstWorkerSeconds ?? '-'}s, ${ws1.length} worker(s) active ${phases.workersActiveSeconds ?? '-'}s (start delays ${ws1.map(w => w.startDelaySeconds ?? '?').join('/') || '-'}s), lead wrap-up ${phases.leadFinishSeconds ?? '-'}s, verify ${phases.verify.totalSeconds}s, hooks ${phases.hooks.totalSeconds}s x${phases.hooks.count}`);
 }
 console.log(`done. spent $${spent().toFixed(2)} of $${BUDGET}. runs: ${runsFile}`);

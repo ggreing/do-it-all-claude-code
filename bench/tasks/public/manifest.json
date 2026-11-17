@@ -5,7 +5,8 @@
   "rule": {
     "L2": "difficulty '15 min - 1 hour'; repos astropy/astropy and pydata/xarray (not used for L3); FAIL_TO_PASS 1-20; the instance with the median number of changed lines in the gold patch",
     "L3": "difficulty '1-4 hours'; one instance each from django, sympy, sphinx, pytest, pylint; FAIL_TO_PASS 1-20; most files changed in the gold patch, then most lines",
-    "note": "Selected 2026-11-09 from princeton-nlp/SWE-bench_Verified; graded against SWE-bench/SWE-bench_Verified (same 500 instances, same base commits, plus the 'image' field swebench 5.x needs). Problem statements and gold patches are not stored here; the harness reads them from the local Hugging Face dataset cache."
+    "note": "Selected 2026-11-09 from princeton-nlp/SWE-bench_Verified; graded against SWE-bench/SWE-bench_Verified (same 500 instances, same base commits, plus the 'image' field swebench 5.x needs). Problem statements and gold patches are not stored here; the harness reads them from the local Hugging Face dataset cache.",
+    "expansion": "Added 2026-11-16 (decision 175): 13 instances from the repository versions the first 7 already use (astropy 1.3, django 4.2, xarray 0.12, sympy 1.5, pytest 5.1, sphinx 4.2), because their evaluation images then share every layer but the top one (about 0.2 GB each instead of several GB for a new version). Within each version and difficulty: most files changed in the gold patch, then most lines; FAIL_TO_PASS 1-20. L3: '1-4 hours' (django-15957, xarray-3993, sympy-17630, the only ones in those versions); L2: '15 min - 1 hour', three each from django and xarray, one each from sympy, astropy, pytest and sphinx. Result: 20 public tasks, 12 L2 and 8 L3."
   },
   "tasks": [
     {
@@ -140,6 +141,254 @@
         "maxTurns": 100,
         "timeoutSec": 3600
       }
+    },
+    {
+      "id": "p-l2-django__django-16256",
+      "level": "L2",
+      "source": "swebench-verified",
+      "instance_id": "django__django-16256",
+      "repo": "django/django",
+      "base_commit": "76e37513e22f4d9a01c7f15eee36fe44388e6670",
+      "version": "4.2",
+      "difficulty": "15 min - 1 hour",
+      "gold_patch_stats": {
+        "files": 2,
+        "lines": 55,
+        "fail_to_pass": 9
+      },
+      "limits": {
+        "maxTurns": 60,
+        "timeoutSec": 1800
+      }
+    },
+    {
+      "id": "p-l2-django__django-16315",
+      "level": "L2",
+      "source": "swebench-verified",
+      "instance_id": "django__django-16315",
+      "repo": "django/django",
+      "base_commit": "7d5329852f19c6ae78c6f6f3d3e41835377bf295",
+      "version": "4.2",
+      "difficulty": "15 min - 1 hour",
+      "gold_patch_stats": {
+        "files": 2,
+        "lines": 13,
+        "fail_to_pass": 1
+      },
+      "limits": {
+        "maxTurns": 60,
+        "timeoutSec": 1800
+      }
+    },
+    {
+      "id": "p-l2-django__django-16032",
+      "level": "L2",
+      "source": "swebench-verified",
+      "instance_id": "django__django-16032",
+      "repo": "django/django",
+      "base_commit": "0c3981eb5094419fe200eb46c71b5376a2266166",
+      "version": "4.2",
+      "difficulty": "15 min - 1 hour",
+      "gold_patch_stats": {
+        "files": 2,
+        "lines": 11,
+        "fail_to_pass": 2
+      },
+      "limits": {
+        "maxTurns": 60,
+        "timeoutSec": 1800
+      }
+    },
+    {
+      "id": "p-l2-pydata__xarray-3095",
+      "level": "L2",
+      "source": "swebench-verified",
+      "instance_id": "pydata__xarray-3095",
+      "repo": "pydata/xarray",
+      "base_commit": "1757dffac2fa493d7b9a074b84cf8c830a706688",
+      "version": "0.12",
+      "difficulty": "15 min - 1 hour",
+      "gold_patch_stats": {
+        "files": 2,
+        "lines": 49,
+        "fail_to_pass": 1
+      },
+      "limits": {
+        "maxTurns": 60,
+        "timeoutSec": 1800
+      }
+    },
+    {
+      "id": "p-l2-pydata__xarray-3305",
+      "level": "L2",
+      "source": "swebench-verified",
+      "instance_id": "pydata__xarray-3305",
+      "repo": "pydata/xarray",
+      "base_commit": "69c7e01e5167a3137c285cb50d1978252bb8bcbf",
+      "version": "0.12",
+      "difficulty": "15 min - 1 hour",
+      "gold_patch_stats": {
+        "files": 2,
+        "lines": 22,
+        "fail_to_pass": 1
+      },
+      "limits": {
+        "maxTurns": 60,
+        "timeoutSec": 1800
+      }
+    },
+    {
+      "id": "p-l2-pydata__xarray-3151",
+      "level": "L2",
+      "source": "swebench-verified",
+      "instance_id": "pydata__xarray-3151",
+      "repo": "pydata/xarray",
+      "base_commit": "118f4d996e7711c9aced916e6049af9f28d5ec66",
+      "version": "0.12",
+      "difficulty": "15 min - 1 hour",
+      "gold_patch_stats": {
+        "files": 1,
+        "lines": 15,
+        "fail_to_pass": 1
+      },
+      "limits": {
+        "maxTurns": 60,
+        "timeoutSec": 1800
+      }
+    },
+    {
+      "id": "p-l2-sympy__sympy-17318",
+      "level": "L2",
+      "source": "swebench-verified",
+      "instance_id": "sympy__sympy-17318",
+      "repo": "sympy/sympy",
+      "base_commit": "d4e0231b08147337745dcf601e62de7eefe2fb2d",
+      "version": "1.5",
+      "difficulty": "15 min - 1 hour",
+      "gold_patch_stats": {
+        "files": 2,
+        "lines": 9,
+        "fail_to_pass": 1
+      },
+      "limits": {
+        "maxTurns": 60,
+        "timeoutSec": 1800
+      }
+    },
+    {
+      "id": "p-l2-astropy__astropy-7606",
+      "level": "L2",
+      "source": "swebench-verified",
+      "instance_id": "astropy__astropy-7606",
+      "repo": "astropy/astropy",
+      "base_commit": "3cedd79e6c121910220f8e6df77c54a0b344ea94",
+      "version": "1.3",
+      "difficulty": "15 min - 1 hour",
+      "gold_patch_stats": {
+        "files": 1,
+        "lines": 10,
+        "fail_to_pass": 1
+      },
+      "limits": {
+        "maxTurns": 60,
+        "timeoutSec": 1800
+      }
+    },
+    {
+      "id": "p-l2-pytest-dev__pytest-5840",
+      "level": "L2",
+      "source": "swebench-verified",
+      "instance_id": "pytest-dev__pytest-5840",
+      "repo": "pytest-dev/pytest",
+      "base_commit": "73c5b7f4b11a81e971f7d1bb18072e06a87060f4",
+      "version": "5.1",
+      "difficulty": "15 min - 1 hour",
+      "gold_patch_stats": {
+        "files": 2,
+        "lines": 27,
+        "fail_to_pass": 2
+      },
+      "limits": {
+        "maxTurns": 60,
+        "timeoutSec": 1800
+      }
+    },
+    {
+      "id": "p-l2-sphinx-doc__sphinx-9602",
+      "level": "L2",
+      "source": "swebench-verified",
+      "instance_id": "sphinx-doc__sphinx-9602",
+      "repo": "sphinx-doc/sphinx",
+      "base_commit": "6c38f68dae221e8cfc70c137974b8b88bd3baaab",
+      "version": "4.2",
+      "difficulty": "15 min - 1 hour",
+      "gold_patch_stats": {
+        "files": 1,
+        "lines": 12,
+        "fail_to_pass": 1
+      },
+      "limits": {
+        "maxTurns": 60,
+        "timeoutSec": 1800
+      }
+    },
+    {
+      "id": "p-l3-django__django-15957",
+      "level": "L3",
+      "source": "swebench-verified",
+      "instance_id": "django__django-15957",
+      "repo": "django/django",
+      "base_commit": "f387d024fc75569d2a4a338bfda76cc2f328f627",
+      "version": "4.2",
+      "difficulty": "1-4 hours",
+      "gold_patch_stats": {
+        "files": 1,
+        "lines": 33,
+        "fail_to_pass": 4
+      },
+      "limits": {
+        "maxTurns": 100,
+        "timeoutSec": 3600
+      }
+    },
+    {
+      "id": "p-l3-pydata__xarray-3993",
+      "level": "L3",
+      "source": "swebench-verified",
+      "instance_id": "pydata__xarray-3993",
+      "repo": "pydata/xarray",
+      "base_commit": "8cc34cb412ba89ebca12fc84f76a9e452628f1bc",
+      "version": "0.12",
+      "difficulty": "1-4 hours",
+      "gold_patch_stats": {
+        "files": 2,
+        "lines": 49,
+        "fail_to_pass": 2
+      },
+      "limits": {
+        "maxTurns": 100,
+        "timeoutSec": 3600
+      }
+    },
+    {
+      "id": "p-l3-sympy__sympy-17630",
+      "level": "L3",
+      "source": "swebench-verified",
+      "instance_id": "sympy__sympy-17630",
+      "repo": "sympy/sympy",
+      "base_commit": "58e78209c8577b9890e957b624466e5beed7eb08",
+      "version": "1.5",
+      "difficulty": "1-4 hours",
+      "gold_patch_stats": {
+        "files": 1,
+        "lines": 2,
+        "fail_to_pass": 2
+      },
+      "limits": {
+        "maxTurns": 100,
+        "timeoutSec": 3600
+      }
     }
-  ]
+  ],
+  "expanded": "2026-11-16"
 }

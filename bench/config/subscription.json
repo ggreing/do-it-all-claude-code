@@ -1,0 +1,30 @@
+{
+  "note": "Subscription-limit measurement (docs/design/subscription-measurement.md). The priors are guesses for planning only, conservative on purpose; the pilot's per-task readings replace them (results/subscription/pilot.json). Weekly meters are not estimated before the pilot.",
+  "pilotTasks": ["c-l0-01", "c-l1-01", "c-l2-01", "c-l3-01"],
+  "lead": "s5",
+  "lagSeconds": 60,
+  "lateSeconds": 300,
+  "readGapSeconds": 10,
+  "maxPercent": 80,
+  "minPointsPerArm": 5,
+  "resetToleranceSeconds": 60,
+  "windowMarginFactor": 1.5,
+  "outlierFactor": 2,
+  "bootstrapResamples": 2000,
+  "priorSessionPointsPerTask": { "L0": 0.5, "L1": 1, "L2": 2, "L3": 3 },
+  "priorMinutesPerTask": { "L0": 2, "L1": 4, "L2": 8, "L3": 12 },
+  "calibrate": {
+    "note": "sub --calibrate: points per API-priced dollar for one model, then another, on the weekly meter. Same effort (high) for both, so the token mix is alike. The Haiku block's caps end it if the meter follows API prices (then about 900 tasks would be needed for 5 points); its target ends it early if Haiku counts for more.",
+    "configs": ["s5", "s2"],
+    "concurrency": { "s5": 1, "s2": 4 },
+    "targetPoints": 5,
+    "maxTotalPoints": 12,
+    "readEverySeconds": 60,
+    "resetMarginMinutes": 30,
+    "caps": {
+      "s5": { "usd": 25, "tasks": 100, "minutes": 150 },
+      "s2": { "usd": 3, "tasks": 600, "minutes": 150 }
+    },
+    "claim": 0.33
+  }
+}

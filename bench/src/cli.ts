@@ -4,6 +4,9 @@
 //   node bench/src/cli.ts run      [filters] --execute --api-key-helper "<keychain command>"
 //   node bench/src/cli.ts report                             aggregate results/runs.jsonl
 //   node bench/src/cli.ts doctor   [--leak-test]             environment and credential-isolation checks
+//   node bench/src/cli.ts sub      --pilot | [--levels L2,L3] [--pairs N]  --dry-run | --subscription [--plan max-20x]
+//                                  the subscription-limit measurement on the user's own login (subscription/)
+//   node bench/src/cli.ts sub-report                         aggregate results/subscription
 // filters: --levels L0,L1  --configs s1,s5  --tasks id,id  --sources custom,swebench-verified  --reps 1
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,6 +22,7 @@ import { fetchInstance } from './public.ts';
 import { runClaude } from './executors/claude.ts';
 import { childEnv, childSettings, describeAuth, redact, redactDeep, resolveAuth } from './secrets.ts';
 import { writeReport } from './report.ts';
+import { cmdSub, cmdSubReport } from './subscription/cli.ts';
 
 const MIN_CLAUDE = [2, 1, 295];   // per-call effort (2.1.292), hook onFailure (2.1.295)
 
@@ -186,4 +190,6 @@ else if (cmd === 'validate') await cmdValidate(f);
 else if (cmd === 'run') await cmdRun(f);
 else if (cmd === 'report') console.log(writeReport());
 else if (cmd === 'doctor') await cmdDoctor(f);
-else console.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(0, 8).join('\n'));
+else if (cmd === 'sub') process.exitCode = await cmdSub(f);
+else if (cmd === 'sub-report') console.log(cmdSubReport(f));
+else console.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(0, 11).join('\n'));
