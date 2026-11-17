@@ -1,5 +1,10 @@
 # Do It All Claude Code
 
+[![CI](https://github.com/ggreing/do-it-all-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/ggreing/do-it-all-claude-code/actions/workflows/ci.yml)
+![Claude Code 2.1.325+](https://img.shields.io/badge/Claude%20Code-2.1.325%2B-d97757)
+![Node 24+](https://img.shields.io/badge/Node-24%2B-339933)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
 If you run Claude Code on Opus or Sonnet, the main session does almost everything itself, including
@@ -7,11 +12,9 @@ edits that a much cheaper model would get right. This project is a Claude Code p
 daemon that changes that. For each request it decides whether the main session should just do it, or
 hand the work to a few subagents running on cheaper models while the main session plans and checks.
 
-In the last check, with the router running as shipped on a Sonnet main session, a passed task cost 33%
-less than with plain Claude Code, and the same tasks passed. For most tasks that meant the main session
-handed the edit to a single Haiku coder. It's slower, though: each hand-off adds a worker start, and on
-the bigger tasks the team took noticeably longer than one session working alone. The numbers and how we
-got them are in [docs/measurements](docs/measurements/).
+Measurements, and how we made them, are in [docs/measurements](docs/measurements/).
+
+<p align="center"><img src="docs/media/team-office.gif" alt="The team office inside Claude Code: the request's team at their desks, and the picked member's session below" width="720"></p>
 
 The CLI and package are called `do-it-all-claude-code`.
 
@@ -165,6 +168,10 @@ terminal it also opens by itself when a request's first worker starts (`config s
 that). The panel has no text input: the settings it offers change with Enter and are written only after you
 confirm; anything that needs typing is shown with the CLI command that changes it.
 
+<p align="center"><img src="docs/media/office-tabs.gif" alt="The office tabs: Work, Savings, Team and Settings" width="720"></p>
+
+*The tabs, shown here with sample data (not measurements).*
+
 | Tab | Its first line answers | Below that |
 |---|---|---|
 | Office | who is on the team and what each one is doing | each member at a desk with model and effort; the picked member's session, the way Claude Code draws its own |
@@ -213,7 +220,7 @@ another:
 | After "easy" verdicts | a worker moves back down | a worker moves back down | it stays where it is |
 | Budget of one request | 0.6 of the default | the default | 1.5 of the default |
 
-Only `balanced` has been measured: the 33% at the top of this page is that profile. `save` and `quality` move
+Only `balanced` has been measured (see [docs/measurements](docs/measurements/)). `save` and `quality` move
 the same settings one way or the other and have not been measured yet, so we don't know what they do to cost
 or to the pass rate.
 

@@ -1,14 +1,19 @@
 # Do It All Claude Code
 
+[![CI](https://github.com/ggreing/do-it-all-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/ggreing/do-it-all-claude-code/actions/workflows/ci.yml)
+![Claude Code 2.1.325+](https://img.shields.io/badge/Claude%20Code-2.1.325%2B-d97757)
+![Node 24+](https://img.shields.io/badge/Node-24%2B-339933)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
 用 Opus 或 Sonnet 跑 Claude Code 时，主会话几乎什么都自己做，连便宜得多的模型也能改对的改动也不例外。
 这个项目是一个 Claude Code 插件加一个小的本地守护进程，用来改变这一点。每来一个请求，它就决定主会话是
 直接处理，还是把活儿交给几个跑在便宜模型上的子代理，主会话只做计划和检查。
 
-我们最近一次测量是：用 Sonnet 主会话、按发布状态开着路由器，每个通过任务的成本比直接用 Claude Code 少了
-33%，通过的任务也一样。多数情况下是主会话把修改交给一个 Haiku 编码者。代价是更慢：每交一次就得新起一个
-工作者，在较大的任务上，团队明显比主会话单干更费时间。数字和测法都在 [docs/measurements](docs/measurements/)。
+测量结果和测法都在 [docs/measurements](docs/measurements/)。
+
+<p align="center"><img src="docs/media/team-office.gif" alt="Claude Code 里的团队办公室：负责请求的团队坐在桌前，选中成员的会话显示在下方" width="720"></p>
 
 CLI 和软件包都叫 `do-it-all-claude-code`。
 
@@ -142,6 +147,10 @@ claude --allowedTools "Bash(npm test)" "Bash(npm run *)"
 启动时它也会自己打开（`config set officeAutoOpen off` 可以关掉这一点）。面板没有文字输入框：面板能改的设置用
 Enter 切换取值，确认之后才写入；需要输入文字的值，会和修改它的 CLI 命令一起显示。
 
+<p align="center"><img src="docs/media/office-tabs.gif" alt="办公室标签页：Work、Savings、Team、Settings" width="720"></p>
+
+*标签页里的数字是示例数据（不是测量值）。*
+
 | 标签页 | 第一行回答的问题 | 下面是什么 |
 |---|---|---|
 | 办公室 | 团队里有谁、每个人在做什么 | 每个成员坐在桌前，显示模型和努力级别；选中成员的会话，画法和 Claude Code 自己的一样 |
@@ -185,7 +194,7 @@ Enter 切换当前行的取值，改动以“原值 → 新值”显示并等待
 | 接连得到「有余量」判定后 | 工作者降一档 | 工作者降一档 | 保持不变 |
 | 单个请求的预算 | 默认值的 0.6 倍 | 默认值 | 默认值的 1.5 倍 |
 
-只有 `balanced` 做过测量：本页开头的 33% 就是它的结果。`save` 和 `quality` 是把同样的设置往一边挪，还没有
+只有 `balanced` 做过测量（见 [docs/measurements](docs/measurements/)）。`save` 和 `quality` 是把同样的设置往一边挪，还没有
 测量过，所以它们对成本和通过率的影响目前不清楚。
 
 要修改，打开团队办公室的设置标签页，移到某个值上按 Enter 在选项之间切换；按 `a` 再按 `y` 应用改动，按 `x`

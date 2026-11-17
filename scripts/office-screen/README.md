@@ -3,8 +3,8 @@
 Development only. Runs an interactive Claude Code with the router's plugin in a pseudo-terminal
 ([node-pty](https://www.npmjs.com/package/node-pty)), feeds what it draws into a headless terminal of the same size
 ([@xterm/headless](https://www.npmjs.com/package/@xterm/headless)), and writes the screen out as text at the steps you
-give, with checks for the faults the team office has had. It is not part of the npm package or of CI, and its two
-packages are not installed by the root `npm ci`.
+give, with checks for the faults the team office has had, or films it for a GIF. It is not part of the npm package or
+of CI, and its two packages are not installed by the root `npm ci`.
 
 ```sh
 npm install --prefix scripts/office-screen
@@ -22,6 +22,7 @@ node scripts/office-screen/run.mjs --home <router home> --cwd <repository> --col
   session and stops.
 - **The router home and repository** are yours to give: a test home with its daemon running (`DO_IT_ALL_CLAUDE_CODE_HOME`
   is set to it) and a repository Claude Code may open. `--plugin` defaults to `<home>/plugin`, the copy the home runs.
+  A folder Claude Code has not opened before brings its trust question, which the tool answers yes.
 
 The steps and options are listed at the top of `run.mjs`.
 
@@ -40,6 +41,28 @@ that reaches the last column, `»` on a row holding inverse text: a focus ring) 
 | `error` | a `do-it-all-claude-code: … skipped` line, a `TypeError` and the like |
 
 `raw.log` holds what Claude Code wrote, one chunk a line; `--debug` adds Claude Code's own debug log.
+
+## A GIF of the panel
+
+`record <name> [<fps>]` and `stop` film the screen between them: every cell with its character, colours, bold, dim
+and the rest, a few times a second, a frame kept whenever the screen changed, in `<out>/<name>.frames.json`.
+`gif.py` draws such a film as a GIF:
+
+```sh
+node scripts/office-screen/run.mjs --home <router home> --cwd <repository> --cols 200 --rows 50 \
+  "office demo; wait 2; record office; wait 3; click 145 12; wait 2; stop; quit"
+python scripts/office-screen/gif.py <out>/office.frames.json -o office.gif --png 0,3 --text office.txt
+```
+
+- **Needs Python 3 and Pillow** (`pip install pillow`); npm installs neither.
+- Block elements and box lines are drawn as rectangles and lines, so they meet cell to cell as a terminal draws them;
+  other characters come from Cascadia Mono, else Consolas, and the marks those lack from Segoe UI Symbol. The colours
+  are the ones the film recorded; the terminal's own two and its palette are Windows Terminal's default dark scheme.
+- `--crop pane` (the default) keeps the plugin pane right of the chat, which leaves out Claude Code's own banner with
+  your account and folder. The film holds the whole screen and stays in `<out>`. `--text` writes the text of every
+  frame the GIF shows, to read for anything that must not be in it.
+- Frames that look the same are one. The other options (`--fps`, `--from`, `--to`, `--speed`, `--hold`,
+  `--font-size`, `--png`) are listed at the top of `gif.py`.
 
 ## Terminals
 

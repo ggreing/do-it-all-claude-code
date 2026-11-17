@@ -41,6 +41,9 @@
 //   move|click "<text>" [<dx> <dy>]   at the first place the screen shows that text, moved by dx, dy
 //   shot <name>                writes the screen (and the whole buffer) and the checks to <out>/NN-<name>.txt
 //   repaint <name>             ctrl+L, then compares the settled screen with the one before it: leftovers
+//   record <name> [<fps>]      films the screen from here: every cell (its character, colours, bold, dim and the
+//                              rest) <fps> times a second (default 20), a frame kept whenever the screen changed
+//   stop                       ends the film and writes <out>/<name>.frames.json, which gif.py draws into a GIF
 //   quit                       ends Claude Code (ctrl+c twice), then the run
 //
 // Example:
@@ -157,6 +160,49 @@ function cellsOf(term, y) {
   return out;
 }
 
+/**
+ * One film frame: each row of the screen a list of runs, [style, text] for cells one column wide that hold one
+ * character each, [style, text, width] for any other cell. A style is [fg, bg, flags], kept once in `film.styles`:
+ * a colour is null (the terminal's own), 0-255 (its palette) or '#rrggbb'; the flags are 1 bold, 2 dim, 4 italic,
+ * 8 underline, 16 inverse, 32 invisible, 64 strikethrough. Plain spaces at the end of a row are left out.
+ */
+function filmRows(term, film) {
+  const buf = term.buffer.active;
+  const colour = (isDefault, isPalette, v) => (isDefault ? null : isPalette ? v : `#${v.toString(16).padStart(6, '0')}`);
+  const out = [];
+  for (let y = 0; y < term.rows; y++) {
+    const line = buf.getLine(buf.viewportY + y);
+    const runs = [];
+    for (let x = 0; x < term.cols; x++) {
+      const c = line?.getCell(x);
+      const w = c ? c.getWidth() : 1;
+      if (w === 0) continue;
+      const ch = (c && c.getChars()) || ' ';
+      const st = c
+        ? [colour(c.isFgDefault(), c.isFgPalette(), c.getFgColor()), colour(c.isBgDefault(), c.isBgPalette(), c.getBgColor()),
+          (c.isBold() ? 1 : 0) | (c.isDim() ? 2 : 0) | (c.isItalic() ? 4 : 0) | (c.isUnderline() ? 8 : 0) | (c.isInverse() ? 16 : 0) | (c.isInvisible() ? 32 : 0) | (c.isStrikethrough() ? 64 : 0)]
+        : [null, null, 0];
+      const key = st.join('|');
+      let id = film.ids.get(key);
+      if (id === undefined) { id = film.styles.length; film.styles.push(st); film.ids.set(key, id); }
+      const last = runs[runs.length - 1];
+      const one = w === 1 && [...ch].length === 1;
+      if (one && last && last.length === 2 && last[0] === id) last[1] += ch;
+      else runs.push(one ? [id, ch] : [id, ch, w]);
+    }
+    while (runs.length) {
+      const last = runs[runs.length - 1];
+      const [, bg, flags] = film.styles[last[0]];
+      if (last.length !== 2 || bg !== null || flags & (8 | 16 | 64)) break;
+      const kept = last[1].replace(/ +$/, '');
+      if (kept) { last[1] = kept; break; }
+      runs.pop();
+    }
+    out.push(runs);
+  }
+  return out;
+}
+
 const TITLE = 'DO IT ALL · team office';
 const SCENE_GLYPHS = /[▀▄█▐▌▗▖▝▘▟▙▜▛]/;
 
@@ -244,6 +290,8 @@ function check(term, whole, prevGrid) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 /** The Claude Code the run started: it ends with the run, also when a step stops it. */
 let child = null;
+/** Ends a film in progress and writes it, also when a step stops the run. */
+let endFilm = () => null;
 
 const KEYS = {
   enter: '\r', esc: '\x1b', tab: '\t', space: ' ', backspace: '\x7f',
@@ -269,7 +317,8 @@ async function main() {
   child = p;
   let exited = null;
   let pending = 0;
-  p.onData(d => { pending++; raw.write(JSON.stringify(d) + '\n'); term.write(d, () => { pending--; }); });
+  let lastData = 0;
+  p.onData(d => { pending++; lastData = Date.now(); raw.write(JSON.stringify(d) + '\n'); term.write(d, () => { pending--; }); });
   p.onExit(e => { exited = e; });
   // the terminal's answers to Claude Code's queries go back to it, as a real terminal's do
   term.onData(d => { if (!exited) p.write(d); });
@@ -306,6 +355,38 @@ async function main() {
     report.shots.push({ name, file, cols: term.cols, rows: term.rows, mouse: modes.mouseTrackingMode, screen: term.buffer.active.type, findings: [...res.found, ...extra] });
     console.log(`shot ${shotN} ${name}: ${Object.keys(kinds).length ? Object.entries(kinds).map(([k, n]) => `${k} ${n}`).join(', ') : 'clean'}  (${file})`);
     return res;
+  };
+
+  // the film: the screen's cells a few times a second, a frame kept when they changed (gif.py draws it)
+  let film = null;
+  const filmTick = async () => {
+    if (!film || film.busy) return;
+    film.busy = true;
+    // a frame drawn whole: no chunk waiting for the terminal, no synchronized update open, a quiet moment after
+    // the last chunk (given up after a while: a screen that never rests is filmed as it is)
+    const until = Date.now() + 150;
+    while ((pending > 0 || term.modes.synchronizedOutputMode || Date.now() - lastData < 10) && Date.now() < until) await sleep(4);
+    const f = film;
+    if (!f) return;
+    const rowsNow = filmRows(term, f);
+    const key = `${term.cols}x${term.rows}${JSON.stringify(rowsNow)}`;
+    if (key !== f.lastKey) {
+      f.lastKey = key;
+      const size = term.cols === f.cols && term.rows === f.rows ? {} : { size: [term.cols, term.rows] };
+      f.frames.push({ t: Date.now() - f.start, ...size, rows: rowsNow });
+    }
+    f.busy = false;
+  };
+  endFilm = () => {
+    if (!film) return null;
+    const f = film;
+    film = null;
+    clearInterval(f.timer);
+    const end = Date.now() - f.start;
+    const file = path.join(out, `${f.name}.frames.json`);
+    fs.writeFileSync(file, JSON.stringify({ version: 1, cols: f.cols, rows: f.rows, fps: f.fps, end, styles: f.styles, frames: f.frames }) + '\n');
+    console.log(`film ${f.name}: ${f.frames.length} frames over ${(end / 1000).toFixed(1)} s  (${file})`);
+    return file;
   };
 
   /** Where the screen shows this text: 1-based x, y of its first cell. */
@@ -368,14 +449,19 @@ async function main() {
     throw new Error('Claude Code moved the session to its background view: the run went back, ended the session and stops here');
   };
 
-  // the first screen: wait for the prompt, answering the trust question if it comes
+  // the first screen: wait for the prompt, answering the trust question if it comes (its choice starts on "No,
+  // exit": Enter only once the mark is on the yes)
   const started = Date.now();
   let trusted = false;
   for (;;) {
     await settle(300);
     if (exited) throw new Error(`Claude Code ended at the start (code ${exited.exitCode}); see ${path.join(out, 'raw.log')}`);
     const s = text();
-    if (!trusted && /trust (the files in )?this folder|Yes, (I trust|proceed)|Quick safety check/i.test(s)) { write('\r'); trusted = true; continue; }
+    if (!trusted && /trust (the files in )?this folder|Yes, (I trust|proceed)|Quick safety check/i.test(s)) {
+      if (/❯\s*(\d\.\s*)?Yes, (I trust|proceed)/.test(s)) { write('\r'); trusted = true; }
+      else if (/❯\s*(\d\.\s*)?No\b/.test(s)) write(KEYS.down);
+      continue;
+    }
     if (/for shortcuts|\? for help|Try "|─{20,}\n.*>/.test(s) && Date.now() - started > 1500) break;
     if (Date.now() - started > 60000) { dump('start-timeout'); throw new Error('the prompt did not show within 60 s'); }
   }
@@ -463,7 +549,19 @@ async function main() {
       const stale = a.changed.filter(([y, x]) => !moving.has(`${y},${x}`) && !clock(y, x));
       const rowsHit = [...new Set(stale.map(([y]) => y + 1))];
       dump(rest || 'repaint', stale.length ? [{ kind: 'leftover', text: `${stale.length} cell(s) changed with a full repaint and then held still, in rows ${rowsHit.slice(0, 20).join(', ')}` }] : []);
+    } else if (cmd === 'record') {
+      if (film) throw new Error(`record: the film "${film.name}" is still running (stop ends it)`);
+      const [name, fps] = restWords;
+      if (!name || !/^[\w.-]+$/.test(name)) throw new Error('record takes a name of letters, digits, ".", "_" and "-"');
+      const n = Number(fps ?? 20);
+      if (!(n >= 1 && n <= 50)) throw new Error('record takes 1 to 50 frames a second');
+      film = { name, fps: n, cols: term.cols, rows: term.rows, start: Date.now(), frames: [], styles: [], ids: new Map(), lastKey: '', busy: false, timer: null };
+      film.timer = setInterval(() => { void filmTick(); }, 1000 / n);
+      await filmTick();
+    } else if (cmd === 'stop') {
+      if (!endFilm()) throw new Error('stop: no film is running');
     } else if (cmd === 'quit') {
+      endFilm();
       write('\x03'); await sleep(300); write('\x03');
       const until = Date.now() + 5000;
       while (!exited && Date.now() < until) await sleep(100);
@@ -471,6 +569,7 @@ async function main() {
     } else throw new Error(`unknown step "${step}"`);
   }
 
+  endFilm();
   if (!exited && BACKGROUND.test(text())) await leaveBackground();
   if (!exited) { try { p.kill(); } catch { /* gone */ } }
   await sleep(200);
@@ -481,6 +580,7 @@ async function main() {
 
 main().then(() => process.exit(0), async err => {
   console.error(`office-screen: ${err.message}`);
+  try { endFilm(); } catch { /* the film is lost */ }
   // ended as a person ends it (ctrl+c twice), so its next start does not take this one for a failed start
   try { child?.write(''); await sleep(300); child?.write(''); await sleep(1500); } catch { /* gone */ }
   try { child?.kill(); } catch { /* gone */ }

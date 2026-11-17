@@ -1,5 +1,10 @@
 # Do It All Claude Code
 
+[![CI](https://github.com/ggreing/do-it-all-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/ggreing/do-it-all-claude-code/actions/workflows/ci.yml)
+![Claude Code 2.1.325+](https://img.shields.io/badge/Claude%20Code-2.1.325%2B-d97757)
+![Node 24+](https://img.shields.io/badge/Node-24%2B-339933)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
 Claude Code를 Opus나 Sonnet으로 쓰면 메인 세션이 거의 모든 일을 직접 합니다. 훨씬 싼 모델도 충분히
@@ -7,11 +12,9 @@ Claude Code를 Opus나 Sonnet으로 쓰면 메인 세션이 거의 모든 일을
 요청이 들어올 때마다 메인 세션이 그냥 처리할지, 아니면 싼 모델로 도는 서브에이전트 몇 개에게 일을
 맡기고 메인 세션은 계획과 확인만 할지를 정합니다.
 
-마지막으로 확인했을 때, Sonnet 메인 세션에서 배포 상태 그대로 라우터를 켜 두니 통과한 작업 하나에 드는
-비용이 그냥 Claude Code를 쓸 때보다 33% 적었고, 통과한 과제도 똑같았습니다. 대부분은 메인 세션이 Haiku
-코더 한 명에게 수정을 넘기는 식이었습니다. 대신 느려집니다. 일을 넘길 때마다 작업자를 새로 띄워야 하고,
-큰 과제에서는 팀이 메인 세션 혼자 할 때보다 눈에 띄게 오래 걸렸습니다. 수치와 측정 방법은
-[docs/measurements](docs/measurements/)에 있습니다.
+측정 결과와 측정 방법은 [docs/measurements](docs/measurements/)에 있습니다.
+
+<p align="center"><img src="docs/media/team-office.gif" alt="Claude Code 안의 팀 사무실: 요청을 맡은 팀이 책상에 앉아 있고, 고른 구성원의 세션이 아래에 보입니다" width="720"></p>
 
 CLI와 패키지 이름은 `do-it-all-claude-code`입니다.
 
@@ -159,6 +162,10 @@ Claude Code에서 `/office`를 입력하면 대화 옆에 팀이 일하는 모�
 글자 입력창이 없습니다. 패널에서 바꿀 수 있는 설정은 Enter로 값을 바꾸고, 확인한 뒤에만 기록합니다. 글자를
 입력해야 하는 값은 그 값을 바꾸는 CLI 명령과 함께 보여 줍니다.
 
+<p align="center"><img src="docs/media/office-tabs.gif" alt="사무실 탭: 작업, 절약, 팀, 설정" width="720"></p>
+
+*탭 화면의 숫자는 예시 데이터입니다(측정값이 아님).*
+
 | 탭 | 첫 줄이 답하는 것 | 그 아래 |
 |---|---|---|
 | 사무실 | 팀에 누가 있고 각자 무엇을 하는지 | 책상에 앉은 팀원마다 모델과 노력 수준, 고른 팀원의 세션(Claude Code가 그리는 방식 그대로) |
@@ -206,7 +213,7 @@ Code 2.1.325 이상이 필요합니다. 0.5.0 이전 버전에 있던 브라우�
 | '여유 있음' 판정이 이어지면 | 작업자가 한 단계 내려감 | 작업자가 한 단계 내려감 | 그대로 둠 |
 | 요청 하나의 예산 | 기본값의 0.6배 | 기본값 | 기본값의 1.5배 |
 
-측정한 것은 `balanced`뿐입니다. 이 문서 맨 위의 33%가 그 성향의 결과입니다. `save`와 `quality`는 같은
+측정한 것은 `balanced`뿐입니다([docs/measurements](docs/measurements/)). `save`와 `quality`는 같은
 설정을 한쪽으로 옮긴 것이고 아직 측정 전이라, 비용이나 통과율이 어떻게 달라지는지는 모릅니다.
 
 바꾸려면 팀 사무실의 설정 탭에서 값으로 가서 Enter로 선택지를 넘기세요. `a` 다음 `y`를 누르면 바꾼 내용이

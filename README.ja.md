@@ -1,5 +1,10 @@
 # Do It All Claude Code
 
+[![CI](https://github.com/ggreing/do-it-all-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/ggreing/do-it-all-claude-code/actions/workflows/ci.yml)
+![Claude Code 2.1.325+](https://img.shields.io/badge/Claude%20Code-2.1.325%2B-d97757)
+![Node 24+](https://img.shields.io/badge/Node-24%2B-339933)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
 Claude Code を Opus や Sonnet で動かすと、メインセッションがほとんどの作業を自分でこなします。ずっと
@@ -7,11 +12,9 @@ Claude Code を Opus や Sonnet で動かすと、メインセッションがほ
 プラグインと小さなローカルデーモンです。リクエストごとに、メインセッションがそのまま処理するか、安い
 モデルで動くサブエージェント数体に作業を渡してメインセッションは計画と確認に回るかを決めます。
 
-最後に確かめたときは、Sonnet のメインセッションでルーターを配布状態のまま有効にしておくと、通過した
-タスク 1 件あたりのコストが、素の Claude Code より 33% 少なくなり、通過したタスクも同じでした。多くは
-メインセッションが Haiku のコーダー 1 体に修正を渡す形でした。その代わり遅くなります。渡すたびにワーカー
-を新しく起動する必要があり、大きいタスクではチームのほうがメインセッション 1 つより目に見えて時間が
-かかりました。数値と測り方は [docs/measurements](docs/measurements/) にあります。
+測定結果と測り方は [docs/measurements](docs/measurements/) にあります。
+
+<p align="center"><img src="docs/media/team-office.gif" alt="Claude Code の中のチームオフィス: リクエストを受け持つチームが机に向かい、選んだメンバーのセッションが下に表示されます" width="720"></p>
 
 CLI とパッケージの名前は `do-it-all-claude-code` です。
 
@@ -166,6 +169,10 @@ Claude Code で `/office` と入力すると、チャットの横にチームの
 （`config set officeAutoOpen off` で止められます）。パネルに文字の入力欄はありません。パネルで変えられる設定は Enter で値を切り替え、確認
 してから書き込みます。文字の入力が必要な値は、それを変える CLI コマンドと一緒に表示します。
 
+<p align="center"><img src="docs/media/office-tabs.gif" alt="オフィスのタブ: Work、Savings、Team、Settings" width="720"></p>
+
+*タブの数値はサンプルデータです（測定値ではありません）。*
+
 | タブ | 最初の行が答えること | その下 |
 |---|---|---|
 | オフィス | チームに誰がいて、それぞれ何をしているか | 机についたメンバーごとのモデルと努力レベル、選んだメンバーのセッション（Claude Code 自身の描き方のまま） |
@@ -216,7 +223,7 @@ Claude Code で `/office` と入力すると、チャットの横にチームの
 | 「余裕あり」の判定が続いたとき | ワーカーが 1 段下がる | ワーカーが 1 段下がる | そのまま |
 | リクエスト 1 件の予算 | 既定値の 0.6 倍 | 既定値 | 既定値の 1.5 倍 |
 
-測定したのは `balanced` だけです。このページ冒頭の 33% はそのプロファイルの結果です。`save` と `quality`
+測定したのは `balanced` だけです（[docs/measurements](docs/measurements/)）。`save` と `quality`
 は同じ設定をどちらかへ動かしたもので、まだ測定していません。コストや合格率がどう変わるかは分かっていません。
 
 変えるには、チームオフィスの設定タブで値に移動し、Enter で選択肢を順に切り替えます。`a` に続けて `y` を
