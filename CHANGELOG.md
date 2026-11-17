@@ -30,7 +30,9 @@ All notable changes to this project are documented here. This project adheres to
   `/plugin install do-it-all-claude-code@do-it-all`, then run `/do-it-all-setup`. After setup the daemon starts
   itself when a Claude Code session starts (`autoStart`, on by default; `config set autoStart off` turns it
   off), launched detached with a minimal environment that does not inherit your credentials. `uninstall` undoes
-  it, including the engine copy and auto-start.
+  it, including the engine copy and auto-start. When the router is not reachable, a team worker is refused at the
+  moment the lead tries to spawn it — rather than after it has started and spent tokens only to be blocked at its
+  first write — with a message to make the change yourself or run `do-it-all-claude-code start`.
 - **Project worktree isolation, asked when first used.** Whether a project runs subagents in parallel git
   worktrees is asked the first time the team is used there — the lead asks you once — instead of at install.
   `do-it-all-claude-code project enable|disable|status` sets or shows it; the choice is kept in the router home
@@ -44,6 +46,15 @@ All notable changes to this project are documented here. This project adheres to
   until the last of them stops: a test run in between would judge the other's half-made changes. A pass of
   that last verify covers the held writers; when it fails, the lead is told whose changes it also saw. A
   writer in a work tree of its own is verified as before.
+- **A background worker's verify result reaches the lead.** In an interactive session Claude Code runs
+  workers in the background: the worker's report arrives first, as a message of its own, and the notification
+  that follows raises no hook while the lead's turn is running. The report was taken for a new request, and
+  the verify result never arrived, so the lead ran the tests again. Now the report belongs to the request it
+  came from, and the result line waits for the lead's next step, whichever it is: a prompt, an Agent or
+  router tool call, its own Bash, Read or edit call, or the end of its turn (which then goes on once). It is
+  told once. While the router is still checking, the lead is told to wait instead of running the checks. The
+  waiting line is kept in `lead-notes/` in the router's home until it is read: the result line only, never a
+  prompt or a report.
 
 - **Small requests stay with the lead.** When the router cannot tell a request's size from its wording, it asks
   the lead to check first whether the change is in one file and about 15 changed lines or fewer. If so, the

@@ -49,19 +49,27 @@ function session(d: TestDaemon, sid: string, cwd: string) {
   });
   const start = (id: string, role = 'coder'): HookInput => ({ hook_event_name: 'SubagentStart', agent_id: id, agent_type: `do-it-all-claude-code:${role}` });
   const stop = (id: string, role = 'coder'): HookInput => ({ hook_event_name: 'SubagentStop', agent_id: id, agent_type: `do-it-all-claude-code:${role}`, stop_hook_active: false });
-  /** Dispatches a subtask and lets it finish with a passing verify. */
-  const pass = async (tag: string, agent: string, model = 'haiku', effort = 'low', role = 'coder'): Promise<void> => {
-    assert.deepEqual(await post(call(tag, role, model, effort)), {}, `dispatch ${tag}`);
+  /** Dispatches a subtask and lets it finish with a passing verify; the lead has not been told the result yet (a background run). */
+  const run = async (tag: string, agent: string, model = 'haiku', effort = 'low', role = 'coder'): Promise<HookInput> => {
+    const c = call(tag, role, model, effort);
+    assert.deepEqual(await post(c), {}, `dispatch ${tag}`);
     await post(start(agent, role));
     if (role === 'coder' || role === 'ui-designer') write(cwd, `src/${tag}-${agent}.ts`, `${tag}\n`);   // a writer that did its work (decision 145)
     assert.deepEqual(await post(stop(agent, role)), {});
+    return c;
+  };
+  /** The same, and the Agent call returns (a foreground run): the lead reads the result line next to it. */
+  const pass = async (tag: string, agent: string, model = 'haiku', effort = 'low', role = 'coder'): Promise<void> => {
+    const c = await run(tag, agent, model, effort, role);
+    const done = await post({ ...c, hook_event_name: 'PostToolUse', tool_response: { status: 'completed', agentId: agent } });
+    assert.match(done.hookSpecificOutput?.additionalContext ?? '', new RegExp(`subtask ${tag} \\(${role} `), `result of ${tag}`);
   };
   /** The lead asks the user (marker at the end of its turn) and the user answers. */
   const userTurn = async (): Promise<void> => {
     await post({ hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: `May I? ${AWAITING_USER_MARKER}` });
     await post({ hook_event_name: 'UserPromptSubmit', prompt: 'yes, go ahead' });
   };
-  return { post, raw, tool, call, start, stop, pass, userTurn };
+  return { post, raw, tool, call, start, stop, run, pass, userTurn };
 }
 const denied = (o: Out) => (o.hookSpecificOutput?.permissionDecision === 'deny' ? o.hookSpecificOutput.permissionDecisionReason ?? '' : '');
 const slots = (d: TestDaemon) => rows(d, 'SELECT role, slot, step, up_count, fail_streak, lead_raises FROM slots ORDER BY role, slot');
@@ -438,7 +446,10 @@ test('router_request_scope: a protected path is granted after a user turn and st
   assert.deepEqual(await s.post(s.stop('a1')), {});
   assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'passed', verdict: 'meet' }]);
   // a new attempt of the same id keeps the grant; its ordinary scope comes from the new [scope: ...] line
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'haiku', 'low', 'app/**')), {});
+  // (the first attempt's result line, which the lead has not read yet, comes next to this call and decides nothing)
+  const next = await s.post(s.call('A', 'coder', 'haiku', 'low', 'app/**'));
+  assert.equal(next.hookSpecificOutput?.permissionDecision, undefined);
+  assert.match(next.hookSpecificOutput?.additionalContext ?? '', /subtask A \(coder .*verify passed/);
   const scopeFile = path.join(d.home, 'scopes', fs.readdirSync(path.join(d.home, 'scopes')).find(f => !f.includes('U'))!);
   assert.deepEqual([read(scopeFile).allowed, read(scopeFile).protectedGranted], [['app/**'], ['.env.example']]);
   // a grant can be taken back
@@ -539,7 +550,7 @@ for (const [count, expect] of [
     fs.writeFileSync(script, `console.log('\u2139 pass ${count}'); console.log('\u2139 fail 0');\n`);
     const s = session(d, `counts-${count}`, repo);
     await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
-    await s.pass('A', `ag-${count}`);
+    await s.run('A', `ag-${count}`);
     const note = await s.post({ hook_event_name: 'UserPromptSubmit', prompt: `<task-notification>\n<task-id>ag-${count}</task-id>\n<status>completed</status>\n<result>done</result>\n</task-notification>` });
     assert.match(note.hookSpecificOutput?.additionalContext ?? '', expect);
   }, { verify: { resolveCommands: async () => [{ kind: 'test' as const, command: `node "${script}"` }] } }));
@@ -586,9 +597,54 @@ test('decision 178: an overlapping writer is refused twice with what to do, then
 test('decision 178: a writer that ran in a worktree is named with its branch in the passed line, so the lead merges it', () => withDaemon(async (d, repo) => {
   const s = session(d, 'wt', repo);
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
-  await s.pass('A', 'ag-w');
-  await s.post({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] work' },
+  await s.run('A', 'ag-w');
+  // the Agent call returns with the branch: the result line comes next to it, once
+  const note = await s.post({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] work' },
     tool_response: { status: 'completed', agentId: 'ag-w', worktreeBranch: 'worktree-agent-ag-w', worktreePath: path.join(repo, '.claude', 'worktrees', 'ag-w') } });
-  const note = await s.post({ hook_event_name: 'UserPromptSubmit', prompt: '<task-notification>\n<task-id>ag-w</task-id>\n<status>completed</status>\n<result>done</result>\n</task-notification>' });
   assert.match(note.hookSpecificOutput?.additionalContext ?? '', /verify passed — .*\(\d+ file\(s\), worktree, branch worktree-agent-ag-w: merge it\)|\(worktree, branch worktree-agent-ag-w: merge it\)/);
+  const again = await s.post({ hook_event_name: 'UserPromptSubmit', prompt: '<task-notification>\n<task-id>ag-w</task-id>\n<status>completed</status>\n<result>done</result>\n</task-notification>' });
+  assert.equal(again.hookSpecificOutput?.additionalContext, undefined, 'the lead has read it: not repeated with the notification');
+}));
+
+// ------------------------------------------------------------------ router_project_isolation (decision 192, Q3)
+
+test('router_project_isolation: enable needs the user, applies with userConfirmed, and names the files', () => withDaemon(async (d, repo) => {
+  const s = session(d, 's-iso', repo);
+  const settings = path.join(repo, '.claude', 'settings.local.json');
+
+  // enable without confirmation -> needs_user, nothing written
+  const r1 = await s.tool('router_project_isolation', { enable: true }) as ToolOut;
+  assert.equal(r1.ok, false);
+  assert.equal(r1.code, 'needs_user');
+  assert.equal(fs.existsSync(settings), false, 'no project file written before confirmation');
+
+  // enable with confirmation -> applies, names changed files, records on
+  const r2 = await s.tool('router_project_isolation', { enable: true, userConfirmed: true });
+  assert.equal(r2.ok, true, r2.message);
+  assert.equal(r2.result!.worktree, 'on');
+  assert.ok((r2.result!.changed as string[]).some(f => f.includes('settings.local.json')), 'changed names the settings file');
+  assert.match(String(r2.result!.note), /applies to subtasks dispatched from now on/);
+  assert.equal(JSON.parse(fs.readFileSync(settings, 'utf8')).worktree.baseRef, 'head');
+
+  // disable that WOULD remove project files also needs the user
+  const r3 = await s.tool('router_project_isolation', { enable: false });
+  assert.equal(r3.code, 'needs_user');
+
+  // disable with confirmation -> applies, records off
+  const r4 = await s.tool('router_project_isolation', { enable: false, userConfirmed: true });
+  assert.equal(r4.ok, true, r4.message);
+  assert.equal(r4.result!.worktree, 'off');
+  assert.equal('worktree' in JSON.parse(fs.readFileSync(settings, 'utf8')), false, 'worktree.baseRef removed');
+
+  // disable again (home-state only, no project files change) -> applies directly, no confirmation
+  const r5 = await s.tool('router_project_isolation', { enable: false });
+  assert.equal(r5.ok, true, r5.message);
+  assert.equal(r5.result!.worktree, 'off');
+}));
+
+test('router_project_isolation: a session outside a git repo is refused (not_allowed)', () => withDaemon(async (d) => {
+  const s = session(d, 's-nogit', d.home);   // d.home is not inside a git repo
+  const r = await s.tool('router_project_isolation', { enable: true, userConfirmed: true });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'not_allowed');
 }));

@@ -18,7 +18,7 @@ export const ROUTER_MCP_SERVER = 'router';
 export const ROUTER_TOOL_PREFIX = `mcp__plugin_${ROUTER_PLUGIN_NAME}_${ROUTER_MCP_SERVER}__`;
 
 export const ROUTER_TOOL_NAMES = [
-  'router_get_plan', 'router_report_triage', 'router_report_result', 'router_request_escalation', 'router_request_scope',
+  'router_get_plan', 'router_report_triage', 'router_report_result', 'router_request_escalation', 'router_request_scope', 'router_project_isolation',
 ] as const;
 export type RouterToolName = typeof ROUTER_TOOL_NAMES[number];
 
@@ -126,11 +126,16 @@ export const RequestScopeInput = z.strictObject({
   if (!v.add && !v.remove) ctx.addIssue({ code: 'custom', path: ['add'], message: 'give add, remove or both' });
 });
 
+/** decision 192 (Q3): turn git-worktree isolation on or off for the current session's project. Turning it ON
+ *  needs the user's agreement first: the lead asks, then calls again with userConfirmed true (as escalation/scope). */
+export const ProjectIsolationInput = z.strictObject({ enable: z.boolean(), userConfirmed: z.boolean().optional() });
+
 export type GetPlanInput = z.infer<typeof GetPlanInput>;
 export type ReportTriageInput = z.infer<typeof ReportTriageInput>;
 export type ReportResultInput = z.infer<typeof ReportResultInput>;
 export type RequestEscalationInput = z.infer<typeof RequestEscalationInput>;
 export type RequestScopeInput = z.infer<typeof RequestScopeInput>;
+export type ProjectIsolationInput = z.infer<typeof ProjectIsolationInput>;
 
 export interface RouterToolInputs {
   router_get_plan: GetPlanInput;
@@ -138,6 +143,7 @@ export interface RouterToolInputs {
   router_report_result: ReportResultInput;
   router_request_escalation: RequestEscalationInput;
   router_request_scope: RequestScopeInput;
+  router_project_isolation: ProjectIsolationInput;
 }
 
 // ------------------------------------------------------------------ the tool list
@@ -164,6 +170,10 @@ export const ROUTER_TOOLS: readonly RouterToolDef[] = [
   {
     name: 'router_request_scope', input: RequestScopeInput,
     description: 'Do It All Claude Code, lead only. Changes the paths a pending or running subtask may edit: add or remove repo-relative globs. For a finished subtask, dispatch it again with a new [scope: ...] line instead. Adding a protected path (.env files, CI config, .claude/) answers needs_user: ask the user, then call again with userConfirmed true.',
+  },
+  {
+    name: 'router_project_isolation', input: ProjectIsolationInput,
+    description: 'Do It All Claude Code, lead only. Turns git-worktree isolation on or off for THIS project after the user agrees (enable: true/false). On, subagents work in parallel, each in its own git worktree; off, the team shares one checkout and overlapping edits take turns. Writes worktree.baseRef in .claude/settings.local.json and a ".claude/worktrees/" line in .gitignore, and records the choice; the answer names the files changed. Applies from the next subtask dispatched; running subtasks keep their worktree. Use this instead of asking the user to run a terminal command.',
   },
 ];
 

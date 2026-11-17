@@ -65,19 +65,26 @@ test('audit N1: the relay masks a parsed value exactly as core redactJson does',
   assert.equal(relay.redact('x'.repeat(1_000_005)), redact('x'.repeat(1_000_005)), 'the same length bound');
 });
 
-test('audit N1: with the daemon down an Agent result is spooled as valid JSON, replayed, and the request record survives', async () => {
+test('audit N1: a worker result spooled when the daemon drops mid-run is valid JSON, replayed, and masked', async () => {
   const relay = await loadRelay();
-  const home = makeHome({ daemonPort: await closedPort(), recordPrompts: true });
+  const home = makeHome({ recordPrompts: true });
   const repo = makeRepo({ 'src/a.ts': 'a\n' });
   const out: string[] = [];
   const hook = async (o: HookInput) => {
     await relay.relay(JSON.stringify({ session_id: 'n1', cwd: repo, transcript_path: path.join(home, 'n1.jsonl'), ...o }), { home, write: s => { out.push(s); } });
     await pause();
   };
+  // Phase 1 — the daemon is up: the lead dispatches the worker and it starts. The call reaches the live daemon, so
+  // it is NOT refused (that only happens while the router is unreachable), and the subtask is created.
+  const d1 = await startTestDaemon({ home, verify: { resolveCommands: async () => [] } });
+  const cfgFile = path.join(home, 'config.json');
+  { const c = JSON.parse(fs.readFileSync(cfgFile, 'utf8')) as Rec; c.daemonPort = d1.port; fs.writeFileSync(cfgFile, JSON.stringify(c)); }
   await hook({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT, prompt_id: 'p-1' });
   await hook({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_1',
     tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] add the audit log\n[scope: src/**]\nThe spec.', model: 'haiku', effort: 'low' } });
   await hook({ hook_event_name: 'SubagentStart', agent_id: 'a1', agent_type: 'do-it-all-claude-code:coder' });
+  await d1.close();   // the daemon drops mid-run
+  // Phase 2 — the daemon is down: the worker's result and the rest spool (masked), and the hooks pass.
   await hook({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_use_id: 'toolu_1', tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] add the audit log' },
     tool_response: { status: 'async_launched', agentId: 'a1', isAsync: true, content: [{ type: 'text', text: TRICKY }] } });
   fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'audited\n');
@@ -85,24 +92,24 @@ test('audit N1: with the daemon down an Agent result is spooled as valid JSON, r
   await hook({ hook_event_name: 'UserPromptSubmit', prompt_id: 'p-2',
     prompt: `<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<result>${TRICKY}</result>\n</task-notification>` });
   await hook({ hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: `Done. ${TRICKY}` });
-  assert.equal(out.length, 7);
   const spoolDir = path.join(home, 'spool');
   const files = fs.readdirSync(spoolDir).sort();
-  assert.equal(files.length, 7);
+  assert.equal(files.length, 4, 'the four events while the daemon was down spooled');
   for (const f of files) {
     const text = fs.readFileSync(path.join(spoolDir, f), 'utf8');
     assert.ok(!text.includes(KEY) && !text.includes(PLAIN), f);
     assert.doesNotThrow(() => JSON.parse(text), `${f} is one valid JSON record`);
   }
-  const d = await startTestDaemon({ home, verify: { resolveCommands: async () => [] } });
+  // Phase 3 — on restart the daemon replays the spool and the request record survives with its subtask.
+  const d2 = await startTestDaemon({ home, verify: { resolveCommands: async () => [] } });
   try {
-    assert.equal(d.replay.events, 7);
-    await d.router.drain();
-    for (const r of rows(d, 'SELECT id, payload FROM events')) assert.doesNotThrow(() => JSON.parse(String(r.payload)), `event ${String(r.id)}`);
-    const recs = rows(d, "SELECT record FROM request_records WHERE session_id = 'n1'");
+    assert.equal(d2.replay.events, 4);
+    await d2.router.drain();
+    for (const r of rows(d2, 'SELECT id, payload FROM events')) assert.doesNotThrow(() => JSON.parse(String(r.payload)), `event ${String(r.id)}`);
+    const recs = rows(d2, "SELECT record FROM request_records WHERE session_id = 'n1'");
     assert.equal(recs.length, 1, 'the request closed and its record was written');
     assert.equal((JSON.parse(String(recs[0]!.record)) as Rec).subtasks.length, 1);
-  } finally { await d.close(); }
+  } finally { await d2.close(); }
   const db = onDisk(homeLayout(home).db);
   assert.ok(!db.includes(KEY) && !db.includes(PLAIN), 'no secret anywhere in the ledger file');
   rmrf(home); rmrf(repo);

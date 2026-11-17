@@ -2,9 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
 import {
-  CLASSIC_GLYPHS, DAEMON_DOWN, GLYPHS, LEAD, OFFICE_MIN_CLAUDE, ROLE_NAME, SLACK, TABS, callRow, checksLine, compileSecrets, elapsed, fit,
+  CLASSIC_GLYPHS, DAEMON_DOWN, GLYPHS, LEAD, MIN_SESSION_ROWS, OFFICE_MIN_CLAUDE, ROLE_NAME, SLACK, TABS, callRow, checksLine, compileSecrets, elapsed, fit,
   fromAgentStatus, homeCandidates, isTab, joinPath, nextPeriod, labelFor, modelName, officeLayout, officeSwitch, oneLine, parseHelperLine,
-  requestLine, resultRow, roleOf, statusWord, stepLine, subtaskOf, tabLabelsFit, tagOf, takeLines, textRow, unicodeTerminal, versionAtLeast,
+  requestLine, resultRow, roleOf, routerLine, statusWord, stepLine, subtaskOf, tabLabelsFit, tagOf, takeLines, textRow, unicodeTerminal, versionAtLeast,
   wantedRoom, withRow,
   type DaemonOffice, type Glyphs, type OfficeAgent, type OfficeRole, type OfficeRow, type OfficeSettings, type OfficeStatus, type SettingValue,
 } from './model'
@@ -66,6 +66,8 @@ let closedByPerson = false
 let ringKey = ''
 /** A tab just switched to whose first element is not drawn yet: the ring goes there when its data comes. */
 let wantFocus: OfficeTab | null = null
+/** The office's layout step drawn last, per surface (model.ts: officeLayout's `prev`). */
+const layoutStep: Partial<Record<string, number>> = {}
 /** config.json's officeAutoOpen: off keeps the pane from opening by itself at a request's first worker. */
 let autoOpen = true
 let lastDaemon = ''
@@ -589,13 +591,16 @@ async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderE
     for (let k = mine.length - 1; k >= 0; k--) if (mine[k]!.kind === 'tool') return mine[k]!.text
     return ''
   }
-  const daemonLine = dstate.reach === 'ok' ? requestLine(view)
+  // one line about the router in every state, so a person can tell it answers before any request comes
+  const daemonLine = dstate.reach === 'ok' ? routerLine(view)
     : dstate.reach === 'refused' ? 'the router refused the call — run do-it-all-claude-code doctor'
     : dstate.reach === 'setup' ? 'the router is not set up — run do-it-all-claude-code init' : DAEMON_DOWN
   // The pane stays within the rows Claude Code gives it, and every frame stops SLACK columns short of its right
   // edge: a frame taller than the room cannot be redrawn in place, and a line that reaches the terminal's last
   // column is the first a narrower window wraps. Desks when they fit, else a line a member (model.ts: officeLayout).
-  const layout = officeLayout({ columns: room.columns, rows: room.rows, members: list.length, routerLine: Boolean(daemonLine), classic: !Client })
+  // from the step drawn last on this surface, so a dialog under the chat that opens and closes does not flip it
+  const layout = officeLayout({ columns: room.columns, rows: room.rows, members: list.length, routerLine: Boolean(daemonLine), classic: !Client, prev: layoutStep[e.surface] })
+  layoutStep[e.surface] = layout.step
   const summary = list.length ? `${list.length} member${list.length === 1 ? '' : 's'} · ${working} working` : ''
   const doing = (a: OfficeAgent) => (a.status === 'working' ? lastTool(a.id) : '')
   const pick = (id: string) => { void update($, selected, cur => (cur === id ? '' : id)).catch(() => undefined) }
@@ -626,17 +631,41 @@ async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderE
     )
   }
 
+  // the cramped layout draws the first members at desks and the rest on one line under them
+  const atDesks = list.slice(0, layout.shown)
+  const rest = list.slice(layout.shown)
   const scene = {
-    agents: list.map(a => ({ id: a.id, role: a.role, label: a.label, model: a.model, effort: a.effort ?? '', status: a.status, time: elapsed(a, now), doing: doing(a) })),
+    agents: atDesks.map(a => ({ id: a.id, role: a.role, label: a.label, model: a.model, effort: a.effort ?? '', status: a.status, time: elapsed(a, now), doing: doing(a) })),
     selected: sel,
     summary,
     compact: !layout.wall,
     perRow: layout.perRow,
     small: layout.small,
     narrow: layout.narrow,
+    bare: layout.bare,
+    more: rest.map(a => a.id),
+  }
+  // "+1: reviewer · Sonnet medium · ○ waiting", or "+3: reviewer, tester, designer": each name a press that picks it
+  // (1–9 reach them too, once a click has given the scene the keys); names that do not fit are left out
+  const restLine = (): RenderElement | null => {
+    if (!rest.length) return null
+    const lead = `+${rest.length}: `
+    let left = layout.inner - lead.length
+    const parts: RenderElement[] = []
+    rest.forEach((a, i) => {
+      const name = `${a.id === sel ? g.picked : ''}${a.label}`
+      const text = rest.length === 1 ? fit(`${name} · ${a.model}${a.effort ? ` ${a.effort}` : ''} · ${statusWord(a.status, g)}`, left) : name
+      const cost = [...text].length + (i ? 2 : 0)
+      if (left <= 0 || (rest.length > 1 && cost > left)) { left = 0; return }
+      if (i) parts.push(<Text key={`more-sep-${i}`} dimColor>, </Text>)
+      parts.push(<Button key={`more-${a.id}`} plain onPress={() => pick(a.id)}><Text bold color={ROLE_COLOR[a.role]}>{text}</Text></Button>)
+      left -= cost
+    })
+    if (parts.length < rest.length * 2 - 1 && rest.length > 1) parts.push(<Text key="more-cut" dimColor>…</Text>)
+    return <Box key="office-rest" flexDirection="row" width={layout.inner}><Text dimColor>{lead}</Text>{parts}</Box>
   }
   const office = layout.mode === 'desks' && Client
-    ? <Client key="office-scene" module="./scene.tsx" props={scene} width={layout.inner} />
+    ? <Box key="office-desks" flexDirection="column"><Client key="office-scene" module="./scene.tsx" props={scene} width={layout.inner} />{restLine()}</Box>
     : (
       <Box key="office-list" flexDirection="column">
         <Text key="office-title" wrap="truncate-end"><Text bold>DO IT ALL · team office</Text><Text dimColor>{summary ? `  ${summary}` : ''}</Text></Text>
@@ -672,9 +701,17 @@ async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderE
       <Box key="office-frame" flexDirection="column" borderStyle={g.border} borderColor="inactive" paddingX={1} width={layout.width}>
         {office}
       </Box>
+      {layout.sessionRows === 0 ? null : (
       <Box key="session-frame" flexDirection="column" borderStyle={g.border} borderColor={target ? ROLE_COLOR[target.role] : 'inactive'} borderDimColor={!target} paddingX={1} width={layout.width} height={layout.sessionRows + 2}>
         {!target
           ? <Box flexGrow={1} alignItems="center" justifyContent="center"><Text dimColor wrap="truncate-end">{hint}</Text></Box>
+          : layout.sessionRows < MIN_SESSION_ROWS
+            // a short room (a dialog under the chat has taken rows): the member's last lines only
+            ? (
+              <Box flexDirection="column">
+                {session.length === 0 ? <Text dimColor wrap="truncate-end">{`${target.label}: no lines yet`}</Text> : session.slice(-layout.sessionRows).map(line)}
+              </Box>
+            )
           : (
             <Box flexDirection="column">
               <Box justifyContent="space-between">
@@ -690,6 +727,7 @@ async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderE
             </Box>
           )}
       </Box>
+      )}
     </Box>
   )
 }

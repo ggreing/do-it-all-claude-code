@@ -194,6 +194,8 @@ export type DaemonOffice = {
   costUsd: number; costEstimated: boolean; costUnknown: boolean; sessionCostUsd: number;
   routing?: unknown;
   limits: null | { fiveHour: LimitWindow | null; sevenDay: LimitWindow | null };
+  /** the session's repository, and whether its parallel writers get a work tree each (null: not asked yet) */
+  project?: { name: string; worktree: 'on' | 'off' | null } | null;
 };
 
 /** The daemon's subtask for a member: by agent id, else by tag. */
@@ -237,6 +239,23 @@ export function requestLine(view: DaemonOffice | null): string {
   if (view.limits?.fiveHour) parts.push(`5h ${Math.round(view.limits.fiveHour.usedPercentage)}%`);
   if (view.limits?.sevenDay) parts.push(`7d ${Math.round(view.limits.sevenDay.usedPercentage)}%`);
   return parts.join(' · ');
+}
+
+/**
+ * The Office tab's line while the router answers: the request's line, or, with no request yet, that the router is
+ * on, with the limits it knows. Either way "isolation off" when this project's parallel writers share one folder
+ * (`do-it-all-claude-code project disable`), so a person can tell the router is there before any request. The
+ * limits come last: a narrow dock cuts the line at its end.
+ */
+export function routerLine(view: DaemonOffice | null): string {
+  const r = view?.request;
+  const head = r ? [`${r.level}${r.leadDirect ? ' lead-direct' : ''}`, r.source, `${usd(view.costUsd)}${view.costEstimated ? '~' : ''} of ${usd(r.budgetUsd)}`] : ['router on', 'no request yet'];
+  return [
+    ...head,
+    view?.project?.worktree === 'off' ? 'isolation off' : '',
+    view?.limits?.fiveHour ? `5h ${Math.round(view.limits.fiveHour.usedPercentage)}%` : '',
+    view?.limits?.sevenDay ? `7d ${Math.round(view.limits.sevenDay.usedPercentage)}%` : '',
+  ].filter(Boolean).join(' · ');
 }
 
 export const DAEMON_DOWN = 'router daemon not reachable — run do-it-all-claude-code start';
@@ -365,45 +384,88 @@ export type OfficeLayout = {
   width: number;
   /** what a frame holds across: its width less the border and the padding */
   inner: number;
-  /** the session's lines and its two header lines (`tiny`: the session's lines that fit, maybe none) */
+  /**
+   * the session's frame holds this many rows: from 3 its two header lines and its last lines, 1 or 2 its last lines
+   * only, 0 no frame at all (`tiny`: the session's lines that fit, maybe none)
+   */
   sessionRows: number;
+  /** which of the steps it is (0 the most drawn; `tiny` the last): the next layout starts from it (`prev`) */
+  step: number;
+  /** the members drawn at desks, the first ones; the rest go on one line under the desks (`desks`, cramped) */
+  shown: number;
+  /** no title line over the desks: the cramped step gives its row to the line of the members left over */
+  bare: boolean;
 };
 
+/** Rows the office wants to spare before it climbs back to a bigger layout, so a dialog under the chat that opens and closes does not flip it. */
+export const LAYOUT_SPARE = 2;
+
+type LayoutStep = { kind: 'full' | 'small' | 'narrow' | 'list'; wall: boolean; session: number; cramped?: true };
 /**
- * The office in the room the pane has, with at least MIN_SESSION_ROWS of session below: the desks with the back
- * wall, the desks alone, small desks (a 120-column terminal's dock is about 54 across, two full desks a row),
- * narrow desks (a 120 x 30 terminal, Windows Terminal's first size, gives the dock about 25 rows), and only when
- * even those do not fit one line a member; the session takes the rest. The classic console always gets
- * the list. Rows: the tab row, the router's line, the office's frame and title line, then the desks or the list,
- * then the session's frame. Too low for that: `tiny`, the tab row, a line on making room, the members' lines, then
- * what is left of the session.
+ * From the most drawn to the least. The desks get smaller first, then the session shrinks to its last line and goes;
+ * then the narrow desks keep the rows of desks that fit, without the title line, and the members left over go on
+ * one line under them; only then the list: the members stay drawn as long as they can (the person's choice).
  */
-export function officeLayout(o: { columns: number; rows: number; members: number; routerLine: boolean; classic: boolean }): OfficeLayout {
+const LAYOUT_STEPS: readonly LayoutStep[] = [
+  { kind: 'full', wall: true, session: MIN_SESSION_ROWS }, { kind: 'full', wall: false, session: MIN_SESSION_ROWS },
+  { kind: 'small', wall: false, session: MIN_SESSION_ROWS }, { kind: 'narrow', wall: false, session: MIN_SESSION_ROWS },
+  { kind: 'narrow', wall: false, session: 1 }, { kind: 'narrow', wall: false, session: 0 },
+  { kind: 'narrow', wall: false, session: 0, cramped: true },
+  { kind: 'list', wall: false, session: MIN_SESSION_ROWS }, { kind: 'list', wall: false, session: 1 }, { kind: 'list', wall: false, session: 0 },
+];
+/** The step number of `tiny`. */
+export const TINY_STEP = LAYOUT_STEPS.length;
+
+/**
+ * The office in the room the pane has: the first of LAYOUT_STEPS that fits. Full desks with the back wall, the desks
+ * alone, small desks (a 120-column terminal's dock is about 54 across, two full desks a row), narrow desks (a 120 x 30
+ * terminal, Windows Terminal's first size, gives the dock about 25 rows), each with at least MIN_SESSION_ROWS of
+ * session below; then the narrow desks with the session's last line only, then with no session; only then one line
+ * a member, its session shrinking the same way. The session takes the rows left over. The classic console always
+ * gets the list. Rows: the tab row, the router's line, the office's frame and title line, then the desks or the list,
+ * then the session's frame (none at session 0). Too low for any: `tiny`, the tab row, a line on making room, the
+ * members' lines, then what is left of the session.
+ *
+ * `prev`, the step the office was drawn at last, keeps it from flipping: a dialog under the chat (a permission
+ * question, a list of tasks) takes rows from the pane while it is open. The office goes down a step as soon as its
+ * step no longer fits, and back up only once the bigger one fits with LAYOUT_SPARE rows to spare.
+ */
+export function officeLayout(o: { columns: number; rows: number; members: number; routerLine: boolean; classic: boolean; prev?: number }): OfficeLayout {
   const width = Math.max(20, o.columns - SLACK);
   const inner = width - 4;
-  const perRow = Math.floor((inner + 2) / DESK_W);
-  const perSmall = Math.floor((inner + 1) / SMALL_DESK_W);
-  const fixed = 1 + (o.routerLine ? 1 : 0) + 2 + 1 + 2;
+  const per = { full: Math.floor((inner + 2) / DESK_W), small: Math.floor((inner + 1) / SMALL_DESK_W), narrow: Math.floor((inner + 1) / NARROW_DESK_W), list: 1 };
+  const deskH = { full: DESK_H, small: SMALL_DESK_H, narrow: NARROW_DESK_H, list: 1 };
+  const top = 1 + (o.routerLine ? 1 : 0) + 2 + 1;
+  // cramped: the rows of narrow desks that fit under the tab row, the router's line and the frame (no title line),
+  // and, when members are left over, their line under the desks
+  const cramped = (spare: number) => {
+    const room = o.rows - spare - (top - 1);
+    const all = Math.ceil(o.members / Math.max(1, per.narrow));
+    const deskRows = all * NARROW_DESK_H <= room ? all : Math.floor((room - 1) / NARROW_DESK_H);
+    return { deskRows, shown: Math.min(o.members, deskRows * per.narrow) };
+  };
   // no members: the plant and the line saying how the desks fill
-  const desks = (wall: boolean) => fixed + (wall ? 2 : 0) + (o.members ? Math.ceil(o.members / perRow) * DESK_H : 7);
-  const small = fixed + (o.members ? Math.ceil(o.members / perSmall) * SMALL_DESK_H : 7);
-  const perNarrow = Math.floor((inner + 1) / NARROW_DESK_W);
-  const narrow = fixed + (o.members ? Math.ceil(o.members / perNarrow) * NARROW_DESK_H : 7);
-  const list = fixed + Math.max(1, o.members);
-  const room = (used: number) => Math.max(MIN_SESSION_ROWS, o.rows - used);
-  const base = { perRow: Math.max(1, perRow), width, inner, small: false, narrow: false };
-  if (!o.classic && perRow >= 1) {
-    if (desks(true) + MIN_SESSION_ROWS <= o.rows) return { ...base, mode: 'desks', wall: true, sessionRows: room(desks(true)) };
-    if (desks(false) + MIN_SESSION_ROWS <= o.rows) return { ...base, mode: 'desks', wall: false, sessionRows: room(desks(false)) };
-  }
-  if (!o.classic && perSmall >= 1 && small + MIN_SESSION_ROWS <= o.rows) {
-    return { ...base, mode: 'desks', small: true, perRow: perSmall, wall: false, sessionRows: room(small) };
-  }
-  if (!o.classic && perNarrow >= 1 && narrow + MIN_SESSION_ROWS <= o.rows) {
-    return { ...base, mode: 'desks', narrow: true, perRow: perNarrow, wall: false, sessionRows: room(narrow) };
-  }
-  if (list + MIN_SESSION_ROWS <= o.rows) return { ...base, mode: 'list', wall: false, sessionRows: room(list) };
-  return { ...base, mode: 'tiny', wall: false, inner: width, sessionRows: Math.max(0, o.rows - 2 - Math.max(1, o.members)) };
+  const body = (s: LayoutStep) => (s.kind === 'list' ? Math.max(1, o.members)
+    : (s.wall ? 2 : 0) + (o.members ? Math.ceil(o.members / per[s.kind]) * deskH[s.kind] : 7));
+  const need = (s: LayoutStep) => top + body(s) + (s.session ? s.session + 2 : 0);
+  const fits = (i: number, spare = 0) => {
+    if (i >= TINY_STEP) return true;
+    const s = LAYOUT_STEPS[i]!;
+    if (s.kind !== 'list' && (o.classic || per[s.kind] < 1)) return false;
+    if (s.cramped) return o.members > 0 && cramped(spare).deskRows >= 1;
+    return need(s) + spare <= o.rows;
+  };
+  const first = (spare: number) => { let i = 0; while (!fits(i, spare)) i++; return i; };
+  let at = first(0);
+  const prev = o.prev;
+  if (prev !== undefined && prev >= 0 && prev <= TINY_STEP && fits(prev) && at < prev) at = Math.min(prev, first(LAYOUT_SPARE));
+  const base = { perRow: Math.max(1, per.full), width, inner, small: false, narrow: false, wall: false, step: at, shown: o.members, bare: false };
+  if (at >= TINY_STEP) return { ...base, mode: 'tiny', inner: width, sessionRows: Math.max(0, o.rows - 2 - Math.max(1, o.members)) };
+  const s = LAYOUT_STEPS[at]!;
+  if (s.cramped) return { ...base, mode: 'desks', narrow: true, perRow: Math.max(1, per.narrow), sessionRows: 0, shown: cramped(0).shown, bare: true };
+  const sessionRows = s.session ? Math.max(s.session, o.rows - top - body(s) - 2) : 0;
+  if (s.kind === 'list') return { ...base, mode: 'list', sessionRows };
+  return { ...base, mode: 'desks', wall: s.wall, small: s.kind === 'small', narrow: s.kind === 'narrow', perRow: Math.max(1, per[s.kind]), sessionRows };
 }
 
 /** The rows and columns the pane asks for when it opens: room for the desks and a full session; the engine grants what it can spare. */

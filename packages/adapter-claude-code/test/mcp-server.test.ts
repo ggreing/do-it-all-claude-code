@@ -116,7 +116,7 @@ test('tools/list returns exactly the tools in tools.json', async () => {
     const tools = (r.result as { tools: Array<{ name: string }> }).tools;
     const expected = JSON.parse(fs.readFileSync(TOOLS, 'utf8')) as Array<{ name: string }>;
     assert.deepEqual(tools, expected);
-    assert.deepEqual(tools.map(t => t.name).sort(), ['router_get_plan', 'router_report_result', 'router_report_triage', 'router_request_escalation', 'router_request_scope']);
+    assert.deepEqual(tools.map(t => t.name).sort(), ['router_get_plan', 'router_project_isolation', 'router_report_result', 'router_report_triage', 'router_request_escalation', 'router_request_scope']);
   } finally { c.close(); await d.close(); }
 });
 

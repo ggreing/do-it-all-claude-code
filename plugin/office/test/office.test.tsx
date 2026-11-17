@@ -105,6 +105,25 @@ test('the helper\'s lines reach the office: the level line, and the step against
   await ui.unmount()
 })
 
+test('with the router on and no request yet, the office says so in one line, with isolation off and the limits', async ($, on) => {
+  const idle = JSON.stringify({
+    v: 1, type: 'office', reach: 'ok',
+    view: { request: null, subtasks: [], costUsd: 0, costEstimated: false, costUnknown: false, sessionCostUsd: 0,
+      limits: { fiveHour: { usedPercentage: 23.4, resetsAt: null }, sevenDay: { usedPercentage: 41, resetsAt: null } }, project: { name: 'r1', worktree: 'off' } },
+  })
+  const { clock } = engine(on, [idle])
+  await $.command.run({ command: 'office', args: 'demo' })
+  // the dock of a 120 x 30 terminal: the line takes a row, and the five members still sit at desks
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 53, scroll: { offset: 0, bodyRows: 25 } }, surface: 'terminal' })
+  await clock.advance(1500)
+  await ui.advance(1500)
+  must('router line', await ui.find({ type: 'Text', text: 'router on · no request yet · isolation off · 5h 23% · 7d 41%' }))
+  must('no down line', !(await ui.find({ type: 'Text', text: /not reachable/ })))
+  must('desks, not the list', (await ui.find({ key: 'office-scene' })) && !(await ui.find({ key: 'member-demo-a' })))
+  must('the session frame', await ui.find({ key: 'session-frame' }))
+  await ui.unmount()
+})
+
 test('without the router every tab says so in one line; the five tabs switch with their keys and restart the helper', async ($, on) => {
   const { spawned, clock } = engine(on, [JSON.stringify({ v: 1, type: 'office', reach: 'down', view: null })])
   await $.command.run({ command: 'office', args: '' })
@@ -411,18 +430,89 @@ test('in a narrow dock (a 120-column terminal) the members sit at small desks, a
   await ui.unmount()
 })
 
-test('in a room too low for the desks the office is a line a member, and a press follows that member', async ($, on) => {
+/** The ids of the members the scene draws at desks, in order. */
+function stationsOf(tree: unknown): string[] {
+  const out: string[] = []
+  const walk = (n: unknown) => {
+    if (!n || typeof n !== 'object') return
+    const e = n as { props?: { key?: string }; children?: unknown[] }
+    const k = e.props?.key
+    if (typeof k === 'string' && k.startsWith('st-')) out.push(k.slice(3))
+    for (const c of e.children ?? []) walk(c)
+  }
+  walk(tree)
+  return out
+}
+
+test('cramped (a 120 x 30 dock with a dialog open, 53 x 12): one row of desks, the rest on a line that picks them', async ($, on) => {
+  engine(on)
+  let n = 0
+  on('agent.spawn', () => ({ model: 'claude-haiku-4-5', agentId: `ag-${++n}` }))
+  await $.command.run({ command: 'office', args: 'demo' })
+  const mount = () => $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 53, scroll: { offset: 0, bodyRows: 12 } }, surface: 'terminal' })
+  // five members: four at desks, the reviewer on the line under them, with its model and status
+  let ui = await mount()
+  await ui.drawn()
+  must('four at desks', stationsOf(await ui.drawn({ in: 'office-scene' })).join(',') === 'lead,demo-s,demo-a,demo-b')
+  must('no title line', !(await ui.find({ type: 'Text', text: /team office/, in: 'office-scene' })))
+  must('the line', await ui.find({ type: 'Text', text: /^\+1: $/ }))
+  must('the reviewer on it', await ui.find({ key: 'more-demo-r', text: 'reviewer · Sonnet medium · ○ waiting' }))
+  must('no session frame', !(await ui.find({ key: 'session-frame' })))
+  // 5 picks the reviewer once a click has given the scene the keys; a press on the name picks it too
+  await ui.key({ key: '5', in: 'office-scene' })
+  await ui.advance(200)
+  must('5 picked it', await ui.find({ key: 'more-demo-r', text: /^▸reviewer/ }))
+  await ui.press({ key: 'more-demo-r' })
+  await ui.advance(200)
+  must('a press on it again lets it go', await ui.find({ key: 'more-demo-r', text: /^reviewer/ }))
+  await ui.press({ key: 'more-demo-r' })
+  await ui.advance(200)
+  must('a press picks it', await ui.find({ key: 'more-demo-r', text: /^▸reviewer/ }))
+  await ui.unmount()
+  // two more members: three on the line, their names only
+  for (const t of ['tester', 'ui-designer']) {
+    await $.agent.spawn({ tool_use_id: `t-${t}`, prompt: 'work', description: `${t} work`, subagentType: `do-it-all-claude-code:${t}`, parentModel: 'claude-sonnet-4-5', background: false, fork: false })
+  }
+  ui = await mount()
+  await ui.drawn()
+  must('still four at desks', stationsOf(await ui.drawn({ in: 'office-scene' })).length === 4)
+  must('three on the line', await ui.find({ type: 'Text', text: /^\+3: $/ }))
+  for (const id of ['demo-r', 'ag-1', 'ag-2']) must(`${id} on the line`, await ui.find({ key: `more-${id}` }))
+  must('names only', await ui.find({ key: 'more-ag-1', text: 'tester' }))
+  await ui.press({ key: 'more-ag-2' })
+  await ui.advance(200)
+  must('the designer picked', await ui.find({ key: 'more-ag-2', text: '▸designer' }))
+  await ui.unmount()
+})
+
+test('in a lower room the desks stay and the session shrinks to its last line, then goes; then a line a member', async ($, on) => {
   engine(on)
   await $.command.run({ command: 'office', args: 'demo' })
-  // inline above the prompt in a short terminal
-  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 98, scroll: { offset: 0, bodyRows: 16 } }, surface: 'terminal' })
+  const mount = (bodyRows: number) => $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 98, scroll: { offset: 0, bodyRows } }, surface: 'terminal' })
+  // inline above the prompt, 15 rows: narrow desks, and of coder A's session (the preview picks it) its last line
+  let ui = await mount(15)
+  await ui.drawn()
+  must('the scene', await ui.find({ key: 'office-scene' }))
+  must('no list', !(await ui.find({ key: 'member-demo-a' })))
+  must('the session frame', await ui.find({ key: 'session-frame' }))
+  must('its last line', await ui.find({ type: 'Text', text: /read 42 lines/ }))
+  must('no header in one row', !(await ui.find({ type: 'Text', text: /coder A · Haiku low · slugify accents/ })))
+  await ui.unmount()
+  // 12 rows: the desks without the session
+  ui = await mount(12)
+  await ui.drawn()
+  must('the scene still', await ui.find({ key: 'office-scene' }))
+  must('no session frame', !(await ui.find({ key: 'session-frame' })))
+  await ui.unmount()
+  // 10 rows: a line a member, and a press picks one
+  ui = await mount(10)
   await ui.drawn()
   must('the list', await ui.find({ key: 'member-demo-a' }))
   must('no scene', !(await ui.find({ key: 'office-scene' })))
   must('model and effort', await ui.find({ type: 'Text', text: /· Haiku low/ }))
   await ui.press({ key: 'member-demo-b' })
   await ui.advance(200)
-  must('coder B task', await ui.find({ type: 'Text', text: /CLI uses the new slugify/ }))
+  must('coder B picked', await ui.find({ key: 'member-demo-b', text: /▸ coder B/ }))
   await ui.unmount()
 })
 
@@ -435,6 +525,10 @@ test('in the classic Windows console the office is the list with marks that cons
   must('no scene', !(await ui.find({ key: 'office-scene' })))
   must('one-cell marks', await ui.find({ type: 'Text', text: /\* working/ }))
   must('no two-cell marks', !(await ui.find({ type: 'Text', text: /[●○→]/ })))
+  // a press follows that member in the session below
+  await ui.press({ key: 'member-demo-b' })
+  await ui.advance(200)
+  must('coder B task', await ui.find({ type: 'Text', text: /CLI uses the new slugify/ }))
   await ui.unmount()
 })
 

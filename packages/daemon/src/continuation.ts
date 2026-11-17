@@ -8,7 +8,8 @@
 //   - `/router level <L0-L3>` sets the level manually (see Router#routerLevel).
 //   - Any other slash command is not triaged.
 //   - A background-task notification (Claude Code delivers an async subagent's result as a prompt that
-//     starts with `<task-notification>`) is not a new request (decision after integration run 2).
+//     starts with `<task-notification>`) is not a new request (decision after integration run 2). Neither is
+//     an agent's own message to the session (`<agent-message from="...">`).
 import type { Level } from '@do-it-all-claude-code/core';
 import type { RequestStatus } from './ledger.ts';
 
@@ -18,6 +19,23 @@ const ROUTER_CMD = /^\s*\/(?:do-it-all-claude-code:)?router\s+(\S+)(?:\s+(\S+))?
 const SLASH_COMMAND = /^\s*\/[A-Za-z][\w-]*(?::[\w-]+)?(?:\s|$)/;
 
 export const TASK_NOTIFICATION = /^\s*<task-notification[\s>]/;
+
+/**
+ * A message from an agent of the same session (a background subagent handing its report back, a teammate):
+ * Claude Code submits it as a prompt that opens with `<agent-message from="<agent id>">`, sometimes after one
+ * line of its own. Not typed by the user, so never a new request (decision 205).
+ */
+export const AGENT_MESSAGE = /^\s*(?:Another Claude session sent a message:\s*)?<agent-message\s+from="([^"<>\n]{1,128})"\s*>/;
+
+/** The agent id an agent message names, or undefined when the prompt is not one. */
+export function agentMessageFrom(prompt: string): string | undefined {
+  return AGENT_MESSAGE.exec(prompt)?.[1];
+}
+
+/** True for a prompt Claude Code submitted for a background task or an agent of the session, not the user. */
+export function isNotificationPrompt(prompt: string): boolean {
+  return TASK_NOTIFICATION.test(prompt) || AGENT_MESSAGE.test(prompt);
+}
 
 export type PromptClass =
   | { kind: 'new' }
@@ -29,7 +47,7 @@ export type PromptClass =
 
 /** `notification`: the adapter's verdict (RouterEvent.promptOrigin / .notification); undefined: check the prefix. */
 export function classifyPrompt(prompt: string, latest?: { status: RequestStatus }, notification?: boolean): PromptClass {
-  if (notification ?? TASK_NOTIFICATION.test(prompt)) return { kind: 'notification' };
+  if (notification ?? isNotificationPrompt(prompt)) return { kind: 'notification' };
   const r = ROUTER_CMD.exec(prompt);
   const sub = r?.[1]?.toLowerCase();
   if (sub === 'resume') return latest ? { kind: 'resume' } : { kind: 'command' };

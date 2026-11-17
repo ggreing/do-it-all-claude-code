@@ -34,6 +34,7 @@
 //                              (no left: on an empty prompt Claude Code moves the session to its background service)
 //   key <char>                 send <text with \x1b-style escapes>
 //   office [<args>]            types /office <args> and Enter          reload: types /reload-plugins and Enter
+//   dialog help|status         types /help or /status and Enter: a dialog under the chat that changes nothing (esc closes it)
 //   resize <cols> <rows>       resizes the terminal and then the pseudo-terminal, as a terminal window does
 //   drag <cols> <rows> [<ms>]  the same through every size between, <ms> apart (default 16): a dragged window edge
 //   move <x> <y>               click <x> <y>     wheel up|down <x> <y>   (SGR mouse reports; 1-based cells)
@@ -345,8 +346,9 @@ async function main() {
     }
     return null;
   };
-  // the only commands the run sends: the office's and the plugin reload, neither of which asks the model
-  const SAFE = /^\/(office( demo| clear)?|reload-plugins)$/;
+  // the only commands the run sends: the office's, the plugin reload, and two that only show a dialog (help, status:
+  // Esc closes them, and they change no setting); none asks the model
+  const SAFE = /^\/(office( demo| clear)?|reload-plugins|help|status)$/;
   const enter = expected => {
     const t = promptText();
     const ok = t === null ? expected === undefined : expected !== undefined ? t === expected : t === '' || SAFE.test(t);
@@ -406,8 +408,8 @@ async function main() {
     } else if (cmd === 'enter' || cmd === 'ctrl+m' || cmd === 'ctrl+j') enter();
     else if (KEYS[cmd] !== undefined) write(KEYS[cmd]);
     else if (/^ctrl\+[a-z]$/.test(cmd)) write(String.fromCharCode(cmd.charCodeAt(5) - 96));
-    else if (cmd === 'office' || cmd === 'reload') {
-      const command = cmd === 'office' ? `/office${rest ? ` ${rest}` : ''}` : '/reload-plugins';
+    else if (cmd === 'office' || cmd === 'reload' || cmd === 'dialog') {
+      const command = cmd === 'office' ? `/office${rest ? ` ${rest}` : ''}` : cmd === 'dialog' ? `/${rest}` : '/reload-plugins';
       if (!SAFE.test(command)) throw new Error(`"${command}" is not one of the commands the run sends`);
       // typed into a prompt that already holds text, it would join that text
       const before = promptText();

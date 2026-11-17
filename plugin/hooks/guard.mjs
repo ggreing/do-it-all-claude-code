@@ -96,7 +96,7 @@ const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 // Router MCP tools are lead-only; a router subagent must never call them (mirror of core/tools.ts).
 export const ROUTER_TOOL_PREFIX = 'mcp__plugin_do-it-all-claude-code_router__';
 export const ROUTER_TOOL_NAMES = [
-  'router_get_plan', 'router_report_triage', 'router_report_result', 'router_request_escalation', 'router_request_scope',
+  'router_get_plan', 'router_report_triage', 'router_report_result', 'router_request_escalation', 'router_request_scope', 'router_project_isolation',
 ];
 export const isRouterToolName = (toolName) => typeof toolName === 'string' && toolName.startsWith(ROUTER_TOOL_PREFIX);
 // Protected write paths a user grant can never open (decision 129; mirror of core NEVER_GRANTABLE_WRITE_PATHS).
@@ -1353,6 +1353,59 @@ export function evaluate(hookInput, opts = {}) {
   return null;   // other tools pass
 }
 
+// ---------------------------------------------------------------- results waiting for the lead
+// Decision 205: the daemon leaves each finished subtask's result line in <home>/lead-notes/<session>/ (packages/
+// daemon/src/lead-notes.ts). This hook runs before the lead's Bash, Read and edit calls, which the daemon never sees, so it
+// hands the waiting lines over here, next to the tool result, without asking the daemon. A copy of the daemon's
+// takeLeadNotes (this hook has no dependencies); a test runs both on the same folder.
+const LEAD_NOTES_DIR = 'lead-notes';
+const MAX_NOTE_CHARS = 2000;
+const MAX_NOTES = 20;
+const NOTE_MAX_AGE_MS = 24 * 3600_000;
+
+/** Takes every waiting note of the session, oldest first. Never throws; a note another reader took is skipped. */
+export function takeLeadNotes(home, sessionId, now = Date.now()) {
+  const dir = path.join(home, LEAD_NOTES_DIR, safeName(sessionId));
+  let names;
+  try { names = fs.readdirSync(dir).sort(); } catch { return []; }
+  const out = [];
+  for (const name of names) {
+    const file = path.join(dir, name);
+    if (!name.endsWith('.json')) {
+      try { if (now - fs.statSync(file).mtimeMs > 60_000) fs.unlinkSync(file); } catch { /* gone */ }
+      continue;
+    }
+    const mine = `${file}.${process.pid}.taken`;
+    try { fs.renameSync(file, mine); } catch { continue; }
+    try {
+      const j = JSON.parse(fs.readFileSync(mine, 'utf8'));
+      const at = Date.parse(String(j.at));
+      if (typeof j.text === 'string' && j.text && Number.isFinite(at) && now - at <= NOTE_MAX_AGE_MS) {
+        out.push({ agentId: String(j.agentId ?? ''), subtaskId: String(j.subtaskId ?? ''), text: j.text.slice(0, MAX_NOTE_CHARS), at: String(j.at) });
+      }
+    } catch { /* unreadable: dropped */ }
+    try { fs.unlinkSync(mine); } catch { /* gone */ }
+  }
+  try { fs.rmdirSync(dir); } catch { /* not empty, or gone */ }
+  // one line per agent, its latest: "held" followed by "passed" is told as "passed"
+  const latest = out.filter((n, i) => !n.agentId || !out.some((m, j) => j > i && m.agentId === n.agentId));
+  return latest.slice(-MAX_NOTES);
+}
+
+/**
+ * For a call of the main session: the hook output that carries the waiting result lines, or null when nothing
+ * waits. It decides nothing about the call (no permission field) and never throws.
+ */
+export function leadNotesOutput(input, home = routerHome()) {
+  try {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || input.agent_id) return null;   // a subagent's call is not the lead's
+    if (typeof input.session_id !== 'string' || !input.session_id) return null;
+    const notes = takeLeadNotes(home, input.session_id);
+    if (!notes.length) return null;
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notes.map(n => n.text).join('\n') } };
+  } catch { return null; }
+}
+
 // ---------------------------------------------------------------- hook I/O
 function emit(decision, reason) {
   process.stdout.write(JSON.stringify({
@@ -1374,7 +1427,12 @@ export function runGuard(raw) {
     return;
   }
   // Gate FIRST: anything that is not a router subagent passes untouched. A bug below cannot block a user's work.
-  if (!isRouterSubagent(input)) return;
+  // The lead's own call may get the result lines that wait for it; that adds context and decides nothing.
+  if (!isRouterSubagent(input)) {
+    const notes = leadNotesOutput(input);
+    if (notes) process.stdout.write(JSON.stringify(notes));
+    return;
+  }
   // Fail-closed applies ONLY to router subagents.
   let decision;
   try { decision = evaluate(input); }

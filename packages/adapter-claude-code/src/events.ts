@@ -99,11 +99,17 @@ export function toRouterEvent(hookInput: unknown, opts: ToRouterEventOptions = {
       if (prompt !== undefined) ev.prompt = prompt;
       ev.promptOrigin = promptOrigin(prompt);            // 'user' | 'notification' (decision: never re-triage a notification)
       if (ev.promptOrigin === 'notification') {
-        const n = parseTaskNotification(prompt)!;
+        const n = parseTaskNotification(prompt);
         const notif: NonNullable<RouterEvent['notification']> = {};
-        if (n.taskId !== undefined) notif.taskId = n.taskId;
-        if (n.toolUseId !== undefined) notif.toolUseId = n.toolUseId;
-        if (n.status !== undefined) notif.status = n.status;
+        if (n) {
+          if (n.taskId !== undefined) notif.taskId = n.taskId;
+          if (n.toolUseId !== undefined) notif.toolUseId = n.toolUseId;
+          if (n.status !== undefined) notif.status = n.status;
+        } else {
+          // an agent's own message (its report handed back): the sender is the agent, and it carries no status
+          const from = agentMessageFrom(prompt);
+          if (from !== undefined) notif.taskId = from;
+        }
         ev.notification = notif;
       }
       break;
@@ -265,9 +271,21 @@ export function isTaskNotification(prompt: string | undefined): boolean {
   return typeof prompt === 'string' && TASK_NOTIFICATION_RE.test(prompt);
 }
 
-/** Client-neutral origin of a prompt_submit: a background task notification vs. a human message. */
+/**
+ * A background subagent hands its report back as a message of its own before its task notification: a prompt that
+ * opens with `<agent-message from="<agent id>">` (Claude Code 2.1.326, interactive), sometimes after one line of
+ * Claude Code's. The same pattern as the daemon's check (continuation.ts); keep the two identical.
+ */
+const AGENT_MESSAGE_RE = /^\s*(?:Another Claude session sent a message:\s*)?<agent-message\s+from="([^"<>\n]{1,128})"\s*>/;
+
+/** The agent id an agent message names, or undefined when the prompt is not one. */
+export function agentMessageFrom(prompt: string | undefined): string | undefined {
+  return typeof prompt === 'string' ? AGENT_MESSAGE_RE.exec(prompt)?.[1] : undefined;
+}
+
+/** Client-neutral origin of a prompt_submit: a background task notification or an agent's message vs. a human message. */
 export function promptOrigin(prompt: string | undefined): 'user' | 'notification' {
-  return isTaskNotification(prompt) ? 'notification' : 'user';
+  return isTaskNotification(prompt) || agentMessageFrom(prompt) !== undefined ? 'notification' : 'user';
 }
 
 function tag(src: string, name: string): string | undefined {

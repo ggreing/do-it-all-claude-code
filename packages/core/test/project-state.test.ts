@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getProjectWorktree, projectKey, projectStateFile, readProjectState, workTreeRoot, writeProjectState } from '../src/project-state.ts';
+import { getProjectWorktree, projectKey, projectStateFile, readProjectState, setProjectWorktree, workTreeRoot, writeProjectState } from '../src/project-state.ts';
 
 function tmp(): string { return fs.mkdtempSync(path.join(os.tmpdir(), 'diacc-ps-')); }
 
@@ -68,4 +68,32 @@ test('readProjectState tolerates a corrupt file (returns null)', () => {
     assert.equal(readProjectState(root, home), null);
     assert.equal(getProjectWorktree(home, root), null);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('setProjectWorktree: enable writes files+state, disable removes them, dryRun writes nothing', () => {
+  const home = tmp();
+  const repo = tmp();   // stands in for the work-tree root
+  try {
+    const settings = path.join(repo, '.claude', 'settings.local.json');
+    const gi = path.join(repo, '.gitignore');
+    // dry run: reports what would change, writes nothing, records no state
+    const dry = setProjectWorktree(repo, true, home, { dryRun: true });
+    assert.ok(dry.changed.length >= 1);
+    assert.equal(fs.existsSync(settings), false);
+    assert.equal(getProjectWorktree(home, repo), null);
+    // enable
+    const on = setProjectWorktree(repo, true, home);
+    assert.equal(on.worktree, 'on');
+    assert.equal(JSON.parse(fs.readFileSync(settings, 'utf8')).worktree.baseRef, 'head');
+    assert.match(fs.readFileSync(gi, 'utf8'), /^\.claude\/worktrees\/$/m);
+    assert.equal(getProjectWorktree(home, repo), 'on');
+    // enabling again changes no project file, but still returns on
+    assert.deepEqual(setProjectWorktree(repo, true, home).changed, []);
+    // disable removes both and records off
+    const off = setProjectWorktree(repo, false, home);
+    assert.equal(off.worktree, 'off');
+    assert.equal('worktree' in JSON.parse(fs.readFileSync(settings, 'utf8')), false);
+    assert.doesNotMatch(fs.readFileSync(gi, 'utf8'), /\.claude\/worktrees\//);
+    assert.equal(getProjectWorktree(home, repo), 'off');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(repo, { recursive: true, force: true }); }
 });

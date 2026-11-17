@@ -79,6 +79,8 @@ Agent(subagent_type: "do-it-all-claude-code:coder", description: "Subtask B", mo
 
 When a subagent finishes, the daemon runs its verify commands and scope check in its working directory (its isolated worktree when it ran with `isolation: "worktree"`, otherwise the working tree) and tells you the outcome; you don't score it yourself.
 
+The outcome is one line that starts with `[do-it-all-claude-code] subtask <ID>`. It comes with the subtask's task-notification, or next to the result of your next tool call when the subagent's own report reaches you before the checks have finished. A report that arrives without that line is not verified yet: wait for the line, and don't run the build or the tests yourself in the meantime.
+
 - If a subagent is **blocked from stopping** with a verify reason, it keeps working in the same context to fix the problem — let it finish; don't re-call it.
 - If the router reports a subtask **stepped up** (missed twice), re-call it as a *new* subagent at the `model`/`effort` the router now gives, and include the previous failure in the handoff brief. Do this before you answer the user: a failed subtask whose slot was raised is not a result to report. If you end your turn without a new attempt, the router stops you once and repeats the values; if you need the user's decision instead, ask and end with the HITL marker (below).
 - When the brief says **reproduce first is on**, put `[repro: required]` on the line after `[scope: …]` of a coder subtask that fixes a bug or adds a behavior, and include the test folder in its scope; the coder then writes a failing test first and the router runs it before and after the change. For work a test cannot show, write `[repro: off <reason>]` (`refactor`, `docs`, `config`, `no-tests`, `not-testable`). A result line that says **Reproduction unconfirmed** means the problem was not seen failing first: the subtask still passed verify, but say so when you report, or dispatch a check if it matters.
@@ -99,7 +101,7 @@ Then confirm the merge with `git diff --stat`. Each branch's verify already ran:
 
 Before you tell the user the request is finished:
 
-- Confirm you received a task-notification for **every** subtask, and that each one's injected **verify result passed** and reported no unmet "scope request". Trust that result — do not re-run the build or the test suite to double-check. The most you add is one targeted run of the changed code's tests, and only when verify ran no tests for it.
+- Confirm you received the router's result line for **every** subtask (with its task-notification or next to a tool result), and that each one's **verify result passed** and reported no unmet "scope request". Trust that result — do not re-run the build or the test suite to double-check. The most you add is one targeted run of the changed code's tests, and only when verify ran no tests for it.
 - A **concurrent worktree writer's** edits are **not** in the user's working tree until you merge its branch (above). A writer that ran **alone** edited the working tree directly, so its edits are already there.
 - Confirm the edits landed with a single `git diff --stat` (not a full `git diff` or a test run): the expected files changed and nothing is still stranded in an unmerged worktree branch.
 - If a change is only in a worktree branch, it is **not** done: merge it first, then re-check. Never report success based solely on a worker's self-report.

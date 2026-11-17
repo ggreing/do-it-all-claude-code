@@ -182,6 +182,9 @@ test('T7: triage, plan (T6 re-plan) and subtasks; a request reopened by a notifi
     await post({ hook_event_name: 'SubagentStart', agent_id: 'ag1', agent_type: 'do-it-all-claude-code:coder' });
     write(repo, 'README.md', 'the\n');
     await post({ hook_event_name: 'SubagentStop', agent_id: 'ag1', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: false });
+    // the Agent call returns: the lead reads the result line next to it, so its Stop ends the turn
+    await post({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_use_id: 'toolu_r1',
+      tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] fix it\n[scope: README.md]' }, tool_response: { status: 'completed', agentId: 'ag1' } });
     await post(stop('Started subtask A.'));
     await d.router.drain();
     let rec = record(d, 'plan');
@@ -236,6 +239,9 @@ test('costs: a subagent\'s and the lead\'s last line written after their stop ar
     setTimeout(() => fs.appendFileSync(sub, call('s2', 'claude-haiku-5-5', 20)), 150);
     await stopped;
     assert.deepEqual(rows(d, "SELECT calls FROM costs WHERE agent_id = 'l1' AND source = 'transcript'"), [{ calls: 2 }]);
+    // the Agent call returns: the lead reads the result line next to it, so its Stop ends the turn
+    await post({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_use_id: 'toolu_late',
+      tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] x\n[scope: src/**]' }, tool_response: { status: 'completed', agentId: 'l1' } });
     const ended = post(stop());
     setTimeout(() => fs.appendFileSync(main, call('m2', 'claude-opus-5-5', 200)), 150);
     await ended;

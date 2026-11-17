@@ -1,6 +1,6 @@
 // Masked, size-limited copy of a hook payload for the events table.
 import { redact, redactJson } from '@do-it-all-claude-code/core';
-import { AWAITING_USER_MARKER, TASK_NOTIFICATION } from './continuation.ts';
+import { AGENT_MESSAGE, AWAITING_USER_MARKER, TASK_NOTIFICATION } from './continuation.ts';
 
 export const MAX_STRING = 2000;
 export const MAX_ARRAY = 50;
@@ -28,7 +28,7 @@ function compact(v: unknown, depth: number): unknown {
 // carries a copy of this function; a test keeps the two equal) in a minimal form: an allowlist of fields per
 // event, prose replaced by its size. Kept: ids, tool name, model, effort, paths, flags, verify-env names, and
 // what a replay needs to route the same way: a task notification's structured tags (ids, status, usage, the
-// worktree) without its summary and result, the Agent prompt's [subtask:]/[scope:] lines without the spec, and
+// worktree) without its summary and result, an agent message's sender without its text, the Agent prompt's [subtask:]/[scope:] lines without the spec, and
 // the awaiting-user marker without the message. Dropped: the user's prompt, /compact instructions, the lead's
 // and subagents' last messages, the Agent spec, the Agent result. `_min: 1` marks the form (idempotent).
 
@@ -47,7 +47,7 @@ const NOTIFICATION_TAGS = ['task-id', 'tool-use-id', 'output-file', 'status'] as
 const PATH_LIKE = /^[^<>\n]{1,1024}$/;
 
 export type PromptKind = 'user' | 'notification' | 'command';
-export const promptKind = (prompt: string): PromptKind => (TASK_NOTIFICATION.test(prompt) ? 'notification' : /^\s*\//.test(prompt) ? 'command' : 'user');
+export const promptKind = (prompt: string): PromptKind => (TASK_NOTIFICATION.test(prompt) || AGENT_MESSAGE.test(prompt) ? 'notification' : /^\s*\//.test(prompt) ? 'command' : 'user');
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -55,6 +55,9 @@ const tagOf = (src: string, name: string) => new RegExp(`<${name}>([\\s\\S]*?)</
 
 /** A task notification reduced to its structured tags, in a fixed order (so reducing it again gives the same text). */
 export function notificationSkeleton(prompt: string): string {
+  // an agent's own message: who sent it, never what it says
+  const from = AGENT_MESSAGE.exec(prompt)?.[1];
+  if (from !== undefined && !TASK_NOTIFICATION.test(prompt)) return `<agent-message from="${from}"></agent-message>`;
   const lines = ['<task-notification>'];
   for (const t of NOTIFICATION_TAGS) { const v = tagOf(prompt, t); if (v && PATH_LIKE.test(v)) lines.push(`<${t}>${v}</${t}>`); }
   const wt = tagOf(prompt, 'worktree');

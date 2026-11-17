@@ -188,5 +188,24 @@
       ],
       "additionalProperties": false
     }
+  },
+  {
+    "name": "router_project_isolation",
+    "description": "Do It All Claude Code, lead only. Turns git-worktree isolation on or off for THIS project after the user agrees (enable: true/false). On, subagents work in parallel, each in its own git worktree; off, the team shares one checkout and overlapping edits take turns. Writes worktree.baseRef in .claude/settings.local.json and a \".claude/worktrees/\" line in .gitignore, and records the choice; the answer names the files changed. Applies from the next subtask dispatched; running subtasks keep their worktree. Use this instead of asking the user to run a terminal command.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "enable": {
+          "type": "boolean"
+        },
+        "userConfirmed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enable"
+      ],
+      "additionalProperties": false
+    }
   }
 ]

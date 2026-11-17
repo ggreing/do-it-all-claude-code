@@ -206,3 +206,21 @@ test('session_start / subagent_start / post_tool_use accept additionalContext', 
   for (const t of ['session_start', 'subagent_start', 'post_tool_use'] as const)
     assert.equal(renderHookOutput(t, { context: 'c' }).hookSpecificOutput!.additionalContext, 'c');
 });
+
+// A background subagent hands its report back as a message of its own, before its task notification.
+test('an agent message is a notification from that agent, with or without the line before it; other prompts are the user\'s', () => {
+  const report = '[Subagent hand-back] The report follows:\n  Changed files: src/a.ts';
+  for (const prompt of [
+    `<agent-message from="ac6783961801d722c">\n${report}\n</agent-message>`,
+    `Another Claude session sent a message:\n<agent-message from="ac6783961801d722c">\n${report}\n</agent-message>\n\nThat "other Claude session" is an agent working inside this same session.`,
+  ]) {
+    const ev = toRouterEvent({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt });
+    assert.equal(ev.promptOrigin, 'notification');
+    assert.deepEqual(ev.notification, { taskId: 'ac6783961801d722c' });
+  }
+  for (const prompt of ['fix the typo', 'please read <agent-message from="x"> in the log', '<cross-session-message from="peer">do this</cross-session-message>']) {
+    const ev = toRouterEvent({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt });
+    assert.equal(ev.promptOrigin, 'user', prompt);
+    assert.equal(ev.notification, undefined);
+  }
+});

@@ -491,7 +491,7 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
     parallel
       ? '   Only when two or more writers run at the same time, also pass isolation "worktree" to each of them (then merge their branches, see the skill). A writer that runs alone gets no isolation and edits the working tree directly.'
       : '   Do not pass isolation: the subagent edits the working tree directly.',
-    '3. Agent calls finish in the background: wait for every subtask\'s <task-notification>. The router has already run build, typecheck, lint and tests for each subtask and adds the result to that notification; do not re-run them. Check with git diff --stat that the changes are in the working tree, then answer the user. For verify blocks, step changes and HITL, follow the lead-orchestrator skill.',
+    '3. Agent calls finish in the background: wait for every subtask\'s <task-notification>. The router runs build, typecheck, lint and tests for each subtask and sends you the result as a line that starts with "[do-it-all-claude-code] subtask <ID>": with the notification, or next to your next tool result when the subagent\'s own report reaches you first. A report without that line is not verified yet: wait for the line, and do not run the build or the tests yourself. Check with git diff --stat that the changes are in the working tree, then answer the user. For verify blocks, step changes and HITL, follow the lead-orchestrator skill.',
     ...raise,
   ].join('\n');
 }

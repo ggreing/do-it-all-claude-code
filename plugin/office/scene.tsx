@@ -15,7 +15,11 @@ export type SceneAgent = { id: string; role: Role; label: string; model: string;
  * `small`: the small desks, for a room the full ones do not fit; `narrow`: the narrow ones, for a room even those do
  * not fit.
  */
-export type SceneProps = { agents: SceneAgent[]; selected: string; summary: string; compact?: boolean; perRow?: number; small?: boolean; narrow?: boolean }
+/**
+ * `bare`: no title line (the cramped layout gives its row to the line of members left over, which the hooks module
+ * draws under the scene); `more`: the ids of those members, in order after the ones drawn, so 1–9 reach them too.
+ */
+export type SceneProps = { agents: SceneAgent[]; selected: string; summary: string; compact?: boolean; perRow?: number; small?: boolean; narrow?: boolean; bare?: boolean; more?: string[] }
 
 type State = { t: number; hover: number; px: number; react: Record<string, ReactionState> }
 
@@ -43,7 +47,8 @@ const cellOf = (g: Geom) => g.w + g.gap
 /** Where the member's face is across its desk: the body's middle. */
 const faceX = (g: Geom) => g.inset + 5
 /** Rows above the first desk: the title line, then the back wall unless the room is short (`compact`). */
-const topOf = (compact: boolean | undefined) => (compact ? 1 : 3)
+/** The rows over the first row of desks: the title line (none when bare) and the back wall (none when compact). */
+const topOf = (p: Pick<SceneProps, 'compact' | 'bare'>) => (p.bare ? 0 : 1) + (p.compact ? 0 : 2)
 
 const ROLE_COLOR: Record<Role, string> = {
   lead: 'claude', architect: 'suggestion', coder: 'planMode', reviewer: 'warning', tester: 'success', 'ui-designer': 'merged', helper: 'inactive',
@@ -183,7 +188,7 @@ function perRowOf(props: SceneProps, columns: number): number {
 
 function stationAt(x: number, y: number, per: number, props: SceneProps): number {
   const geo = geomOf(props)
-  const dy = y - topOf(props.compact)
+  const dy = y - topOf(props)
   if (dy < 0 || x < 0) return -1
   const row = Math.floor(dy / (geo.h + 1))
   if (dy % (geo.h + 1) >= geo.h) return -1
@@ -242,7 +247,13 @@ const OfficeScene: ClientModule<SceneProps, State> = (props, surface) => {
       if (tabKey[e.key]) { surface.post({ type: 'tab', id: tabKey[e.key]! }); return }
       const n = latest.agents.length
       if (!n) return
-      if (/^[1-9]$/.test(e.key)) { const i = Number(e.key) - 1; if (i < n) pick(surface, i, clock); return }
+      if (/^[1-9]$/.test(e.key)) {
+        const i = Number(e.key) - 1
+        const left = latest.more?.[i - n]
+        if (i < n) pick(surface, i, clock)
+        else if (left) surface.post({ type: 'select', id: left })      // one of the line under the desks
+        return
+      }
       if (e.key === 'right' || e.key === 'left') {
         const cur = s.hover < 0 ? 0 : s.hover
         surface.setState({ ...s, hover: (cur + (e.key === 'right' ? 1 : n - 1)) % n })
@@ -322,10 +333,12 @@ const OfficeScene: ClientModule<SceneProps, State> = (props, surface) => {
   for (let k = 0; k < agents.length; k += per) rowsOf.push(agents.slice(k, k + per))
   return (
     <Box flexDirection="column" width={span}>
-      <Box justifyContent="space-between" width={span}>
-        <Text bold wrap="truncate-end">DO IT ALL · team office</Text>
-        <Text dimColor wrap="truncate-end">{props.summary}</Text>
-      </Box>
+      {props.bare ? null : (
+        <Box justifyContent="space-between" width={span}>
+          <Text bold wrap="truncate-end">DO IT ALL · team office</Text>
+          <Text dimColor wrap="truncate-end">{props.summary}</Text>
+        </Box>
+      )}
       {props.compact ? null : wall.map((w, j) => <Text key={`wall-${j}`} color="inactive" dimColor wrap="truncate-end">{w}</Text>)}
       {rowsOf.map((r, k) => (
         <Box key={`desks-${k}`} flexDirection="row">

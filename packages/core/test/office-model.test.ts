@@ -4,9 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  CLASSIC_GLYPHS, DESK_H, DESK_W, GLYPHS, MAX_ROWS, OFFICE_MIN_CLAUDE, SLACK, NARROW_DESK_H, NARROW_DESK_W, SMALL_DESK_H, SMALL_DESK_W, TABS, appliedLines, bar, callRow, checksLine,
+  CLASSIC_GLYPHS, DESK_H, DESK_W, GLYPHS, LAYOUT_SPARE, MAX_ROWS, TINY_STEP, OFFICE_MIN_CLAUDE, SLACK, NARROW_DESK_H, NARROW_DESK_W, SMALL_DESK_H, SMALL_DESK_W, TABS, appliedLines, bar, callRow, checksLine,
   choices, clockTime, columns, compileSecrets, confirmLine, cycle, dur, filesText, fit, holdoutText, homeCandidates, labelFor, levelText, mask, modelName,
-  nextPeriod, officeLayout, officeSwitch, parseHelperLine, pendingSet, requestLine, resultRow, roleOf, settingText, spentLine, statBar, statusWord, stepLine,
+  nextPeriod, officeLayout, officeSwitch, parseHelperLine, pendingSet, requestLine, resultRow, roleOf, routerLine, settingText, spentLine, statBar, statusWord, stepLine,
   subtaskOf, tabLabelsFit, tagOf, takeLines, textRow, timelineCells, unicodeTerminal, upDown, versionAtLeast, wantedRoom, withRow, workHeadline, workMark,
   type DaemonOffice, type DaemonSubtask, type OfficeAgent, type SettingItem,
 } from '../../../plugin/office/model.ts';
@@ -83,6 +83,17 @@ test('office: members join their subtask by agent id, else by tag; the request l
   assert.equal(subtaskOf(view, { id: 'other' }), undefined);
   assert.equal(requestLine(view), 'L2 · rule · $0.120~ of $4.00 · 5h 23%');
   assert.equal(requestLine(null), '');
+  // the Office tab's line while the router answers: never empty, so a person sees it is there before any request
+  assert.equal(routerLine(view), 'L2 · rule · $0.120~ of $4.00 · 5h 23%');
+  const idle: DaemonOffice = { ...view, request: null, subtasks: [], limits: { fiveHour: { usedPercentage: 23.4, resetsAt: null }, sevenDay: { usedPercentage: 41, resetsAt: null } } };
+  assert.equal(routerLine(idle), 'router on · no request yet · 5h 23% · 7d 41%');
+  assert.equal(routerLine({ ...idle, limits: null }), 'router on · no request yet');
+  assert.equal(routerLine(null), 'router on · no request yet');
+  assert.equal(routerLine({ ...idle, limits: null, project: { name: 'r1', worktree: 'off' } }), 'router on · no request yet · isolation off');
+  // the limits last, so a narrow dock that cuts the line keeps the isolation
+  assert.equal(routerLine({ ...idle, project: { name: 'r1', worktree: 'off' } }), 'router on · no request yet · isolation off · 5h 23% · 7d 41%');
+  assert.equal(routerLine({ ...view, project: { name: 'r1', worktree: 'off' } }), 'L2 · rule · $0.120~ of $4.00 · isolation off · 5h 23%');
+  for (const worktree of ['on', null] as const) assert.doesNotMatch(routerLine({ ...idle, project: { name: 'r1', worktree } }), /isolation/);
 });
 
 test('office: the router home, the office switch, the version gate', () => {
@@ -126,13 +137,27 @@ test("office: the members drawn wherever desks fit, small ones before a line a m
   // four fit at full desks without the wall
   const four = officeLayout({ columns: 54, rows: 34, members: 4, routerLine: true, classic: false });
   assert.deepEqual([four.mode, four.small, four.wall, four.perRow], ['desks', false, false, 2]);
-  // inline above the prompt, 15 rows: no room for desks of any size; the list, and the session at its least
+  // inline above the prompt, 15 rows: the narrow desks stay, the session down to its last line; 12 rows: no
+  // session; 10 rows: the list (the members are kept drawn as long as they fit: the person's choice)
   const low = officeLayout({ columns: 98, rows: 15, members: 5, routerLine: true, classic: false });
-  assert.deepEqual([low.mode, low.sessionRows], ['list', 3]);
+  assert.deepEqual([low.mode, low.narrow, low.sessionRows], ['desks', true, 1]);
+  const lower = officeLayout({ columns: 98, rows: 12, members: 5, routerLine: true, classic: false });
+  assert.deepEqual([lower.mode, lower.narrow, lower.sessionRows], ['desks', true, 0]);
+  const lowest = officeLayout({ columns: 98, rows: 10, members: 5, routerLine: true, classic: false });
+  assert.deepEqual([lowest.mode, lowest.sessionRows], ['list', 0]);
+  // a 120 x 40 terminal's dock with a dialog under the chat (measured with /help: about 21 rows): narrow desks
+  // without the session, not the list
+  const asked = officeLayout({ columns: 54, rows: 21, members: 5, routerLine: true, classic: false });
+  assert.deepEqual([asked.mode, asked.narrow, asked.sessionRows], ['desks', true, 0]);
   // three rows (a short inline pane): no frames, the members' lines in the frames' width
   const tiny = officeLayout({ columns: 98, rows: 3, members: 5, routerLine: true, classic: false });
   assert.deepEqual([tiny.mode, tiny.inner, tiny.sessionRows], ['tiny', 98 - SLACK, 0]);
-  assert.equal(officeLayout({ columns: 98, rows: 10, members: 2, routerLine: true, classic: true }).mode, 'tiny');
+  // the classic console's list gives up its session before the frames: 10 rows hold it with the session's last
+  // line, 7 with none, 6 not at all
+  const classic10 = officeLayout({ columns: 98, rows: 10, members: 2, routerLine: true, classic: true });
+  assert.deepEqual([classic10.mode, classic10.sessionRows], ['list', 1]);
+  assert.deepEqual(tag(officeLayout({ columns: 98, rows: 7, members: 2, routerLine: true, classic: true })), 'list/no session');
+  assert.equal(officeLayout({ columns: 98, rows: 6, members: 2, routerLine: true, classic: true }).mode, 'tiny');
   // narrower than a full desk: a small one
   const narrow = officeLayout({ columns: 26, rows: 60, members: 1, routerLine: false, classic: false });
   assert.deepEqual([narrow.mode, narrow.small], ['desks', true]);
@@ -147,6 +172,83 @@ test("office: the members drawn wherever desks fit, small ones before a line a m
     assert.ok(s.small && s.perRow * SMALL_DESK_W - 1 <= s.inner, `small ${columns}`);
   }
   assert.equal(officeLayout({ columns: 120, rows: 1 + 1 + 2 + 1 + 2 + DESK_H + 3, members: 1, routerLine: true, classic: false }).mode, 'desks');
+});
+
+/** What a layout draws, rows: the tab row, the router's line, the office's frame, then the session's frame if any. */
+function drawnRows(l: ReturnType<typeof officeLayout>, members: number): number {
+  if (l.mode === 'tiny') return 0;
+  // cramped: no title line; the rows of desks drawn, and the line of the members left over
+  if (l.bare) return 1 + 1 + 2 + Math.ceil(l.shown / l.perRow) * NARROW_DESK_H + (members > l.shown ? 1 : 0);
+  const body = l.mode === 'list' ? Math.max(1, members)
+    : (l.wall ? 2 : 0) + Math.ceil(members / l.perRow) * (l.narrow ? NARROW_DESK_H : l.small ? SMALL_DESK_H : DESK_H);
+  return 1 + 1 + 2 + 1 + body + (l.sessionRows ? l.sessionRows + 2 : 0);
+}
+const tag = (l: ReturnType<typeof officeLayout>) => `${l.mode}${l.small ? '/small' : ''}${l.narrow ? '/narrow' : ''}${l.wall ? '/wall' : ''}${l.sessionRows ? '' : '/no session'}`;
+
+test('office: every step down keeps within the room, and the members are drawn before the list (a dialog under the chat)', () => {
+  // each room from tall to short: the layout never needs more rows than it has, and goes only down
+  for (const [columns, members] of [[54, 5], [53, 7], [88, 5], [69, 3], [118, 9]] as const) {
+    let last = -1;
+    for (let rows = 60; rows >= 4; rows--) {
+      const l = officeLayout({ columns, rows, members, routerLine: true, classic: false });
+      if (l.mode !== 'tiny') assert.ok(drawnRows(l, members) <= rows, `${columns}x${rows} ${members}: ${tag(l)} takes ${drawnRows(l, members)}`);
+      assert.ok(l.step >= last, `${columns}x${rows}: from step ${last} up to ${l.step}`);
+      last = l.step;
+      // the list only once not even one row of narrow desks fits (with the line of the rest under it)
+      const perNarrow = Math.floor((columns - SLACK - 4 + 1) / NARROW_DESK_W);
+      if (l.mode === 'list') assert.ok(1 + 1 + 2 + NARROW_DESK_H + (members > perNarrow ? 1 : 0) > rows, `${columns}x${rows}: the list while a row of narrow desks fits`);
+    }
+  }
+  // cramped, a 120 x 30 terminal's dock with a dialog open (53 x 12): four at desks, the rest on one line
+  for (const members of [5, 7]) {
+    const c = officeLayout({ columns: 53, rows: 12, members, routerLine: true, classic: false });
+    assert.deepEqual([c.mode, c.narrow, c.shown, c.bare, c.sessionRows], ['desks', true, 4, true, 0], `${members} members`);
+    assert.equal(drawnRows(c, members), 12);
+  }
+  // all four fit without the title line: no line of the rest
+  const four = officeLayout({ columns: 53, rows: 11, members: 4, routerLine: true, classic: false });
+  assert.deepEqual([four.shown, four.bare], [4, true]);
+  assert.equal(drawnRows(four, 4), 11);
+  // when the whole team fits with its title, the desks keep it
+  const whole = officeLayout({ columns: 53, rows: 19, members: 5, routerLine: true, classic: false });
+  assert.deepEqual([whole.shown, whole.bare], [5, false]);
+  // the session's frame comes and goes whole: 1 or 2 rows its last lines, 3 and more with its header
+  const one = officeLayout({ columns: 54, rows: 1 + 1 + 2 + 1 + 2 * NARROW_DESK_H + 3, members: 5, routerLine: true, classic: false });
+  assert.deepEqual([tag(one), one.sessionRows], ['desks/narrow', 1]);
+});
+
+test('office: rows that come and go by one or two (a spinner, a dialog) do not flip the layout back and forth', () => {
+  for (const [columns, members] of [[54, 5], [53, 5], [88, 5], [69, 7], [98, 5]] as const) {
+    // every place one more row changes the step without `prev`: there, rows going -1, +1, -1, +1 ... with `prev`
+    for (let rows = 8; rows <= 60; rows++) {
+      const down = officeLayout({ columns, rows, members, routerLine: true, classic: false });
+      const up = officeLayout({ columns, rows: rows + 1, members, routerLine: true, classic: false });
+      if (down.step === up.step) continue;
+      let prev = up.step;
+      const seen: string[] = [];
+      for (const r of [rows, rows + 1, rows, rows + 1, rows + 2, rows + 1, rows]) {
+        const l = officeLayout({ columns, rows: r, members, routerLine: true, classic: false, prev });
+        if (l.mode !== 'tiny') assert.ok(drawnRows(l, members) <= r, `${columns}x${r}: ${tag(l)} does not fit`);
+        seen.push(`${r}:${l.step}`);
+        prev = l.step;
+      }
+      // it went down once at the first short row, and came back only with LAYOUT_SPARE rows to spare
+      const steps = seen.map(x => Number(x.split(':')[1]));
+      const changes = steps.filter((x, i) => i > 0 && x !== steps[i - 1]).length;
+      assert.ok(changes <= 1 + (rows + 2 >= rows + 1 + LAYOUT_SPARE ? 2 : 0), `${columns} x ${rows}..${rows + 2}, ${members}: ${seen.join(' ')}`);
+      assert.equal(steps[1], steps[0], `${columns} x ${rows}: one row back is not enough to climb (${seen.join(' ')})`);
+    }
+  }
+  // the climb: down at 21 rows, still down at 22, up at 23 (two to spare)
+  const at = (rows: number, prev?: number) => officeLayout({ columns: 54, rows, members: 5, routerLine: true, classic: false, prev });
+  const free = at(24), short = at(21, free.step);
+  assert.ok(short.step > free.step);
+  assert.equal(at(24 - 1, short.step).step, short.step, 'one row short of the climb: it stays');
+  const back = at(24 + LAYOUT_SPARE, short.step);
+  assert.ok(back.step < short.step, 'with two rows to spare it climbs back');
+  // a step that no longer fits gives way at once, whatever came before
+  assert.ok(at(12, 0).step > 0);
+  assert.equal(at(60, TINY_STEP).step, at(60).step, 'from tiny to the most drawn when the room is plenty');
 });
 
 test('office: the room it asks for when it opens', () => {

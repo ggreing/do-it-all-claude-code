@@ -29,6 +29,7 @@ test('inputs are strict: an unknown key is refused in every tool', () => {
     router_report_result: { subtaskId: 'A', verdict: 'accept', by: 'lead' },
     router_request_escalation: { subtaskId: 'A', reason: 'wrong_result' },
     router_request_scope: { subtaskId: 'A', add: ['src/**'] },
+    router_project_isolation: { enable: true },
   };
   for (const t of ROUTER_TOOLS) {
     assert.ok(ok(t.input, valid[t.name]), `${t.name}: the valid input`);

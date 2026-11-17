@@ -6,13 +6,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ACCEPTANCE_RULE_VERSION, ACCEPT_WINDOW_PROMPTS, MAX_STEP_UPS, PRICING_PER_MTOK, ROUTER_TOOL_PREFIX, RouterToolCall, dissatisfactionRule, holdoutDraw, isReask, promptSimilarity, afterEasyPass, afterOtherResult, afterRaise, atDispatch, costUsd, decideEscalation, formatTriageContext, isRouterToolName, l3SignalRoles, ladderStep,
-  effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, normalizeLeadTriage, oneFileDirect, parseRoleFile, profileOf, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
-  type LeadModelClass, type Level, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
+  effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, normalizeLeadTriage, oneFileDirect, parseRoleFile, profileOf, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
+  type LeadModelClass, type Level, type ProjectIsolationInput, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
   type RouterEvent, type RouterToolErrorCode, type RouterToolName, type RouterToolResult, type Step, type TeamPreset, type TriageResult, type Usage,
   type UpdateNotice, type VerifySignal,
 } from '@do-it-all-claude-code/core';
 import type { ConfigFile } from './config.ts';
-import { AWAITING_USER_MARKER, awaitsUser, classifyPrompt } from './continuation.ts';
+import { AWAITING_USER_MARKER, agentMessageFrom, awaitsUser, classifyPrompt } from './continuation.ts';
+import { LeadNotes, type LeadNote } from './lead-notes.ts';
 import { changedFiles, fileFingerprint, takeSnapshot } from './git.ts';
 import { writeJsonAtomic, type HomeLayout } from './home.ts';
 import type { AcceptState, AgentRow, ClientRow, Holdout, Ledger, RequestRow, SlotRow, SubtaskChanges, SubtaskFile, SubtaskReview, SubtaskRow } from './ledger.ts';
@@ -123,6 +124,7 @@ export class Router {
   readonly #prompts = new PromptMemory();                   // decision 137: the last prompts of a session, in memory only
   readonly #tickets = new TicketStore();                    // decision 134: PreToolUse of a router tool -> its tools/call
   readonly #updates: RouterOptions['updates'];
+  readonly #leadNotes: LeadNotes;                           // subtask results the lead has not read yet (lead-notes.ts)
 
   constructor(o: RouterOptions) {
     this.ledger = o.ledger;
@@ -135,6 +137,7 @@ export class Router {
     this.#secrets = o.secrets ?? [];
     this.#now = o.now ?? (() => new Date());
     this.#updates = o.updates;
+    this.#leadNotes = new LeadNotes(this.#home.root, this.#now);
   }
 
   readonly #basePresets: Record<Level, TeamPreset> | undefined;
@@ -213,11 +216,11 @@ export class Router {
     }
     try {
       switch (ev.type) {
-        case 'prompt_submit': return this.#promptSubmit(ev, ctx);
-        case 'pre_tool_use': return this.#preToolUse(ev, ctx);
+        case 'prompt_submit': return this.#withLeadNotes(ev, this.#promptSubmit(ev, ctx));
+        case 'pre_tool_use': return this.#withLeadNotes(ev, this.#preToolUse(ev, ctx));
         case 'subagent_start': return await this.#subagentStart(ev, ctx);
         case 'subagent_stop': return this.#subagentStop(ev, ctx);
-        case 'post_tool_use': return this.#postToolUse(ev, ctx);
+        case 'post_tool_use': return this.#withLeadNotes(ev, this.#postToolUse(ev, ctx));
         case 'session_start': return this.#sessionStart(ev, ctx);
         case 'stop': return await this.#stop(ev, ctx);
         case 'pre_compact': return this.#preCompact(ev, ctx);
@@ -243,6 +246,74 @@ export class Router {
     } catch (e) {
       this.#log.error('event record failed', { type: ev.type, error: errorText(e) });
     }
+  }
+
+  /**
+   * Decision 205: a subtask result the lead has not read goes with whatever the lead's hook answers: next to the
+   * tool result for a tool call, into the turn for a prompt. Each result is handed over once (lead-notes.ts).
+   */
+  #withLeadNotes(ev: RouterEvent, out: Outcome): Outcome {
+    if (ev.agentId || ev.spooled || 'deferred' in out) return out;
+    const notes = this.#takeLeadNotes(ev);
+    if (!notes.length) return out;
+    const text = notes.map(n => this.#leadNoteText(n)).join('\n');
+    return { ...out, context: out.context ? `${out.context}\n${text}` : text };
+  }
+
+  /** The results waiting for this session's lead, taken for the hook that is being answered (and logged: which hook). */
+  #takeLeadNotes(ev: RouterEvent): LeadNote[] {
+    if (ev.spooled) return [];
+    const notes = this.#leadNotes.take(ev.sessionId);
+    if (notes.length) this.#log.info('subtask results handed to the lead', { sessionId: ev.sessionId, with: ev.type, ...(ev.toolName ? { tool: ev.toolName } : {}), subtasks: notes.map(n => n.subtaskId) });
+    return notes;
+  }
+
+  /**
+   * What the lead reads for a waiting note: the subtask's result line as it is now (a raise, the budget or a
+   * review may have changed what it should do since the note was written), else the line that was written.
+   */
+  #leadNoteText(n: LeadNote): string {
+    try {
+      const agent = this.ledger.getAgent(n.agentId);
+      const sub = agent?.requestId && agent.subtaskId ? this.ledger.getSubtask(agent.requestId, agent.subtaskId) : undefined;
+      if (sub && sub.status !== 'pending' && sub.status !== 'running') return this.#subtaskResult(n.agentId) ?? n.text;
+    } catch { /* the written line */ }
+    return n.text;
+  }
+
+  /** Leaves a finished subtask's result line for the lead's next hook. Nothing is left while the subtask still runs. */
+  #leaveLeadNote(sessionId: string, agentId: string | null | undefined): void {
+    if (!agentId) return;
+    try {
+      const agent = this.ledger.getAgent(agentId);
+      if (!agent?.requestId || !agent.subtaskId) return;
+      const sub = this.ledger.getSubtask(agent.requestId, agent.subtaskId);
+      if (!sub || sub.status === 'pending' || sub.status === 'running') return;
+      const asked = this.#scopeAsked.has(agentId);   // read once when the lead is told; writing the note is not that
+      const text = this.#subtaskResult(agentId);
+      if (asked) this.#scopeAsked.add(agentId);
+      if (!text) return;
+      if (!this.#leadNotes.add(sessionId, { agentId, subtaskId: sub.id, text: redact(text, this.#secrets) })) {
+        this.#log.warn('subtask result not left for the lead: the note could not be written', { agentId, subtaskId: sub.id });
+      }
+    } catch (e) {
+      this.#log.error('lead note failed', { agentId, error: errorText(e) });
+    }
+  }
+
+  /**
+   * A background subagent's own report reached the lead (its hand-back message). When its stop is already
+   * judged, the result line; while the router still checks it, a line that says so, so the lead does not run
+   * the build or the tests in the meantime.
+   */
+  #handbackNote(agentId: string): string | undefined {
+    const agent = this.ledger.getAgent(agentId);
+    if (!agent?.requestId || !agent.subtaskId) return undefined;
+    const sub = this.ledger.getSubtask(agent.requestId, agent.subtaskId);
+    if (!sub) return undefined;
+    if (sub.status !== 'pending' && sub.status !== 'running') return this.#subtaskResult(agentId);
+    return `[do-it-all-claude-code] subtask ${sub.id} (${sub.role}): the message above is the subagent's own report. The router is still checking it (the scope, then the verify commands); `
+      + 'the result comes with your next tool result or with the task notification. Until then do not run the build or the tests yourself, and do not tell the user the work is done.';
   }
 
   /** Decision 142: verify variables stay in memory (at most 500 agents); the ledger records their names. */
@@ -278,13 +349,26 @@ export class Router {
       // Stop is reopened so Agent calls made while handling the result stay in it; one awaiting the user stays so.
       if (latest?.status === 'closed') this.ledger.setRequestStatus(latest.id, 'open', this.#at());
       this.#expireStale(ev.sessionId);
+      // Results left for the lead (lead-notes.ts) go with this prompt, whichever agent it is about.
+      const waiting = this.#takeLeadNotes(ev);
       const agentId = notificationTaskId(ev, prompt);
-      if (!agentId) return NONE;
-      this.#notificationStatus(agentId, ev, prompt);
-      this.#notificationEstimate(agentId, prompt, latest);
-      // Decision 85: an async Agent result reaches the lead only now, so the subtask's verdict goes with it.
-      const result = this.#subtaskResult(agentId);
-      return result ? { context: result } : NONE;
+      if (agentId && !agentMessageFrom(prompt)) {
+        // before the result lines are made: a killed or failed status and a cost estimate change what they say
+        this.#notificationStatus(agentId, ev, prompt);
+        this.#notificationEstimate(agentId, prompt, latest);
+      }
+      const notes = waiting.map(n => this.#leadNoteText(n));
+      if (agentId) {
+        // An agent's own message is its report handed back: no status, no usage, and it can arrive before its stop is judged.
+        const handback = agentMessageFrom(prompt) !== undefined;
+        // Decision 85: an async Agent result reaches the lead with its notification, so the subtask's verdict goes
+        // with it, unless the lead has read that verdict already (it was left as a note and taken by an earlier hook).
+        if (!waiting.some(n => n.agentId === agentId) && !this.#leadNotes.delivered(agentId)) {
+          const own = handback ? this.#handbackNote(agentId) : this.#subtaskResult(agentId);
+          if (own) notes.push(own);
+        }
+      }
+      return notes.length ? { context: notes.join('\n') } : NONE;
     }
     if (cls.kind === 'level') return this.#routerLevel(ev, cls.level, latest, ctx);
     if ((cls.kind === 'resume' || cls.kind === 'continue') && latest) {
@@ -918,6 +1002,8 @@ export class Router {
           if (signals && plan) {
             const decision = this.#finishStop(ev, agentId, signals, plan);
             if (judge) this.#applyReportVerdict(agentId, reported);
+            // a blocked stop goes on working: there is no result yet
+            if (!decision.block) this.#leaveLeadNote(ev.sessionId, agentId);
             return decision;
           }
           if (ev.spooled && managed) this.#markUnverified(agentId);
@@ -1026,6 +1112,11 @@ export class Router {
     const firstFailure = signals.find(x => !x.ok)?.detail?.split('\n')[0]?.slice(0, 200);
     switch (sub.status) {
       case 'passed':
+        // decision 192: its own stop checked the scope only; it passed with the verify of the last writer of its work tree
+        if (signals.some(x => x.kind === 'scope' && x.detail?.includes(SHARED_BUSY_MARK))) {
+          return `${head}: passed with the last writer of its work tree — the build and tests ran once, on all their changes together${tail} (already verified by the router: do not re-run the test suite).`
+            + this.#passedNote(agent.requestId, sub, agentId) + leadNote(sub.repro);
+        }
         // Decision 87: tell the lead not to spend a turn re-running what the router already ran. Decision 178 (가): a
         // lead re-ran a whole suite (407 s) after a passing verify; when verify ran no tests, a targeted run is enough.
         return `${head}: verify passed — ${checks || 'no checks configured'}${tail} (${testsRan
@@ -1241,6 +1332,7 @@ export class Router {
           for (const h of this.#heldForSharedTree(agent.requestId, sub.id)) {
             this.ledger.updateSubtask(agent.requestId, h.id, { status: 'passed', verdict: 'meet' }, at);
             this.#log.info('held subtask passed with the last writer of its work tree', { requestId: agent.requestId, subtaskId: h.id, verifiedWith: sub.id });
+            this.#leaveLeadNote(ev.sessionId, h.agentId);   // the lead was told "held": now it passed
           }
         }
         return NONE;
@@ -1556,6 +1648,10 @@ export class Router {
     ctx.requestId = latest?.id ?? null;
     this.#expireStale(ev.sessionId);
     // Decision 175: the turn does not end here, so nothing below (acceptance, turn-end state, close) runs yet.
+    // Decision 205: the turn does not end here either. A subtask result the lead has not read goes to it first, and
+    // the conversation continues so it can act on it (lead-notes.ts). The next Stop finds nothing waiting.
+    const unread = this.#takeLeadNotes(ev);
+    if (unread.length) return { context: unread.map(n => this.#leadNoteText(n)).join('\n') };
     const hold = latest && latest.status !== 'closed' ? this.#leadStopBlock(latest, ev) : undefined;
     if (hold) return { block: { reason: hold } };
     if (!ev.spooled) this.#acceptOnTurnEnd(ev.sessionId, true);   // decision 137
@@ -1813,6 +1909,7 @@ export class Router {
 
   #runTool(name: RouterToolName, input: unknown, bind: ToolBinding, ctx: Ctx): RouterToolResult {
     if (name === 'router_get_plan') return this.#toolPlan(bind, ctx);
+    if (name === 'router_project_isolation') return this.#toolProjectIsolation(input as ProjectIsolationInput, bind, ctx);   // decision 192 (Q3): needs no open request
     const req = this.ledger.latestRequest(bind.sessionId);
     if (!req || req.status === 'closed') return toolError('no_request');
     ctx.requestId = req.id;
@@ -1823,6 +1920,35 @@ export class Router {
       case 'router_request_scope': return this.#toolScope(req, input as RequestScopeInput);
       default: return toolError('unknown_tool');
     }
+  }
+
+  /**
+   * decision 192 (Q3): turn git-worktree isolation on or off for this session's project. Turning it on (or any
+   * change to the project's own files) needs the user's agreement — the lead asks first, then calls again with
+   * userConfirmed true (as escalation/scope). Turning it off when only the router-home state changes applies at
+   * once. The home state is written last (setProjectWorktree), so a failed project write never leaves the state
+   * saying "on" with no settings. The result names the files changed and how to undo it.
+   */
+  #toolProjectIsolation(input: ProjectIsolationInput, bind: ToolBinding, ctx: Ctx): RouterToolResult {
+    const open = this.ledger.latestRequest(bind.sessionId);
+    if (open && open.status !== 'closed') ctx.requestId = open.id;   // bind the tool_call event to the request
+    const cwd = this.sessionCwd(bind.sessionId) ?? bind.cwd;
+    const root = cwd ? workTreeRoot(cwd) : undefined;
+    if (!root) return toolError('not_allowed', 'this session is not inside a git repository, so there is no work tree to isolate — make the change yourself.');
+    const home = this.#home.root;
+    const preview = setProjectWorktree(root, input.enable, home, { dryRun: true });   // the project files this would change
+    if (preview.changed.length && input.userConfirmed !== true) {
+      return toolError('needs_user', `ask the user whether to turn git-worktree isolation ${input.enable ? 'on' : 'off'} for this project (it ${input.enable ? 'writes' : 'removes'} worktree.baseRef in .claude/settings.local.json and a ".claude/worktrees/" line in .gitignore), then, only if they agree, call again with userConfirmed true.`);
+    }
+    let res: ReturnType<typeof setProjectWorktree>;
+    try { res = setProjectWorktree(root, input.enable, home); }
+    catch (e) { return toolError('internal', `could not write the project's worktree settings (${errorText(e)}); changed before the failure: ${preview.changed.join(', ') || 'none'}.`); }
+    const undo = input.enable ? 'router_project_isolation { enable: false } (or `do-it-all-claude-code project disable`)' : 'router_project_isolation { enable: true, userConfirmed: true } (or `do-it-all-claude-code project enable`)';
+    const note = (input.enable
+      ? `Worktree isolation is on${res.changed.length ? ` (changed ${res.changed.join(', ')})` : ' (already on; nothing to change)'}. It applies to subtasks dispatched from now on; subtasks already running keep their worktree.`
+      : `Worktree isolation is off${res.changed.length ? ` (changed ${res.changed.join(', ')})` : ' (no project files changed)'}. The team still works here; edits to the shared checkout take turns.`)
+      + ` Undo with ${undo}.`;
+    return { ok: true, result: { worktree: res.worktree, changed: res.changed, note } };
   }
 
   /** What a slot's next Agent call must use. */
@@ -2539,9 +2665,9 @@ function withKind(t: TriageResult, team: TeamPreset): TriageResult {
   return 'kind' in t ? { ...t, kind: team.leadDirect ? 'direct' : 'team' } as TriageResult : t;
 }
 
-/** The subagent a task notification reports on: the adapter's parsed taskId, else the <task-id> tag. */
+/** The subagent a notification is about: the adapter's parsed taskId, else an agent message's sender, else the <task-id> tag. */
 function notificationTaskId(ev: RouterEvent, prompt: string): string | undefined {
-  return ev.notification?.taskId || /<task-id>\s*([^<\s]+)\s*<\/task-id>/.exec(prompt)?.[1];
+  return ev.notification?.taskId || agentMessageFrom(prompt) || /<task-id>\s*([^<\s]+)\s*<\/task-id>/.exec(prompt)?.[1];
 }
 
 /** Decision 84: N tokens all priced at the model's output rate (the long-prompt rate when N is that large). */
@@ -2592,8 +2718,9 @@ const PROJECT_SETUP_BRIEF = 'Project setup (first delegation here): this project
   + 'With it ON, subagents work in parallel, each in its own git worktree. With it OFF (the default until you choose), writers whose scopes share no file '
   + 'still work at the same time in this checkout; a writer whose scope overlaps a running one is sent after it, and the build and tests run once, when the last writer stops. '
   + `Before you start delegating, ask the user once whether to turn it on. End that question to the user with "${AWAITING_USER_MARKER}" on its own line, `
-  + 'so the router counts the request as waiting for them. If they say yes, have them run `do-it-all-claude-code project enable` in this project (then start a new session or continue); '
-  + 'if no, nothing more is needed. You will not be asked again for this project.';
+  + 'so the router counts the request as waiting for them. Then apply their answer with the router tool '
+  + `${ROUTER_TOOL_PREFIX}router_project_isolation (load it with ToolSearch first): only AFTER the user says yes, call it with { enable: true, userConfirmed: true }; if they say no, call { enable: false }. `
+  + 'The tool writes the project setup and names the files it changed — do not ask the user to run a terminal command (the CLI `do-it-all-claude-code project enable` is only a fallback). You will not be asked again for this project.';
 /** Audit #14: the fallback for pricing an unknown model's tokens when the subagent's step is not known. */
 const MOST_EXPENSIVE_MODEL = Object.entries(PRICING_PER_MTOK).sort((a, b) => b[1].output - a[1].output)[0]![0];
 

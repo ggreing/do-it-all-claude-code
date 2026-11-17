@@ -45,10 +45,14 @@ function session(d: TestDaemon, sid: string, cwd: string) {
   /** Dispatches a subtask and lets it finish with a passing verify. */
   const pass = async (tag: string, model: string, effort: string, role = 'coder'): Promise<void> => {
     const agent = `ag${++seq}`;
-    assert.deepEqual(await post(call(tag, role, model, effort)), {}, `dispatch ${tag}`);
+    const c = call(tag, role, model, effort);
+    assert.deepEqual(await post(c), {}, `dispatch ${tag}`);
     await post({ hook_event_name: 'SubagentStart', agent_id: agent, agent_type: `do-it-all-claude-code:${role}` });
     if (role === 'coder' || role === 'ui-designer') write(cwd, `src/${tag}-${agent}.ts`, `${tag}\n`);   // a writer that did its work (decision 145)
     assert.deepEqual(await post({ hook_event_name: 'SubagentStop', agent_id: agent, agent_type: `do-it-all-claude-code:${role}`, stop_hook_active: false }), {});
+    // the Agent call returns (a foreground run): the lead reads the result line next to it
+    const done = await post({ ...c, hook_event_name: 'PostToolUse', tool_response: { status: 'completed', agentId: agent } });
+    assert.match(done.hookSpecificOutput?.additionalContext ?? '', new RegExp(`subtask ${tag} \\(${role} `), `result of ${tag}`);
   };
   const easy = (subtaskId: string, bySubtaskId = 'RV') => tool('router_report_result', { subtaskId, verdict: 'accept', by: 'reviewer', bySubtaskId, margin: 'easy' });
   return { post, tool, call, pass, easy };

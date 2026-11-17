@@ -102,8 +102,12 @@ test('decision 192: two writers that stop together do not wait for each other; a
   const s = subtasks(d);
   assert.equal(Object.values(s).filter(v => v === 'passed/meet').length, 2, JSON.stringify(s));
   assert.ok(runs() >= 1, 'at least one of them ran the commands on the finished tree');
-  // a third, alone
-  assert.deepEqual(await post(dispatch('C', 'src/**')), {});
+  // a third, alone; the lead has not read the first two results yet, so they come next to this call, one line each
+  const third = await post(dispatch('C', 'src/**')) as { hookSpecificOutput?: { permissionDecision?: string; additionalContext?: string } };
+  assert.equal(third.hookSpecificOutput?.permissionDecision, undefined);
+  const lines = (third.hookSpecificOutput?.additionalContext ?? '').split('\n');
+  assert.deepEqual(lines.map(l => /subtask ([AB]) \(coder /.exec(l)?.[1]).sort(), ['A', 'B'], lines.join(' | '));
+  assert.ok(lines.every(l => /do not re-run the test suite/.test(l)), 'both are told as verified: the one that waited passed with the other');
   await post(start('c1'));
   write(repo, 'src/c.ts', 'c\n');
   const before = runs();

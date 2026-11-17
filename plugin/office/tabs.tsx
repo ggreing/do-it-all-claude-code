@@ -265,7 +265,7 @@ export function savingsTab(els: Els, st: OfficeTabData, ctx: TabContext): El {
     if (seven) lines.push(seven)
     if (!five && !seven) lines.push(<Text key="lim-none" dimColor wrap="truncate-end">  No limits reported yet (the status line reports them on a subscription)</Text>)
     const c = m.cost
-    lines.push(<Text key="m-cost" dimColor wrap="wrap">{`  lead ${usd(c.leadUsd)} · workers ${usd(c.workerUsd)} · ${usd(c.costPerPassedUsd)} a passed request${c.flags.estimated ? ` · ${c.flags.estimated} estimated` : ''}${c.flags.unknown ? ` · ${c.flags.unknown} unknown` : ''}`}</Text>)
+    lines.push(<Text key="m-cost" dimColor wrap="wrap">{`  lead ${usd(c.leadUsd)} · workers ${usd(c.workerUsd)}${c.costPerPassedUsd !== null ? ` · ${usd(c.costPerPassedUsd)} a passed request` : ''}${c.flags.estimated ? ` · ${c.flags.estimated} estimated` : ''}${c.flags.unknown ? ` · ${c.flags.unknown} unknown` : ''}`}</Text>)
     // the bars: what was spent per hour or day
     const pts = s.series.points
     if (pts.length) {
@@ -287,7 +287,7 @@ export function savingsTab(els: Els, st: OfficeTabData, ctx: TabContext): El {
     lines.push(
       <Text key="e-lead" wrap="wrap">
         {'  The workers\' tokens at the lead model\'s price: '}<Text bold>{usd(lp.atLeadPriceUsd)}</Text>{` instead of ${usd(lp.workerUsd)}`}
-        <Text {...(lp.differenceUsd > 0 ? { color: 'success' } : {})}>{` (${lp.differenceUsd >= 0 ? '' : '-'}${usd(Math.abs(lp.differenceUsd))} less)`}</Text><Text dimColor>{` · ${lp.requests} requests`}</Text>
+        <Text {...(lp.differenceUsd > 0 ? { color: 'success' } : {})}>{` (${usd(Math.abs(lp.differenceUsd))} ${lp.differenceUsd >= 0 ? 'less' : 'more'})`}</Text><Text dimColor>{` · ${lp.requests} request${lp.requests === 1 ? '' : 's'}`}</Text>
       </Text>,
     )
     lp.assumptions.forEach((a, i) => lines.push(<Text key={`e-as-${i}`} dimColor wrap="wrap">{`    · ${a}`}</Text>))
@@ -327,8 +327,8 @@ export function teamTab(els: Els, st: OfficeTabData, ctx: TabContext): El {
     const passed = t.roles.reduce((n, r) => n + r.stats.passed, 0)
     const ups = t.roles.reduce((n, r) => n + r.stats.stepUps, 0), downs = t.roles.reduce((n, r) => n + r.stats.stepDowns, 0)
     head = [`Profile ${t.profile.value}`, `${t.roles.length} role${t.roles.length === 1 ? '' : 's'}`, subtasks ? `${pct(passed / subtasks)} of ${subtasks} passed` : 'no subtasks yet', upDown(ups, downs, g)].filter(Boolean).join(' · ')
-    if (t.delegateFrom) lines.push(<Text key="from" dimColor wrap="wrap">{`Teams from ${t.delegateFrom.value}${t.leadClass ? ` with a ${t.leadClass} lead` : ''}${t.delegateFrom.source !== 'default' ? ` (${t.delegateFrom.source})` : ''}`}</Text>)
-    const nameW = 11
+    if (t.delegateFrom) lines.push(<Text key="from" dimColor wrap="wrap">{`Teams from ${t.delegateFrom.value}${t.leadClass ? ` (${modelName(t.leadClass)} lead)` : ''}${t.delegateFrom.source !== 'default' ? `, ${t.delegateFrom.source}` : ''}`}</Text>)
+    const nameW = Math.max(9, ...t.roles.map(r => r.role.length + 1))
     const barW = Math.max(4, Math.min(16, width - nameW - 36))
     for (const r of t.roles) {
       const s = r.stats
@@ -336,9 +336,13 @@ export function teamTab(els: Els, st: OfficeTabData, ctx: TabContext): El {
       lines.push(
         <Text key={`role-${r.role}`} wrap="truncate-end">
           <Text bold>{r.role.padEnd(nameW)}</Text>
-          <Text color={color}>{bar(s.passRate ?? 0, 1, barW, g)}</Text>
-          {` ${pct(s.passRate).padStart(4)} of ${s.subtasks}`}
-          <Text dimColor>{` · ${usd(s.avgCostUsd)} · ${dur(s.avgRunMs)}${s.stepUps || s.stepDowns ? ` · ${upDown(s.stepUps, s.stepDowns, g)}` : ''}`}</Text>
+          {s.subtasks
+            ? [
+                <Text key="bar" color={color}>{bar(s.passRate ?? 0, 1, barW, g)}</Text>,
+                ` ${pct(s.passRate).padStart(4)} of ${s.subtasks}`,
+                <Text key="more" dimColor>{` · ${usd(s.avgCostUsd)} · ${dur(s.avgRunMs)}${s.stepUps || s.stepDowns ? ` · ${upDown(s.stepUps, s.stepDowns, g)}` : ''}`}</Text>,
+              ]
+            : <Text dimColor>no subtasks in this period</Text>}
         </Text>,
       )
       lines.push(
@@ -397,7 +401,8 @@ export function settingsTab(els: Els, st: OfficeSettingsState, ctx: TabContext):
   const set = pendingSet(v.items, pending)
   const changes = Object.keys(set).length
   const own = v.items.filter(i => i.source === 'own').length
-  const titleW = Math.min(Math.max(14, Math.floor(width * 0.4)), Math.max(12, ...v.items.map(i => [...i.title].length + 1)))
+  // the title as long as the row leaves room for a value and where it comes from (about 24 columns)
+  const titleW = Math.min(Math.max(14, width - 26), Math.max(12, ...v.items.map(i => [...i.title].length + 1)))
 
   const press = (item: SettingItem) => () => ctx.act.cycle(item)
   // a setting a line: its title, the value in effect (or the change waiting, old → new) and where it comes from

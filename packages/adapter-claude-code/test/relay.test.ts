@@ -214,7 +214,7 @@ async function freePort(): Promise<number> {
   return p;   // nothing listens here now
 }
 
-test('auto-start: SessionStart with the daemon down spawns start once, spools, and passes', async () => {
+test('auto-start: SessionStart with the daemon down spawns start once, spools, and shows the router-off note', async () => {
   const home = tmpHome();
   try {
     const port = await freePort();
@@ -224,10 +224,56 @@ test('auto-start: SessionStart with the daemon down spawns start once, spools, a
     const out: string[] = [];
     await relayMod.relay(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }),
       { home, write: s => out.push(s), autoStart: h => { starts.push(h); return true; } });
-    assert.deepEqual(out, ['{}'], 'session is not blocked');
+    assert.match(JSON.parse(out[0]!).hookSpecificOutput.additionalContext, /not responding|do-it-all-claude-code start/);
     assert.deepEqual(starts, [home], 'auto-start was asked once, for this home');
     assert.equal(spoolFiles(home).length, 1, 'the event is still spooled for replay');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('router off: a team-worker Agent call is denied at PreToolUse, and not spooled', async () => {
+  const home = tmpHome();
+  try {
+    const port = await freePort();
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ daemonPort: port, fableOptIn: false }));
+    fs.writeFileSync(path.join(home, 'token'), 'tok');
+    const out: string[] = [];
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:coder' }, session_id: 's' }), { home, write: s => out.push(s) });
+    const o = JSON.parse(out[0]!).hookSpecificOutput;
+    assert.equal(o.permissionDecision, 'deny');
+    assert.match(o.permissionDecisionReason, /router is not running|do-it-all-claude-code start/);
+    assert.equal(spoolFiles(home).length, 0, 'a denied worker call is not spooled');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('router off: a non-router Agent call is NOT denied (fail-open)', async () => {
+  const home = tmpHome();
+  try {
+    const port = await freePort();
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ daemonPort: port, fableOptIn: false }));
+    fs.writeFileSync(path.join(home, 'token'), 'tok');
+    const out: string[] = [];
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'general-purpose' }, session_id: 's' }), { home, write: s => out.push(s) });
+    assert.deepEqual(out, ['{}'], 'a non-router agent passes through');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('not set up: a team-worker Agent call is denied with a setup reason', async () => {
+  const home = tmpHome();
+  try {
+    const out: string[] = [];
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:reviewer' }, session_id: 's' }), { home, write: s => out.push(s) });
+    const o = JSON.parse(out[0]!).hookSpecificOutput;
+    assert.equal(o.permissionDecision, 'deny');
+    assert.match(o.permissionDecisionReason, /not set up|do-it-all-setup/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('isRouterWorkerAgentCall matches the plugin workers only', () => {
+  for (const r of ['coder', 'tester', 'reviewer', 'architect', 'ui-designer'])
+    assert.ok(relayMod.isRouterWorkerAgentCall({ tool_name: 'Agent', tool_input: { subagent_type: `do-it-all-claude-code:${r}` } }), r);
+  assert.equal(relayMod.isRouterWorkerAgentCall({ tool_name: 'Agent', tool_input: { subagent_type: 'general-purpose' } }), false);
+  assert.equal(relayMod.isRouterWorkerAgentCall({ tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:unknown' } }), false);
+  assert.equal(relayMod.isRouterWorkerAgentCall({ tool_name: 'Bash' }), false);
 });
 
 test('auto-start: a non-SessionStart event with the daemon down does NOT auto-start', async () => {
@@ -271,18 +317,20 @@ test('auto-start: a reachable daemon at SessionStart does NOT auto-start', async
   } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test('setup hint: SessionStart with no config points at setup once (then "{}")', async () => {
-  const home = tmpHome();
+test('setup hint: SessionStart with no config points at setup once, and never creates the router home', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-hint-'));
+  const home = path.join(base, 'no-home');      // does NOT exist; the hint must not create it
+  const hintDir = path.join(base, 'plugindata');
   try {
     const out: string[] = [];
-    await relayMod.relay(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }), { home, write: s => out.push(s) });
-    const ctx = JSON.parse(out[0]!).hookSpecificOutput.additionalContext as string;
-    assert.match(ctx, /do-it-all-setup|setup/);
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }), { home, write: s => out.push(s), hintDir });
+    assert.match(JSON.parse(out[0]!).hookSpecificOutput.additionalContext as string, /do-it-all-setup|setup/);
+    assert.equal(fs.existsSync(home), false, 'the hint must not create the router home');
+    assert.ok(fs.readdirSync(hintDir).some(f => f.includes('setup-hint-shown')), 'the marker is written to the hint dir, outside the home');
     const out2: string[] = [];
-    await relayMod.relay(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }), { home, write: s => out2.push(s) });
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }), { home, write: s => out2.push(s), hintDir });
     assert.deepEqual(out2, ['{}'], 'shown once');
-    assert.equal(spoolFiles(home).length, 0, 'no config => nothing to spool');
-  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
 test('minimalSpawnEnv keeps ordinary vars but drops credentials, secret names and NODE_OPTIONS', () => {

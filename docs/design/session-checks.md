@@ -148,9 +148,40 @@ before the measurement with `on`.
 In the daemon's log: one `reproduction run` line with `result: failed` before the change, and one
 `reproduction at stop` line with `state: reproduced`.
 
-**C6. The lead is told.** The picked coder's second line ends with `repro reproduced`, and the lead's summary
-or the task result it was given says "Reproduction: <file> failed before the change and passes after it,
-unchanged."
+**C6. The lead is told, once, and does not run the checks again** (decision 205). An interactive session runs the coder in
+the background ("Backgrounded agent"). Its report then reaches the lead before the router has judged the
+stop, and the task notification that follows raises no hook when the lead's turn is already running. The
+result line therefore waits in `<home>/lead-notes/<session>/` and goes with the lead's next hook, whichever
+comes first.
+
+1. The picked coder's second line ends with `repro reproduced`.
+2. When the coder's report arrives, the lead does not start a build or a test run. If the router was still
+   checking at that moment, the lead was told so: "the message above is the subagent's own report. The router
+   is still checking it".
+3. The lead's summary quotes or uses the router's line: "subtask A (coder …): verify passed — …" and
+   "Reproduction: <file> failed before the change and passes after it, unchanged." It does not say that the
+   verify result was missing.
+4. After the coder finished, the lead ran no build and no test command of its own (a `git diff --stat` is
+   what it was told to run).
+5. The Work tab lists one request for the one prompt. The coder's report is not a request.
+6. `<home>/lead-notes/` holds no file once the request is over.
+
+In the daemon's log, "subtask results handed to the lead" says which hook carried the line (`with:
+prompt_submit`, `pre_tool_use`, `post_tool_use` or `stop`). No such line and no file left means the guard
+hook carried it, next to the result of the lead's own Bash, Read or edit call.
+
+If the lead was not told (3 fails), the folder and the log say where it stopped:
+
+- a file is still in `lead-notes/<session>/`: no hook of the lead came after the stop was judged;
+- the log names `stop`, and the lead's turn ended there anyway: this Claude Code does not continue a turn on
+  a Stop hook's context, so the Stop has to block instead;
+- no file and no log line: the guard hook wrote the line, and Claude Code did not pass on the context of a
+  PreToolUse hook that decides nothing.
+
+If 4 fails although 3 holds, the line came next to the result of the very command it should have prevented.
+That is the chosen behavior (decision 205): the guard never refuses a command of the lead. Note how often it
+happens; a refusal of that one command with the result as its reason, or a foreground Agent call, would be a
+new decision.
 
 If C5 ends as `unconfirmed` instead, note the reason in the log line (`changed-first` means the coder changed
 the source before a test was seen failing; `no-test` means it wrote none). That is a result about the wording
@@ -280,13 +311,15 @@ source files (for example `src/a.js` and `src/b.js`, each with its own test file
 1. In R3, give a request that needs both files changed in unrelated ways, and say that the two parts are
    independent.
 2. When the lead asks whether to turn on isolation for this project, answer no.
-3. `do-it-all-claude-code project status` in R3.
+3. Look at `<home>/projects/`: the file for R3.
 4. After the request, give a second small request in the same repository.
 
 Expected: (1) before it dispatches anyone, the lead asks one question about work trees for parallel writers
-and waits for the answer; (2) the work goes on in the checkout; (3) the status
-says it was asked and what was decided; (4) the lead does not ask again. The Office tab's top line reads
-"Isolation off: overlapping edits take turns" for this project.
+and waits for the answer; (2) after the "no" the lead calls the router tool `router_project_isolation` with
+`enable: false`, asks for no terminal command, and the work goes on in the checkout; (3) the file says it was
+asked (`askedAt`) and what was decided (`worktree: "off"`, `decidedAt`), and no file of R3 was changed;
+(4) the lead does not ask again. The Office tab's top line reads "Isolation off: overlapping edits take
+turns" for this project.
 
 If the lead never asks, look at `<home>/projects/`: a file there with `askedAt` means the note was given and
 the lead ignored it, which is a wording problem; no file means the note was not added.
@@ -312,10 +345,14 @@ Expected: the first coder is held; the second coder's failure, after its one fix
 lead with "also saw the changes of subtask A (…), which were not verified on their own"; the step-up is the
 second coder's.
 
-**G4. "Yes" turns isolation on.** In a fourth repository the router has not seen: answer yes at the question
-and run `do-it-all-claude-code project enable` as the lead says.
+**G4. "Yes" turns isolation on, without a terminal command.** In a fourth repository the router has not
+seen: answer yes at the question.
 
-Expected: the Office tab's line no longer says isolation is off; the settings view's "Work trees for parallel
+Expected: the lead calls `router_project_isolation` with `enable: true, userConfirmed: true`, only after the
+answer, and no permission prompt and no `!` command are needed; the tool's result names what it changed
+(`worktree.baseRef` in `.claude/settings.local.json` and a `.claude/worktrees/` line in `.gitignore`), and
+`git status` in that repository shows exactly those. A call before the answer, or without `userConfirmed`,
+is answered `needs_user` and changes nothing. The Office tab's line no longer says isolation is off; the settings view's "Work trees for parallel
 writers" line reads on; with two parallel coders each Agent result names a branch to merge, and each coder
 is verified when it stops.
 
@@ -330,7 +367,8 @@ Afterwards: `config set forceLevel default`.
 | B4 | the office moves to a plugin of its own |
 | C2 | members join subtasks by tag only |
 | C4 | the start note is delivered another way before the measurement |
-| C5, C6 | the note's and the role's wording; `observe` shows how often |
+| C5 | the note's and the role's wording; `observe` shows how often |
+| C6 | which hook carries the result line (see the three cases there); fix before release |
 | D | the wording of the stop reason |
 | E1 | the limits of the hook and the relay |
 | E2 | nothing changes; it sizes the risk |
@@ -338,4 +376,4 @@ Afterwards: `config set forceLevel default`.
 | F2 | the helper's write (source, revision); fix before release |
 | G1 | the wording of the project note, or where it is added |
 | G2, G3 | the hold for writers that share a checkout; fix before release |
-| G4 | the `project enable` path and Claude Code's own work tree setting |
+| G4 | the `router_project_isolation` tool and Claude Code's own work tree setting |

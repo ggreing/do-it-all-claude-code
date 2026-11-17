@@ -41,8 +41,17 @@ panel, never the router.
   - else small desks: the same member in the same shape, without the monitor and with one row over its head
     (15 columns and 9 rows a desk against 22 and 11). The dock of a 120- or 160-column terminal is 54 to 69
     columns across, two full desks a row, and five members then need 36 rows of full desks; small desks take 20;
-  - only when even those do not fit, one line a member: the name, the model and effort, the status and its time,
-    what it is doing. A press or 1–9 picks a member, as on the desks;
+  - else narrow desks (11 columns, the name and model lines only, four a row in a 120 x 30 terminal's dock);
+  - then the session shrinks to its last line, then goes, the narrow desks kept;
+  - then, cramped, the rows of narrow desks that fit without the title line, and the members left over on one line
+    under them (`+1: reviewer · Sonnet medium · ○ waiting`, or `+3: reviewer, tester, designer`), each name a
+    press that picks it, and 1–9 past the desks too. A 120 x 30 terminal's dock with a dialog open under the chat is
+    53 x 12: four at desks and that line;
+  - only when not even one row of desks fits, one line a member: the name, the model and effort, the status and its
+    time, what it is doing, its session shrinking the same way. A press or 1–9 picks a member, as on the desks;
+  - the layout moves down a step as soon as its step no longer fits, and back up only with two rows to spare. A
+    dialog under the chat (a permission question, `/help`) takes 12 to 17 rows from the dock while it is open, and a
+    spinner or a task list a row or two: the office does not flip between the desks and the list as they come and go;
   - in a room too low for frames, lines only, and a line on making the office taller (`ctrl+x tab`, then
     `ctrl+x up`). This is an inline pane the person made short: Claude Code keeps that height in their settings
     for every plugin pane, and it wins over the office's request. In fullscreen an inline pane gets at most a

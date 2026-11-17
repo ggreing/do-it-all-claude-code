@@ -61,16 +61,44 @@ function realAutoStart(home) {
     return true;
   } catch { return false; }
 }
-/** Once-per-machine SessionStart hint when the plugin is installed but `setup` has not run (no config yet). */
-function setupHintOutput(home) {
+/**
+ * Once-per-machine SessionStart hint when the plugin is installed but `setup` has not run (no config yet). The
+ * marker is written OUTSIDE the router home — in Claude Code's plugin-data folder when it is set, else an OS temp
+ * dir — so a machine that never installed does not get a `~/.do-it-all-claude-code` folder from this hint alone.
+ */
+export function hintMarkerDir() { return process.env.CLAUDE_PLUGIN_DATA || os.tmpdir(); }
+function setupHintOutput(hintDir) {
   try {
-    const marker = path.join(home, '.setup-hint-shown');
+    const marker = path.join(hintDir, 'do-it-all-claude-code.setup-hint-shown');
     if (fs.existsSync(marker)) return '{}';
-    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(hintDir, { recursive: true });
     fs.writeFileSync(marker, new Date().toISOString());
   } catch { /* cannot dedupe: it is only shown while there is no config, which setup fixes */ }
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext:
     'Do It All Claude Code is installed but not set up yet — the router is not running. Run `/do-it-all-setup` in this session, or `npx -y do-it-all-claude-code setup` in a terminal, then start a new session.' } });
+}
+
+// ---------------------------------------------------------------- router off: refuse team workers early
+// When the router cannot be reached, a router WORKER Agent call is refused at PreToolUse — not left to be blocked
+// at the write step after the worker has already spawned and spent tokens with nothing to show. The worker types
+// are the plugin's own agents (a test keeps this regex in sync with plugin/agents/). The guard still blocks writes
+// without the daemon; this only moves the refusal earlier.
+const ROUTER_WORKER_RE = /^do-it-all-claude-code:(coder|tester|reviewer|architect|ui-designer)$/;
+export function isRouterWorkerAgentCall(input) {
+  if (!isRecord(input) || input.tool_name !== 'Agent') return false;
+  const st = isRecord(input.tool_input) ? input.tool_input.subagent_type : undefined;
+  return typeof st === 'string' && ROUTER_WORKER_RE.test(st);
+}
+/** A PreToolUse deny with a reason that says what to do instead. */
+function denyAgent(reason) {
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
+}
+const ROUTER_OFF_WORKER = 'The router is not running, so this Do It All Claude Code worker cannot be routed or checked. Make the change yourself, or start the router (`do-it-all-claude-code start`, or start a new Claude Code session, which starts it) and delegate again.';
+const NOT_SET_UP_WORKER = 'Do It All Claude Code is not set up yet, so this worker cannot be routed. Make the change yourself, or run `/do-it-all-setup` (or `npx -y do-it-all-claude-code setup`) and delegate again.';
+/** SessionStart note when the router is installed but not answering (Claude Code still works). */
+function routerOffSessionStart() {
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext:
+    'The Do It All Claude Code router is not responding; it is being started. Claude Code works without it, but team workers are refused until it is up — make changes yourself, or run `do-it-all-claude-code start`.' } });
 }
 
 // ---------------------------------------------------------------- masking (core/security.ts redact, redactJson)
@@ -176,10 +204,14 @@ const SCOPE_LINE = /^\s*\[scope:[^\]]*\]\s*$/;
 const NOTIFICATION_TAGS = ['task-id', 'tool-use-id', 'output-file', 'status'];
 const PATH_LIKE = /^[^<>\n]{1,1024}$/;
 const TASK_NOTIFICATION = /^\s*<task-notification[\s>]/;
-const promptKind = p => (TASK_NOTIFICATION.test(p) ? 'notification' : /^\s*\//.test(p) ? 'command' : 'user');
+const AGENT_MESSAGE = /^\s*(?:Another Claude session sent a message:\s*)?<agent-message\s+from="([^"<>\n]{1,128})"\s*>/;
+const promptKind = p => (TASK_NOTIFICATION.test(p) || AGENT_MESSAGE.test(p) ? 'notification' : /^\s*\//.test(p) ? 'command' : 'user');
 const tagOf = (src, name) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(src)?.[1]?.trim();
 
 export function notificationSkeleton(prompt) {
+  // an agent's own message: who sent it, never what it says
+  const from = AGENT_MESSAGE.exec(prompt)?.[1];
+  if (from !== undefined && !TASK_NOTIFICATION.test(prompt)) return `<agent-message from="${from}"></agent-message>`;
   const lines = ['<task-notification>'];
   for (const t of NOTIFICATION_TAGS) { const v = tagOf(prompt, t); if (v && PATH_LIKE.test(v)) lines.push(`<${t}>${v}</${t}>`); }
   const wt = tagOf(prompt, 'worktree');
@@ -317,7 +349,7 @@ export function fallbackOutput(event) {
   return event === 'PreCompact' ? '' : '{}';
 }
 
-export async function relay(raw, { home = routerHome(), write = s => process.stdout.write(s), autoStart = realAutoStart } = {}) {
+export async function relay(raw, { home = routerHome(), write = s => process.stdout.write(s), autoStart = realAutoStart, hintDir = hintMarkerDir() } = {}) {
   const receivedAt = new Date().toISOString();
   let input;
   try { input = JSON.parse(raw); } catch {
@@ -326,6 +358,8 @@ export async function relay(raw, { home = routerHome(), write = s => process.std
   }
   // The event name for auto-start: the body is authoritative (and testable); argv EVENT is the fallback.
   const eventName = (isRecord(input) && typeof input.hook_event_name === 'string' && input.hook_event_name) || EVENT;
+  // A team worker the lead is about to spawn: refused early when the router cannot route it (below).
+  const workerAgentPre = eventName === 'PreToolUse' && isRouterWorkerAgentCall(input);
   // Decision 145: an edit tool's PostToolUse is relayed for the lead only (a takeover after delegating);
   // a subagent's edit (it has an agent_id) is answered at once, without the daemon.
   // Decision 175: unless the router marked the agent's file (it then runs the test the subagent just wrote).
@@ -340,8 +374,9 @@ export async function relay(raw, { home = routerHome(), write = s => process.std
   const port = cfg && typeof cfg.daemonPort === 'number' ? cfg.daemonPort : null;
   if (!port || !token) {
     // D5 (decision 100): before `init`/`setup` (no config/token) there is nothing to replay to — pass, don't
-    // spool. At SessionStart, point the user at setup once (decision 192): the plugin is in but not set up.
-    write(eventName === 'SessionStart' ? setupHintOutput(home) : fallbackOutput(EVENT));
+    // spool. A team worker is refused (not set up); at SessionStart, point the user at setup once (decision 192).
+    if (workerAgentPre) { write(denyAgent(NOT_SET_UP_WORKER)); return; }
+    write(eventName === 'SessionStart' ? setupHintOutput(hintDir) : fallbackOutput(EVENT));
     return;
   }
 
@@ -358,10 +393,13 @@ export async function relay(raw, { home = routerHome(), write = s => process.std
     const response = await post({ home, port, token, body, timeoutMs });
     write(response);                        // verbatim: JSON for most events, text/plain for pre_compact
   } catch {
+    // The router is unreachable. Refuse a team worker now (fail-closed for workers; a denied call is not spooled),
+    // so it does not spawn and spend tokens only to be blocked at its first write.
+    if (workerAgentPre) { write(denyAgent(ROUTER_OFF_WORKER)); return; }
     // decision 192: the daemon did not answer at session start, so start it (fire-and-forget; default on).
     if (eventName === 'SessionStart' && cfg.autoStart !== 'off') autoStart(home);
     if (!subagentEdit) spool(home, input, receivedAt, cfg.recordPrompts === true);   // daemon down / slow / error: queue for replay, then pass (a subagent's edit has nothing to replay)
-    write(fallbackOutput(EVENT));
+    write(eventName === 'SessionStart' ? routerOffSessionStart() : fallbackOutput(EVENT));
   }
 }
 

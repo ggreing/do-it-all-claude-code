@@ -125,7 +125,8 @@ test('L0 and L1 are handled by the lead directly by default; team briefs keep th
   }
   for (const l of ['L1', 'L2', 'L3'] as const) {
     assert.match(brief(l, TEAM), /Do not open or read source files to plan/);
-    assert.match(brief(l, TEAM), /do not re-run them/);
+    assert.match(brief(l, TEAM), /do not run the build or the tests yourself/);
+    assert.match(brief(l, TEAM), /A report without that line is not verified yet/);
   }
 });
 

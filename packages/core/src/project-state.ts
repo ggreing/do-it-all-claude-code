@@ -75,6 +75,69 @@ export function getProjectWorktree(home: string, projectPath: string): Worktree 
   return w === 'on' || w === 'off' ? w : null;
 }
 
+// --------------------------------------------------------------- applying the choice to the project (decision 192)
+// The worktree-isolation settings written INTO the project when the user turns it on: worktree.baseRef = "head"
+// (parallel workers branch from the current commit) and a ".claude/worktrees/" line in .gitignore. Turning it off
+// removes both. This is the one writer, shared by the CLI (`project enable|disable`) and the router MCP tool
+// (`router_project_isolation`), so the two never diverge. The caller has confirmed the change (a CLI prompt or
+// Claude Code's tool-permission check); this just writes.
+
+const WORKTREES_GITIGNORE_RE = /^\.claude\/worktrees\/?\r?$/m;
+
+function readJsonObject(file: string): Record<string, any> {
+  try { const v = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')) as unknown; return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, any> : {}; }
+  catch { return {}; }
+}
+function writeJsonObject(file: string, data: unknown): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  fs.renameSync(tmp, file);
+}
+
+export interface SetWorktreeResult { worktree: Worktree; changed: string[] }
+
+/**
+ * Turn git-worktree isolation on or off for a project and record the choice. `root` is the work-tree root.
+ * Returns the project files it changed (absolute paths). With `dryRun`, it writes nothing and returns the files
+ * that WOULD change (for a confirmation prompt) — but never records state. The home state file is always updated
+ * on a real run, even when no project file changed (so the project is not asked again).
+ */
+export function setProjectWorktree(root: string, enable: boolean, home: string = routerHome(), opts: { dryRun?: boolean } = {}): SetWorktreeResult {
+  const changed: string[] = [];
+  const local = path.join(root, '.claude', 'settings.local.json');
+  const s = readJsonObject(local);
+  const hasBaseRef = s.worktree?.baseRef === 'head';
+  if (enable && !hasBaseRef) {
+    changed.push(local);
+    if (!opts.dryRun) writeJsonObject(local, { ...s, worktree: { ...(s.worktree ?? {}), baseRef: 'head' } });
+  } else if (!enable && hasBaseRef) {
+    changed.push(local);
+    if (!opts.dryRun) {
+      const worktree = { ...s.worktree }; delete worktree.baseRef;
+      const next: Record<string, unknown> = { ...s };
+      if (Object.keys(worktree).length) next.worktree = worktree; else delete next.worktree;
+      writeJsonObject(local, next);
+    }
+  }
+  const gi = path.join(root, '.gitignore');
+  const text = fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '';
+  const hasLine = WORKTREES_GITIGNORE_RE.test(text);
+  if (enable && !hasLine) {
+    changed.push(gi);
+    if (!opts.dryRun) fs.writeFileSync(gi, text + (text && !text.endsWith('\n') ? '\n' : '') + '.claude/worktrees/\n');
+  } else if (!enable && hasLine) {
+    changed.push(gi);
+    if (!opts.dryRun) fs.writeFileSync(gi, text.replace(/^\.claude\/worktrees\/?\r?\n?/m, ''));
+  }
+  const worktree: Worktree = enable ? 'on' : 'off';
+  if (!opts.dryRun) {
+    const prev = readProjectState(root, home);
+    writeProjectState({ path: root, worktree, ...(prev?.askedAt ? { askedAt: prev.askedAt } : {}), decidedAt: new Date().toISOString() }, home);
+  }
+  return { worktree, changed };
+}
+
 /** Record a project's answer (atomically, 0600). Creates the projects directory (0700) if needed. */
 export function writeProjectState(state: ProjectState, home: string = routerHome()): void {
   const dir = projectsDir(home);
