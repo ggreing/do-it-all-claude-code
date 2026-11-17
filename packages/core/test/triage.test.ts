@@ -63,7 +63,10 @@ test('low confidence falls back to L1', () => {
 test('lead brief names the per-role start step with model and effort', () => {
   const r = triage({ prompt: '모듈 단위로 리팩터링해줘' });
   const text = formatTriageContext(r, DEFAULT_PRESETS[r.level]);
-  assert.match(text, /model=(haiku|sonnet|opus), effort=/);
+  // the team line gives each role's count and step; its model and effort are in its Agent call line, once
+  assert.match(text, /team preset L2: architect x1 @s3; coder x2 @s1; reviewer x1 @s3; tester x1 @s1\. budget \$5\./);
+  assert.match(text, /- architect: subagent_type "do-it-all-claude-code:architect", model "sonnet", effort "medium"/);
+  assert.doesNotMatch(text, /model=/);
   assert.match(text, /\[subtask:<ID>\]/);
 });
 
@@ -278,4 +281,31 @@ test('an uncertain lead-direct request gets the rubric and the L2 call values; a
   // a stored result without the new fields (older ledger rows) still formats
   const { kind: _k, rule: _r, teamScore: _s, features: _f, ...old } = t;
   assert.match(formatTriageContext(old, DEFAULT_PRESETS.L1), /handled by you directly/);
+});
+
+test('decision 211: what the wording settles as small stays with a Sonnet lead and an unknown one, not with an Opus-class lead', async () => {
+  const { SMALL_STAYS_WITH_LEAD, smallStaysWithLead } = await import('@do-it-all-claude-code/core');
+  assert.deepEqual(SMALL_STAYS_WITH_LEAD, { opus: false, sonnet: true, haiku: true, other: true });
+  const sonnet = withLeadModel(DEFAULT_PRESETS, 'claude-sonnet-5-5');
+  // the two rules that settle a request as small: a short fix or option request, and a short one with a log
+  const small = triage({ prompt: 'slugify drops accents, please fix the bug' }, sonnet);
+  const withLog = triage({ prompt: 'parseConfig throws on empty input\nTypeError: Cannot read properties of undefined\n    at parse (src/config.ts:10:5)' }, sonnet);
+  assert.deepEqual([small.level, small.kind, small.rule, withLog.level, withLog.kind, withLog.rule], ['L1', 'direct', 'small-fix', 'L1', 'direct', 'debug-with-log']);
+  for (const t of [small, withLog]) {
+    assert.deepEqual((['opus', 'sonnet', 'other'] as const).map(c => smallStaysWithLead(t, c)), [false, true, true]);
+    // a delegateFrom the user set for the class wins, whatever its value; another class's value does not count
+    assert.equal(smallStaysWithLead(t, 'sonnet', { sonnet: 'L1' }), false);
+    assert.equal(smallStaysWithLead(t, 'sonnet', { opus: 'L2' }), true);
+  }
+  // not small by a rule: unclear size, a team by rule, a typo (L0, the lead's anyway), a level set by hand or by the judge
+  const unclear = triage({ prompt: 'Make the date picker remember the last chosen month' }, sonnet);
+  const team = triage({ prompt: 'Refactor the validation module across multiple files and add an audit log' }, sonnet);
+  const typo = triage({ prompt: 'fix the typo in README.md' }, sonnet);
+  assert.deepEqual([unclear.kind, team.kind, typo.level], ['uncertain', 'team', 'L0']);
+  for (const t of [unclear, team, typo, { ...small, source: 'manual' as const }, { ...small, source: 'judge' as const }]) assert.equal(smallStaysWithLead(t, 'sonnet'), false);
+  // the brief of such a request is the short one: no call values, no router tool, nothing about a team's steps
+  const brief = formatTriageContext({ ...small, kind: 'direct' }, { ...sonnet.L1, leadDirect: true }, sonnet);
+  assert.match(brief, /Level L1 is handled by you directly \(team preset lead_direct\): make the change yourself, without subagents/);
+  assert.doesNotMatch(brief, /subagent_type|router_report_triage|task-notification/);
+  assert.ok(brief.length < 450, `${brief.length} characters`);
 });

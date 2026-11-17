@@ -2,10 +2,11 @@
 // own settings. A value the user set in config.json or teams.yaml stays; a profile only changes what the user left
 // alone. `balanced` is the defaults as they are, so an install without the key behaves as before.
 //
-// Only `balanced` rests on a measurement (the phase 3 check: a passed task cost 33% less than plain Claude Code,
-// the same tasks passed). `save` and `quality` move the same settings one way or the other and are not measured;
-// the text says so. Reproduce first is not part of a profile: it waits for its own measurement. The per-request
-// budgets follow the profile by a factor (save 0.6, quality 1.5), below a budget the user set.
+// Only `balanced` rests on a measurement (the bench runs in docs/measurements). `save` and `quality` move the
+// same settings one way or the other and are not measured; the text says so. The text gives no number: the
+// figures are in the measurement notes, and they change with each run of the bench. Reproduce first is not part
+// of a profile: it waits for its own measurement. The per-request budgets follow the profile by a factor (save
+// 0.6, quality 1.5), below a budget the user set.
 import { DEFAULT_LADDER } from './ladder.ts';
 import { DEFAULT_DELEGATE_FROM, DEFAULT_PRESETS, applyPresetFile, type LeadModelClass, type PresetFile } from './presets.ts';
 import type { Level, Step, TeamPreset } from './types.ts';
@@ -58,8 +59,8 @@ export const PROFILE_INFO: Record<Profile, { title: string; summary: string; mea
   },
   balanced: {
     title: 'Balanced',
-    summary: 'The defaults: delegation from L1 for Opus and Sonnet leads, Haiku coders first, a reviewer and a tester at L2 and L3.',
-    measured: 'A passed task cost 33% less than plain Claude Code in the phase 3 check (15 tasks, a Sonnet lead, one run each); the same tasks passed, and it was slower.',
+    summary: 'The defaults: delegation from L1 for Opus and Sonnet leads (a Sonnet lead keeps a request whose wording shows a small fix), Haiku coders first, a reviewer and a tester at L2 and L3.',
+    measured: 'Measured on the bench (see docs/measurements); the other profiles are not measured yet.',
   },
   quality: {
     title: 'Quality',

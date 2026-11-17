@@ -186,7 +186,7 @@ export interface ConfigKeySpec {
 export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: 'profile', type: 'enum', options: PROFILES, default: DEFAULT_PROFILE, appliesAt: 'now', description: 'Save, balanced or quality: where delegation starts, the teams and their start steps, wherever you set no value of your own (the next request uses it)' },
   { key: 'budgetsUsd', type: 'levels', default: PROVISIONAL_BUDGET_USD, min: 0, minExclusive: true, appliesAt: 'now', description: 'The budget in USD of one request at each level' },
-  { key: 'delegateFrom', type: 'byLeadClass', options: LEVELS, default: DEFAULT_DELEGATE_FROM, appliesAt: 'now', description: 'The first level that gets a team, per lead model class' },
+  { key: 'delegateFrom', type: 'byLeadClass', options: LEVELS, default: DEFAULT_DELEGATE_FROM, appliesAt: 'now', description: 'The first level that gets a team, per lead model class. While a class is not set here, a Sonnet lead (or one whose model is not known yet) keeps a request whose wording shows a small fix; a value set here applies to every request of that level' },
   { key: 'autoRelease', type: 'enum', options: ['on', 'observe', 'off'], default: DEFAULT_AUTO_RELEASE, appliesAt: 'now', description: 'Hand a delegated level back to the lead when its teams cost more per accepted task (observe only reports)' },
   { key: 'holdoutRate', type: 'number', min: 0, max: MAX_HOLDOUT_RATE, default: DEFAULT_HOLDOUT_RATE, appliesAt: 'now', description: 'The share of delegated-level requests the lead handles alone, as the baseline for auto-release' },
   { key: 'stepDown', type: 'enum', options: ['on', 'off'], default: 'on', appliesAt: 'now', description: 'Move a slot one step down after two easy passes in a row' },

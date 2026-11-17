@@ -785,8 +785,8 @@ value the user set stays, and its `source` says `own`.
 | Budget of one request | default × 0.6 | default | default × 1.5 |
 
 - `balanced` is the defaults as they were, so an install without the key behaves as before.
-- Only `balanced` has a measurement behind it (a passed task cost 33% less than plain Claude Code in the phase
-  3 check). `save` and `quality` say "not measured yet".
+- Only `balanced` has a measurement behind it; its text points to `docs/measurements` and gives no number,
+  because the figures change with each run of the bench. `save` and `quality` say "not measured yet".
 - Reproduce first is in no profile until its own measurement is in: it stays off unless the user turns it on.
 - A budget the user set (`budgetsUsd`, or `budget_usd` in a teams.yaml) wins over the profile's; the view
   shows the value in effect and how it came about (`profile x 0.6`).

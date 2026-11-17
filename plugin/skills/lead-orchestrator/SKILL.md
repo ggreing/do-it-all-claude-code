@@ -1,6 +1,6 @@
 ---
 name: lead-orchestrator
-description: Mandatory whenever your context contains a line starting "[do-it-all-claude-code] level …" — routing is ON and you are the lead. At level L0 the lead makes the small change itself (the router only records it); at L1 and above the lead delegates to the team instead of editing, stays light, and does not read source files to plan. Covers the L0/L1+ split, keeping the lead light, the exact Agent call shape, write scopes, the worktree rule, trusting the router's verify result, step changes, HITL, and merging.
+description: For the lead of a request whose context has a line starting "[do-it-all-claude-code] level …" (routing is ON). That brief is enough for a small change the lead makes itself and for a plain delegation, so do not load this skill for those. Load it when you delegate and need what the brief leaves out — a verify block, a step change, a HITL stop, parallel writers and merging their branches, write scopes.
 ---
 
 # Lead orchestrator
@@ -9,8 +9,8 @@ Routing is ON when your context holds a brief like:
 
 ```
 [do-it-all-claude-code] level L2 (source=rule, confidence=0.72): <one line>
-team preset L2: architect x1 @s3 (model=sonnet, effort=medium); coder x2 @s1 (model=haiku, effort=low); reviewer x1 @s3 (model=sonnet, effort=medium); tester x1 @s1 (model=haiku, effort=low). budget $5.
-Routing is ON for this request. You are the lead: read only what you need to plan, then delegate.
+team preset L2: architect x1 @s3; coder x2 @s1; reviewer x1 @s3; tester x1 @s1. budget $5.
+Routing is ON for this request. You are the lead: delegate, and keep your own work small (every call you make re-reads your whole context at the lead model's price).
 Do not edit or write files yourself (unless the user explicitly asks you to); the team below does the changes.
 …
 ```
@@ -83,6 +83,7 @@ The outcome is one line that starts with `[do-it-all-claude-code] subtask <ID>`.
 
 - If a subagent is **blocked from stopping** with a verify reason, it keeps working in the same context to fix the problem — let it finish; don't re-call it.
 - If the router reports a subtask **stepped up** (missed twice), re-call it as a *new* subagent at the `model`/`effort` the router now gives, and include the previous failure in the handoff brief. Do this before you answer the user: a failed subtask whose slot was raised is not a result to report. If you end your turn without a new attempt, the router stops you once and repeats the values; if you need the user's decision instead, ask and end with the HITL marker (below).
+- If the router reports that **verify could not run, or could not start the tests** (a tool is missing, or the tests fail to load by an error that is in no file the subtask changed), the subtask is neither passed nor failed and its slot keeps its step. Don't dispatch it again for that and don't repair the test setup: read the change with `git diff`, then tell the user what was changed and that the tests could not be run here.
 - When the brief says **reproduce first is on**, put `[repro: required]` on the line after `[scope: …]` of a coder subtask that fixes a bug or adds a behavior, and include the test folder in its scope; the coder then writes a failing test first and the router runs it before and after the change. For work a test cannot show, write `[repro: off <reason>]` (`refactor`, `docs`, `config`, `no-tests`, `not-testable`). A result line that says **Reproduction unconfirmed** means the problem was not seen failing first: the subtask still passed verify, but say so when you report, or dispatch a check if it matters.
 - A worker that needs to edit outside its scope says so in its report's "scope request" line. Only widen scope when the work truly needs it; widening into a protected path (`.env`, CI, `.claude/`, `.git/`) requires user confirmation.
 

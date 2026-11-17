@@ -43,7 +43,7 @@ test('/router level on a request in progress re-plans it (manual triage, new tea
 
   const o = await out(d, prompt(sid, cwd, '/router level L3'));
   assert.match(ctx(o), /^\[do-it-all-claude-code\] level L3 \(source=manual, confidence=1\.00\)/);
-  assert.match(ctx(o), /team preset L3: architect x1 @s5 .* budget \$15\./);
+  assert.match(ctx(o), /team preset L3: architect x1 @s5; .* budget \$15\./);
   assert.match(ctx(o), /level set manually to L3 for request r-.* \(was L1\)/);
 
   const [r] = rows(d, 'SELECT level, preset, budget_usd, status, turns, triage, override_from FROM requests');

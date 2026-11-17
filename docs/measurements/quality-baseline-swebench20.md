@@ -41,3 +41,9 @@ Split by what the lead did in the reproduce-first-on arm:
 One run per cell. The three L3 tasks of the reproduce-first-off arm were run a second time on their own after the
 first pass stopped on its budget; they are counted once. Raw results: `bench/results/qb-on`, `qb-off`,
 `qb-off-l3` in the measurement copy (not committed).
+
+The router-off runs here had no Agent tool, and the router-on runs had no router MCP tools (the bench ran with
+`--strict-mcp-config`). A user's session has both: without the Agent tool, router off saves about 5 points on
+small requests that a real session would not; without the MCP tools, router on skips about 2,400 tokens of tool
+definitions a real session carries, and its lead cannot report a one-file request and keep it. The re-measure
+(decision 213) runs both arrangements as a user's session would.

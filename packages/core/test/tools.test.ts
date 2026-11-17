@@ -174,8 +174,10 @@ test('decision 178: oneFileDirect, and the brief of an uncertain team request of
   const uncertain = triage({ prompt: 'Make the date picker remember the last chosen month' }, presets);
   assert.equal(uncertain.kind, 'uncertain');
   const brief = formatTriageContext(uncertain, presets[uncertain.level], presets);
-  assert.match(brief, /if the whole change is in one file and about 15 changed lines or fewer, do not delegate\. Call router_report_triage with kind "direct", level "L1", files 1, lines/);
-  assert.match(brief, /unless router_report_triage answered leadDirect true/);
+  assert.match(brief, /- The whole change is in one file and about 15 changed lines or fewer: do not delegate\. Call router_report_triage with kind "direct", level "L1", files 1, lines/);
+  assert.match(brief, /when it answers leadDirect true, make the change yourself/);
+  assert.match(brief, /- Otherwise delegate, and the staffing is yours/);
+  assert.match(brief, /When you delegate: Do not edit or write files yourself/);
   const spec = triage({ prompt: 'Refactor the validation module across multiple files and add an audit log' }, presets);
   assert.doesNotMatch(formatTriageContext(spec, presets[spec.level], presets), /one-file|router_report_triage with kind "direct"/);
 });
@@ -184,7 +186,7 @@ test('decision 178: a team brief with two writer slots tells the lead to send in
   const { triage, formatTriageContext, DEFAULT_PRESETS } = await import('../src/index.ts');
   const spec = triage({ prompt: 'Refactor the validation module across multiple files and add an audit log' });
   const brief = formatTriageContext(spec, DEFAULT_PRESETS.L2, DEFAULT_PRESETS);
-  assert.match(brief, /two or more independent parts that write different files or directories, give each its own coder subtask with a \[scope: \.\.\.\] that no other subtask writes, and send those subtasks in one message/);
+  assert.match(brief, /Independent parts that write different files or directories go to one coder subtask each, sent in one message so they run at the same time, each with a \[scope: \.\.\.\] no other subtask writes/);
   assert.match(brief, /The router refuses a writer whose scope overlaps one still running/);
   // the one-coder team (L1) gets no such line
   assert.doesNotMatch(formatTriageContext({ ...spec, level: 'L1' }, { ...DEFAULT_PRESETS.L1, leadDirect: undefined } as never, DEFAULT_PRESETS), /independent parts/);

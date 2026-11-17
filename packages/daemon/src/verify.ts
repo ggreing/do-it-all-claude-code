@@ -10,6 +10,7 @@ import {
   type GitMeta, type Snapshot,
 } from './git.ts';
 import { matchesAny, matchesScope, scopeCaseInsensitive } from './glob.ts';
+import { NOT_STARTED_MARK, testsDidNotStart } from './not-started.ts';
 import { tailText } from './payload.ts';
 import { verifyShell, zeroTestsRan, type Shell } from './shell.ts';
 import { SKIP_DIRS, SKIP_PATHS, changedKeys, eolOnly, sameContent, scanTree, type TreeMarks } from './tree.ts';
@@ -184,6 +185,14 @@ export async function runVerify(plan: VerifyPlan): Promise<VerifySignal[]> {
       continue;
     }
     const tail = ok ? '' : tailText(r.output, DETAIL_MAX, plan.secrets);
+    // decision 212: the tests did not start, and the error is not in a file the subagent changed. Still a
+    // failure here (the subagent gets its one fix attempt); the router does not raise the slot for it twice.
+    // Without the list of what the subagent changed nothing can be told apart, so the failure stays an ordinary one.
+    const stuck = !ok && c.kind === 'test' && !r.timedOut && !r.aborted && sc?.changed ? testsDidNotStart(command, r.output, r.code, sc.changed) : undefined;
+    if (stuck && !stuck.inChanged.length) {
+      out.push({ kind: c.kind, ok: false, detail: `${command}: ${NOT_STARTED_MARK}${tailText(stuck.error, 160, plan.secrets)} (${stuck.what}; exit ${r.code ?? r.signal})${tail ? `\n${tail}` : ''}`, ...facts });
+      continue;
+    }
     out.push({ kind: c.kind, ok, detail: `${command}: ${status}${tail ? `\n${tail}` : ''}`, ...facts });
   }
   // What the commands themselves wrote (build info, caches) is recorded so the next stop does not count it.

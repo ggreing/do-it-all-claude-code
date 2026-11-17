@@ -4,12 +4,23 @@
 //
 //   node scripts/measure107.ts --api-key-helper "<keychain cmd>" [--tasks id,id] [--arrangements direct,team-L2,team-L3,auto]
 //        [--lead opus] [--effort high] [--budget 50] [--cap-scale 1] [--out dir] [--work dir] [--dry-run] [--setup-only] [--only-plan]
-//        [--reproduce-first on|observe|off]
+//        [--reproduce-first on|observe|off] [--direct-no-agent-tool] [--no-router-mcp]
 //
-// - direct   : plain Claude Code, no plugin (the lead does the work alone) = router OFF
+// - direct   : plain Claude Code, no plugin (the lead does the work alone) = router OFF. It has the Agent tool, as
+//              a user's session has (decision 213): the tool's definition is in every call of a session with or
+//              without the router, so leaving it out made the router look about 5 points more expensive on small
+//              requests. --direct-no-agent-tool runs it without the tool, as the measurements before decision 213
+//              did; each direct record says which (`agentTool`).
 // - team-L2/3: plugin + daemon with config.forceLevel = L2 / L3 (decision 107 harness switch)
 // - auto     : plugin + daemon as a user runs it (Phase-3 KPI): automatic triage, the lead's own choice of roles,
 //              the default budgets and step rules, no forced level; holdoutRate 0 so no request is held out.
+// The router arrangements (team-L2/3, auto) load the plugin's MCP server, as a user's session does (decision 213):
+// its tool definitions are part of what the router adds to every call, and the brief of a request of unclear
+// size asks the lead to call router_report_triage. No other MCP server is loaded: the run has a config directory
+// of its own, and a run whose session lists another server, or not the router's, stops the measurement.
+// --no-router-mcp runs them with --strict-mcp-config and no server, as the measurements before decision 213 did;
+// each router record says which (`routerMcp`) and what the session listed (`mcp`). Before a router run starts,
+// the server is started once on its own and asked for its tools and one call to the daemon (no model call).
 // --reproduce-first sets the router's reproduceFirst in every router arrangement (the quality baseline, decisions
 // 175 and 177); left out, the router's default.
 // --dry-run prints the plan and a cost and time estimate from the earlier measurements of the same lead
@@ -33,6 +44,7 @@ import { loadPublicManifest } from '../bench/src/tasks.ts';
 import type { Task } from '../bench/src/types.ts';
 import { claudeBin, runCaptured, TIMING_FLAGS } from '../bench/src/kpi/capture.ts';
 import { analysePhases, type LedgerTiming, type StreamLine } from '../bench/src/kpi/phases.ts';
+import { mcpSeen, routerMcpPreflight } from '../bench/src/kpi/router-mcp.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -57,6 +69,10 @@ const BUDGET = Number(arg('budget', '50'));
 const HELPER = arg('api-key-helper');
 // --cap-scale shrinks the per-run caps (and so the budget-stop threshold) for a cheaper lead model
 const CAP_SCALE = Number(arg('cap-scale', '1'));
+// decision 213: router off has the Agent tool unless the flag asks for the earlier arrangement
+const DIRECT_AGENT_TOOL = !flag('direct-no-agent-tool');
+// decision 213: a router run has the plugin's MCP server unless the flag asks for the earlier arrangement
+const ROUTER_MCP = !flag('no-router-mcp');
 const REPRO = arg('reproduce-first');
 if (REPRO !== undefined && !['on', 'observe', 'off'].includes(REPRO)) { console.error(`--reproduce-first must be on, observe or off, not ${REPRO}`); process.exit(2); }
 const CAP: Record<string, number> = Object.fromEntries(Object.entries({ L1: 2, L2: 5, L3: 10 }).map(([k, v]) => [k, v * CAP_SCALE]));
@@ -82,6 +98,8 @@ for (const t of tasks) for (const a of arrangements.filter(a => a !== 'team-L3')
 if (arrangements.includes('team-L3')) for (const lv of ['L3', 'L2', 'L1']) for (const t of tasks.filter(t => t.level === lv)) order.push([t, 'team-L3']);
 
 console.log(`plan: ${order.length} runs, lead ${LEAD}/${EFFORT}, budget $${BUDGET} (spent so far $${spent().toFixed(2)}), out ${OUT}`);
+if (arrangements.includes('direct')) console.log(`  direct runs ${DIRECT_AGENT_TOOL ? 'with' : 'without'} the Agent tool`);
+if (arrangements.some(a => a !== 'direct')) console.log(`  router runs ${ROUTER_MCP ? 'with' : 'without'} the router's MCP server`);
 for (const [t, a] of order) console.log(`  ${t.id.padEnd(32)} ${t.level} ${a.padEnd(8)} cap $${CAP[t.level]}${doneKeys.has(`${t.id}|${a}`) ? '  (done)' : ''}`);
 if (flag('only-plan')) process.exit(0);
 if (flag('dry-run')) { printEstimate(); process.exit(0); }
@@ -102,16 +120,21 @@ async function runClaude(repo: string, configDir: string, prompt: string, a: Arr
   : Promise<{ code: number | null; out: any; ms: number; timedOut: boolean; stderr: string; lines: StreamLine[]; startedAt: string }> {
   // decision 174: stream-json with hook events and the workers' messages, each line stamped on arrival (phase timings);
   // its result message is what --output-format json printed
+  // --strict-mcp-config loads no MCP server at all, the plugin's own included. A router run with ROUTER_MCP leaves
+  // it out, so the plugin's declaration is loaded as in a user's session; the session's server list is checked
+  // after the run (mcpSeen).
+  const strict = a === 'direct' || !ROUTER_MCP;
   const args = ['-p', ...TIMING_FLAGS, '--model', LEAD, '--effort', EFFORT, '--max-budget-usd', String(capUsd),
-    '--permission-mode', 'acceptEdits', '--strict-mcp-config', '--setting-sources', 'project,local', '--settings', settingsFor(),
-    '--tools', a === 'direct' ? 'Read,Edit,Write,Glob,Grep,Bash' : 'Read,Edit,Write,Glob,Grep,Bash,Agent',
+    '--permission-mode', 'acceptEdits', ...(strict ? ['--strict-mcp-config'] : []), '--setting-sources', 'project,local', '--settings', settingsFor(),
+    '--tools', a === 'direct' && !DIRECT_AGENT_TOOL ? 'Read,Edit,Write,Glob,Grep,Bash' : 'Read,Edit,Write,Glob,Grep,Bash,Agent',
     '--allowedTools', 'Agent', 'Bash(npm *)', 'Bash(node *)', 'Bash(npx tsc *)', 'Bash(git status*)', 'Bash(git diff*)', 'Bash(git log*)',
     'Bash(git show*)', 'Bash(git add*)', 'Bash(git commit*)', 'Bash(git merge*)', 'Bash(git worktree*)', 'Bash(git branch*)',
     'Bash(ls *)', 'Bash(cat *)', 'Bash(head *)', 'Bash(tail *)', 'Bash(grep *)', 'Bash(cd *)', 'Bash(python *)', 'Bash(pytest *)'];
-  if (a !== 'direct') {
-    args.splice(1, 0, '--plugin-dir', path.join(ROOT, 'plugin'));
+  if (a !== 'direct') args.splice(1, 0, '--plugin-dir', path.join(ROOT, 'plugin'));
+  if (a !== 'direct' || DIRECT_AGENT_TOOL) {
     // -p ends the session when the lead's turn ends; in the first measurement one lead ended 2 s after
     // launching a background worker, which was then cut off. Interactive sessions do not have this problem.
+    // Every run that has the Agent tool gets the line, so both sides of a comparison carry the same text.
     args.push('--append-system-prompt', 'This is a non-interactive run: before you give your final answer, wait until every subagent you started has finished and you have read its result.');
   }
   const env = { ...childEnv(configDir, { kind: 'api-key-helper' } as never), ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
@@ -240,6 +263,14 @@ for (const [task, a] of order) {
     fs.mkdirSync(path.join(ws.repo, '.claude'), { recursive: true });
     fs.writeFileSync(path.join(ws.repo, '.claude', 'settings.local.json'), JSON.stringify({ worktree: { baseRef: 'head' } }, null, 2));
     console.log(cli(home, 'start').trim());
+    if (ROUTER_MCP) {
+      // before any model call: the server starts, lists the tool the brief names, and reaches this run's daemon
+      const pre = await routerMcpPreflight(path.join(ROOT, 'plugin', 'mcp', 'server.mjs'), { ...inherited, DO_IT_ALL_CLAUDE_CODE_HOME: home })
+        .catch((e: unknown) => ({ tools: [] as string[], daemonAnswered: false, reply: String((e as Error)?.message ?? e) }));
+      const ok = pre.tools.includes('router_report_triage') && pre.daemonAnswered;
+      console.log(`router MCP server: ${pre.tools.length} tools${ok ? ', the daemon answered' : ` — NOT READY (${pre.reply || 'router_report_triage is not among its tools'})`}`);
+      if (!ok) { cli(home, 'stop'); console.error(`stopped before ${key}: the router's MCP server is not ready; fix it, or pass --no-router-mcp for the earlier arrangement`); process.exit(3); }
+    }
   }
   if (flag('setup-only')) { console.log(`setup-only ${key} in ${ws.repo}`); if (home) cli(home, 'stop'); continue; }
   console.log(`run ${key} (cap $${cap.toFixed(2)})`);
@@ -248,6 +279,11 @@ for (const [task, a] of order) {
   const costUsd = Number(r.out?.total_cost_usd ?? 0);
   fs.appendFileSync(ledgerFile, JSON.stringify({ key, costUsd, at: new Date().toISOString() }) + '\n');
   if (home) { try { cli(home, 'stop'); } catch { /* already down */ } }
+  // decision 213: the session must hold the router's MCP server in a router run that asked for it, and no other
+  // server in any run. A run that does not is not the arrangement being measured: its cost is in the ledger, it
+  // gets no record (so it is run again), and the measurement stops here.
+  const mcp = mcpSeen(r.lines, a !== 'direct' && ROUTER_MCP);
+  if (mcp.problem) { console.error(`stopped after ${key} ($${costUsd.toFixed(3)} spent on it): ${mcp.problem}`); process.exit(3); }
   const facts = home ? routerFacts(home) : {};
   const phases = analysePhases(r.lines, r.ms, home ? routerTiming(home, r.startedAt) : null);
   const stats = diffStats(ws.repo, base);
@@ -259,7 +295,8 @@ for (const [task, a] of order) {
     taskId: task.id, arrangement: a, level: task.level, leadModel: LEAD, leadEffort: EFFORT, rep: 1,
     passed: graded.pass, grade: graded.detail, costUsd, wallSeconds: Math.round(r.ms / 1000),
     costLeadUsd: a === 'direct' ? costUsd : (facts as any).costLeadUsd, costSubagentsUsd: a === 'direct' ? 0 : (facts as any).costSubagentsUsd,
-    leadCalls: r.out?.num_turns ?? null, models, ...stats, ...(a === 'direct' ? { outcome: 'router-off', levelChosen: null } : {}), ...facts,
+    leadCalls: r.out?.num_turns ?? null, models, ...stats, ...(a === 'direct' ? { outcome: 'router-off', levelChosen: null, agentTool: DIRECT_AGENT_TOOL } : { routerMcp: ROUTER_MCP }), ...facts,
+    mcp: { seen: mcp.seen, servers: mcp.servers.map(s => `${s.name} (${s.status})`), routerTools: mcp.routerTools },
     timedOut: r.timedOut, error: r.out?.is_error ? String(r.out?.subtype ?? r.out?.result ?? '').slice(0, 300) : (r.out ? undefined : r.stderr.slice(-300)),
     phases,
   };

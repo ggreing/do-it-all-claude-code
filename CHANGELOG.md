@@ -60,6 +60,22 @@ All notable changes to this project are documented here. This project adheres to
   the lead to check first whether the change is in one file and about 15 changed lines or fewer. If so, the
   lead reports it (`router_report_triage` now takes a `lines` estimate) and makes the change itself; no worker
   starts. A level set with `/router level` is kept.
+- **A Sonnet lead keeps what the wording shows to be a small fix.** A short bug-fix or option request, or a
+  short one with a log, used to go to one Haiku coder. On 20 public tasks that cost more than the lead doing
+  it and solved one task fewer: the lead works out the fix to brief the worker, so the hand-off saved nothing.
+  Such a request is now the lead's, with a three-line brief, when the lead is a Sonnet model or its model is
+  not known yet (a session's first prompt). An Opus lead delegates it as before, and so does a lead class you
+  set `delegateFrom` for yourself. Requests of unclear size are not changed.
+- **Tests that cannot start are not a miss.** When pytest ends before any test ran (an import that fails
+  during collection, a plugin that does not load, a usage error) and the error is in no file the worker
+  changed, the worker still gets its one fix attempt. If the tests then fail to start again, the slot is not
+  raised: the subtask ends unverified, and the lead is told once to read the change and to say that the tests
+  could not be run here. Before, each such end counted as a miss and moved the work up to a stronger model,
+  step after step. An import the worker broke (the traceback names a file it changed) is a failure as before.
+- **A shorter first brief.** What the lead reads for a delegated request says each rule once: about 28% fewer
+  characters for a request of unclear size and 15% for a team request. The lead-orchestrator skill is no
+  longer announced as mandatory for every request; its description asks for it only when a delegation needs
+  what the brief leaves out (a verify block, a step change, parallel writers).
 - **No second test run.** A worker's passed notification lists each check with its result and how many tests
   passed, and tells the lead not to run the test suite again. When verify ran no tests for the change (none
   configured, skipped, or 0 tests), the lead runs only the changed code's tests, once. Each kind of check is

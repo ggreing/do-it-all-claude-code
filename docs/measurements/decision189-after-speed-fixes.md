@@ -42,3 +42,9 @@ One run per cell, so differences on a single task (for example 41 s against 61 s
 on one task (sympy). Subscription limits were not measured: these are API-key runs, and what the router saves
 against a Pro or Max plan's 5-hour and weekly limits is still open. Raw results: `bench/results/kpi-phase5` and
 `kpi-phase5-public` (not committed).
+
+The router-off runs here had no Agent tool, and the router-on runs had no router MCP tools (the bench ran with
+`--strict-mcp-config`). A user's session has both: without the Agent tool, router off saves about 5 points on
+small requests that a real session would not; without the MCP tools, router on skips about 2,400 tokens of tool
+definitions a real session carries, and its lead cannot report a one-file request and keep it. The re-measure
+(decision 213) runs both arrangements as a user's session would.

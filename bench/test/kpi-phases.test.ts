@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analysePhases, phaseReport, type LedgerTiming, type StreamLine } from '../src/kpi/phases.ts';
 import { runCaptured, TIMING_FLAGS } from '../src/kpi/capture.ts';
+import { ROUTER_TOOL_PREFIX, mcpSeen } from '../src/kpi/router-mcp.ts';
 
 const BENCH = fileURLToPath(new URL('..', import.meta.url));
 const ROOT = path.resolve(BENCH, '..');
@@ -144,11 +145,96 @@ test('measure107 smoke run with a fake claude: the timing flags are passed, the 
   const call = JSON.parse(fs.readFileSync(path.join(fakeDir, 'calls.jsonl'), 'utf8').trim().split('\n')[0]!) as { args: string[] };
   for (const f of TIMING_FLAGS) assert.ok(call.args.includes(f), f);
   assert.ok(!call.args.includes('json') || call.args[call.args.indexOf('--output-format') + 1] === 'stream-json');
-  const rec = JSON.parse(fs.readFileSync(path.join(out, 'runs.jsonl'), 'utf8').trim()) as { costUsd: number; leadCalls: number; phases: { startupSeconds: number; leadToolCalls: number; notMeasured: string[] } };
+  // decision 213: router off has the Agent tool, as a user's session has, and no plugin; the record says so
+  assert.equal(call.args[call.args.indexOf('--tools') + 1], 'Read,Edit,Write,Glob,Grep,Bash,Agent');
+  assert.ok(!call.args.includes('--plugin-dir'));
+  assert.match(call.args[call.args.indexOf('--append-system-prompt') + 1] ?? '', /wait until every subagent you started has finished/);
+  assert.match(r.stdout, /direct runs with the Agent tool/);
+  const rec = JSON.parse(fs.readFileSync(path.join(out, 'runs.jsonl'), 'utf8').trim()) as { costUsd: number; leadCalls: number; agentTool: boolean; phases: { startupSeconds: number; leadToolCalls: number; notMeasured: string[] } };
+  assert.equal(rec.agentTool, true);
   assert.deepEqual([rec.costUsd, rec.leadCalls, rec.phases.leadToolCalls], [0.01, 2, 1]);
   assert.ok(rec.phases.startupSeconds >= 0 && rec.phases.notMeasured.some(n => /no daemon ledger/.test(n)));
   assert.ok(fs.existsSync(path.join(out, 'streams', 'c-l1-01_direct.jsonl')));
   assert.match(r.stdout, /phases: startup /);
   const rep = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'kpi-phases.ts'), '--runs', path.join(out, 'runs.jsonl')], { encoding: 'utf8' });
   assert.equal(rep.status, 0, rep.stderr);
+  // the arrangement of the measurements before decision 213 stays reachable (the plan only: no run)
+  const old = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--only-plan', '--direct-no-agent-tool', '--arrangements', 'direct', '--tasks', 'c-l1-01', '--out', path.join(tmp, 'out-old'), '--work', path.join(tmp, 'work')], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(old.status, 0, old.stdout + old.stderr);
+  assert.match(old.stdout, /direct runs without the Agent tool/);
+});
+
+// ---- decision 213: the router's MCP server in a router run
+
+const ROUTER_SERVER = { name: 'plugin:do-it-all-claude-code:router', status: 'connected' };
+const initLine = (servers: unknown[], tools: string[] = []): StreamLine => L(0, { type: 'system', subtype: 'init', mcp_servers: servers, tools: ['Read', 'Edit', ...tools] });
+
+test('what a session loaded as MCP servers, against what the run asked for', () => {
+  const triage = `${ROUTER_TOOL_PREFIX}router_report_triage`;
+  // a router run with the server: the router's server, its tools listed, nothing else
+  assert.deepEqual(mcpSeen([initLine([ROUTER_SERVER], [triage, `${ROUTER_TOOL_PREFIX}router_get_plan`])], true),
+    { seen: true, servers: [ROUTER_SERVER], routerTools: 2 });
+  // still connecting when the session starts: not judged
+  assert.equal(mcpSeen([initLine([{ ...ROUTER_SERVER, status: 'pending' }])], true).problem, undefined);
+  // not the arrangement asked for
+  assert.match(mcpSeen([initLine([])], true).problem ?? '', /the router's MCP server is not in the session \(mcp_servers: none\)/);
+  assert.match(mcpSeen([initLine([{ ...ROUTER_SERVER, status: 'failed' }])], true).problem ?? '', /did not connect/);
+  assert.match(mcpSeen([initLine([ROUTER_SERVER])], true).problem ?? '', /connected but its tools are not in the session's tool list/);
+  assert.match(mcpSeen([initLine([ROUTER_SERVER, { name: 'github', status: 'connected' }], [triage])], true).problem ?? '', /other MCP servers are in the session: github/);
+  // a run that asked for no server (router off, or --no-router-mcp): none may be there
+  assert.deepEqual(mcpSeen([initLine([])], false), { seen: true, servers: [], routerTools: 0 });
+  assert.match(mcpSeen([initLine([ROUTER_SERVER], [triage])], false).problem ?? '', /in a run that asked for none/);
+  assert.match(mcpSeen([initLine([{ name: 'github', status: 'connected' }])], false).problem ?? '', /other MCP servers are in the session: github/);
+  // no init line (claude did not start): nothing can be said, so nothing is claimed
+  assert.deepEqual(mcpSeen([], true), { seen: false, servers: [], routerTools: 0 });
+});
+
+/** A measure107 run of one router arrangement with the fake claude, whose session starts with `init`. */
+function routerRun(name: string, init: Record<string, unknown>, extra: string[] = []): { r: ReturnType<typeof spawnSync>; args: string[]; out: string } {
+  const fakeDir = path.join(tmp, `fake-${name}`);
+  fs.mkdirSync(fakeDir);
+  const fake = path.join(fakeDir, 'kpi-fake-claude.mjs');
+  fs.copyFileSync(path.join(BENCH, 'test', 'kpi-fake-claude.mjs'), fake);
+  fs.writeFileSync(path.join(fakeDir, 'scenario.json'), JSON.stringify([
+    { line: { type: 'system', subtype: 'init', ...init } },
+    { pauseMs: 50, line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 1, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 } } } },
+  ]));
+  const out = path.join(tmp, `out-${name}`);
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--api-key-helper', 'not-a-real-helper', '--arrangements', 'auto', '--tasks', 'c-l1-01', '--lead', 'sonnet',
+    '--out', out, '--work', path.join(tmp, `work-${name}`), ...extra], { encoding: 'utf8', timeout: 240_000, env: { ...process.env, BENCH_CLAUDE_BIN: fake } });
+  const calls = path.join(fakeDir, 'calls.jsonl');
+  const args = fs.existsSync(calls) ? (JSON.parse(fs.readFileSync(calls, 'utf8').trim().split('\n')[0]!) as { args: string[] }).args : [];
+  return { r, args, out };
+}
+const records = (out: string) => (fs.existsSync(path.join(out, 'runs.jsonl')) ? fs.readFileSync(path.join(out, 'runs.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as Record<string, any>) : []);
+
+test('measure107 router run: the plugin\'s MCP server is loaded as in a session, checked before and after the run, and recorded', () => {
+  const tools = ['router_get_plan', 'router_report_triage'].map(t => `${ROUTER_TOOL_PREFIX}${t}`);
+  const { r, args, out } = routerRun('mcp', { mcp_servers: [ROUTER_SERVER], tools });
+  assert.equal(r.status, 0, String(r.stdout) + String(r.stderr));
+  // no --strict-mcp-config: the plugin's own declaration is what loads the server; the plugin is there
+  assert.ok(!args.includes('--strict-mcp-config') && !args.includes('--mcp-config'), args.join(' '));
+  assert.equal(args[args.indexOf('--plugin-dir') + 1], path.join(ROOT, 'plugin'));
+  assert.match(String(r.stdout), /router runs with the router's MCP server/);
+  // before the run, with no model call: the server starts, lists its tools and reaches this run's daemon
+  assert.match(String(r.stdout), /router MCP server: 6 tools, the daemon answered/);
+  const [rec] = records(out);
+  assert.deepEqual([rec!.routerMcp, rec!.mcp], [true, { seen: true, servers: ['plugin:do-it-all-claude-code:router (connected)'], routerTools: 2 }]);
+  assert.equal(rec!.agentTool, undefined);
+});
+
+test('measure107 router run: --no-router-mcp is the earlier arrangement; a session with the wrong servers stops the measurement and leaves no record', () => {
+  const old = routerRun('strict', { mcp_servers: [] }, ['--no-router-mcp']);
+  assert.equal(old.r.status, 0, String(old.r.stdout) + String(old.r.stderr));
+  assert.ok(old.args.includes('--strict-mcp-config'));
+  assert.match(String(old.r.stdout), /router runs without the router's MCP server/);
+  assert.doesNotMatch(String(old.r.stdout), /router MCP server: /);
+  assert.deepEqual([records(old.out)[0]!.routerMcp, records(old.out)[0]!.mcp.servers], [false, []]);
+
+  // asked for the server, the session does not have it: exit 3, the cost is in the ledger, no record (it is run again)
+  const missing = routerRun('missing', { mcp_servers: [] });
+  assert.equal(missing.r.status, 3, String(missing.r.stdout) + String(missing.r.stderr));
+  assert.match(String(missing.r.stderr), /stopped after c-l1-01\|auto \(\$0\.010 spent on it\): the router's MCP server is not in the session/);
+  assert.deepEqual(records(missing.out), []);
+  assert.match(fs.readFileSync(path.join(missing.out, 'ledger.jsonl'), 'utf8'), /"costUsd":0\.01/);
 });

@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ACCEPTANCE_RULE_VERSION, ACCEPT_WINDOW_PROMPTS, MAX_STEP_UPS, PRICING_PER_MTOK, ROUTER_TOOL_PREFIX, RouterToolCall, dissatisfactionRule, holdoutDraw, isReask, promptSimilarity, afterEasyPass, afterOtherResult, afterRaise, atDispatch, costUsd, decideEscalation, formatTriageContext, isRouterToolName, l3SignalRoles, ladderStep,
-  effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, normalizeLeadTriage, oneFileDirect, parseRoleFile, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
+  effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, normalizeLeadTriage, oneFileDirect, parseRoleFile, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, smallStaysWithLead, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
   type LeadModelClass, type Level, type ProjectIsolationInput, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
   type RouterEvent, type RouterToolErrorCode, type RouterToolName, type RouterToolResult, type Step, type TeamPreset, type TriageResult, type Usage,
   type UpdateNotice, type VerifySignal,
@@ -41,6 +41,7 @@ import {
   resolveReproTemplates, runRepro, treePath, type ReproRecord, type ReproTag, type ReproTemplate, type StopCheck,
 } from './repro.ts';
 import { resolveVerifyCommands } from './verify-source.ts';
+import { isNotStarted } from './not-started.ts';
 import { COMMAND_TIMEOUT_MS, SHARED_BUSY_MARK, TOTAL_TIMEOUT_MS, existsInTree, isEnvFailure, runVerify, subagentChanges, type VerifyCommand, type VerifyPlan } from './verify.ts';
 
 export interface VerifySettings {
@@ -393,7 +394,10 @@ export class Router {
   /** The brief for the lead; an uncertain triage also names the L2 team the lead would call (core). */
   #triageContext(t: TriageResult, team: TeamPreset, cwd: string | undefined, leadModel: string | null, opts: { ask?: boolean } = {}): string {
     const parts = [formatTriageContext(t, team, this.#resolver.resolve(cwd, leadModel ?? undefined).presets)];   // the L2 and L3 of teams.yaml (decision 113)
-    if (reproMode(this.#config) !== 'off') parts.push(REPRO_BRIEF);
+    // the reproduce-first lines are about a coder subtask: a request the lead does itself, with no team to switch
+    // to in its brief, does not carry them
+    const noTeamInBrief = team.leadDirect === true && (t as { kind?: string }).kind !== 'uncertain';
+    if (reproMode(this.#config) !== 'off' && !noTeamInBrief) parts.push(REPRO_BRIEF);
     // decision 192 (Q3): the one-time project-setup note, on a LIVE delegation only. A replayed (spooled) prompt's
     // context reaches no one, so it must not consume the one ask (opts.ask === false then). Two sessions' first
     // prompts racing may both read "not asked" and both get the note — at most twice, which is fine.
@@ -1158,6 +1162,12 @@ export class Router {
           if (env.length) {
             return `${head}: verify could not run in this environment (${env.join('; ')}); this is not counted as a failure, check the result yourself before relying on it${tail}.`;
           }
+          // decision 212
+          const stuck = signals.filter(isNotStarted).map(x => (x.detail ?? '').split('\n')[0]!.slice(0, 300));
+          if (stuck.length) {
+            return `${head}: verify could not start the tests, before and after one fix attempt (${stuck.join('; ')}). The error is in no file this subtask changed, so it is not counted as a failure and the ${sub.role} slot keeps its step${tail}.`
+              + ' Do not dispatch the subtask again for this and do not try to repair the test setup: read the change (git diff), then tell the user what was changed and that the tests could not be run here.';
+          }
           return `${head}: verify did not run (router was offline); check the result yourself before relying on it${tail}.`;
         }
         if (sub.verdict === 'no_changes') {   // decision 145
@@ -1352,6 +1362,15 @@ export class Router {
         this.ledger.updateSubtask(agent.requestId, sub.id, { verdict: 'fail_once' }, at);
         return { block: { reason: blockReason(sub.id, failed, agent.snapshot?.isolated === false) } };
       }
+      // Decision 212: the tests did not start, before and after the subagent's fix attempt, by an error that is in
+      // no file it changed. A stronger model does not make them start: the slot keeps its step, the subtask is left
+      // unverified and the lead is told once.
+      if (failed.every(isNotStarted) && this.#notStartedBefore(agent.requestId, sub.id, agentId, attempt)) {
+        this.ledger.updateAgent(agentId, { stopCount: attempt, failCount: fails, stoppedAt: at });
+        this.ledger.updateSubtask(agent.requestId, sub.id, { status: 'hitl', verdict: 'unverified' }, at);
+        this.#log.warn('the tests did not start, before and after a fix attempt: subtask left unverified, step kept', { agentId, subtaskId: sub.id, step: sub.step });
+        return NONE;
+      }
       this.ledger.updateAgent(agentId, { stopCount: attempt, failCount: fails, stoppedAt: at });
       this.#stepUpAfterMiss(agent.requestId, sub, at);
       return NONE;
@@ -1359,6 +1378,12 @@ export class Router {
       this.#log.error('subagent_stop finish failed', { agentId, error: errorText(e) });
       return NONE;
     }
+  }
+
+  /** Decision 212: this agent's stop before `attempt` also failed only because the tests did not start. */
+  #notStartedBefore(requestId: string, subtaskId: string, agentId: string, attempt: number): boolean {
+    const before = this.ledger.listSignals(requestId, subtaskId).filter(x => x.agentId === agentId && x.attempt === attempt - 1 && !x.ok && !isEnvFailure(x));
+    return before.length > 0 && before.every(isNotStarted);
   }
 
   /** Decision 89: a router subagent's stop replayed from the spool was never verified; the lead is told. */
@@ -2561,6 +2586,12 @@ export class Router {
   /** How a new request planned by the rules is staffed: as its level says, or lead-direct on purpose (holdout, released). */
   #routingPlan(requestId: string, t: TriageResult, presets: Record<Level, TeamPreset>, leadClass: string): { triage: TriageResult; team: TeamPreset; holdout?: Holdout } {
     const base = presets[t.level];
+    // decision 211: what the wording settles as small stays with a Sonnet lead (and a lead whose model is not
+    // known yet), although L1 is a delegated level; a delegateFrom the user set for the class wins
+    if (!base.leadDirect && smallStaysWithLead(t as TriageResult & { kind?: string }, leadClass as LeadModelClass, this.#config.delegateFrom)) {
+      const team: TeamPreset = { ...base, leadDirect: true };
+      return { triage: withKind({ ...t, rationale: `${t.rationale}; small by its wording, so the lead does it` }, team), team };
+    }
     const mode = routingMode(this.#config);
     if (mode === 'off' || base.leadDirect || !RELEASE_LEVELS.includes(t.level)) return { triage: t, team: base };
     const auto = mode === 'on' ? this.ledger.getRelease(leadClass)?.autoDelegateFrom ?? null : null;
@@ -2747,6 +2778,9 @@ function blockReason(subtaskId: string, failed: VerifySignal[], shared: boolean)
     `[do-it-all-claude-code] verification failed for subtask ${subtaskId}:`,
     ...lines,
     ...(shared ? ['These checks ran in the shared work tree (the user\'s checkout). Changes that were already uncommitted when you started are not counted as yours; do not revert or commit them.'] : []),
-    'Fix these, re-run the checks, then finish again. If the work needs files outside your scope, do not edit them: list them under "Scope request" in your report.',
+    // decision 212: an error that kept the tests from starting may have nothing to do with the change
+    failed.every(isNotStarted)
+      ? 'The tests did not start, and the error is in no file you changed. If your change causes it all the same (an import, a name another file uses), fix that and finish again. If it does not, do not work around it or change the test setup: say in your report that the tests cannot start here, with the error line, and finish.'
+      : 'Fix these, re-run the checks, then finish again. If the work needs files outside your scope, do not edit them: list them under "Scope request" in your report.',
   ].join('\n');
 }

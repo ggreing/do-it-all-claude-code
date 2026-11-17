@@ -175,7 +175,8 @@ test('decision 144: the status line\'s model.id reaches the daemon, so the sessi
   assert.equal((await postHook(d.port, { session_id: 'seen', cwd: d.home, hook_event_name: 'UserPromptSubmit', prompt: L1 })).status, 200);
   const r = req('seen');
   assert.deepEqual([r.m, r.c], ['claude-sonnet-5-5', 'sonnet']);
-  if (r.level === 'L1') assert.equal(JSON.parse(r.team).leadDirect, undefined, 'a Sonnet lead delegates L1');
+  // decision 211: L1 is a delegated level for a Sonnet lead, but a request the wording settles as small stays with it
+  if (r.level === 'L1') assert.deepEqual([JSON.parse(r.team).leadDirect, JSON.parse(r.team).roles], [true, [{ role: 'coder', count: 1, start: 's1' }]]);
   // a bad model id is not stored
   assert.deepEqual((await limits({ sessionId: 'odd', model: 'not a model id' })).body, { stored: false, model: false });
 }));
