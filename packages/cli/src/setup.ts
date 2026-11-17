@@ -83,6 +83,14 @@ export function restrictHome(): void {
   } catch { /* not our file system: doctor reports it */ }
 }
 
+/** The daemon line of `setup`'s plan: what will actually happen. With --no-start the daemon is not launched now
+ *  (auto-start brings it up on the next Claude Code session), so the plan must not promise to start it. */
+export function daemonPlanLine(noStart: boolean): string {
+  return noStart
+    ? 'set up subscription mode (the daemon starts with the next Claude Code session)'
+    : 'start the router daemon (subscription mode)';
+}
+
 /** Only positive finite numbers are budgets; anything else is dropped (review #5). */
 export function validBudgets(b: Partial<Record<Level, unknown>> | undefined): Partial<Record<Level, number>> {
   const out: Partial<Record<Level, number>> = {};

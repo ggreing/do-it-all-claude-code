@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { COMMON_DEV_PORTS, ensureLocalState, ladderBreakers, planProject, planStatusLine, readConfig, versionAtLeast } from 'do-it-all-claude-code';
+import { COMMON_DEV_PORTS, daemonPlanLine, ensureLocalState, ladderBreakers, planProject, planStatusLine, readConfig, versionAtLeast } from 'do-it-all-claude-code';
 import { paths } from '@do-it-all-claude-code/core';
 
 let tmp = '';
@@ -58,4 +58,11 @@ test('doctor flags settings that disable the ladder', () => {
   assert.equal(ladderBreakers({}).length, 0);
   assert.ok(versionAtLeast('2.1.325 (Claude Code)', [2, 1, 325]));
   assert.ok(!versionAtLeast('2.1.319', [2, 1, 325]));
+});
+
+test('decision 192: setup\'s daemon plan line matches what --no-start actually does', () => {
+  assert.match(daemonPlanLine(false), /start the router daemon/);
+  const noStart = daemonPlanLine(true);
+  assert.doesNotMatch(noStart, /start the router daemon/);   // must not promise to start it now
+  assert.match(noStart, /next Claude Code session/);         // says what actually happens (auto-start)
 });

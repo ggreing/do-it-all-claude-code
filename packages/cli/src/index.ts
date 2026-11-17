@@ -8,7 +8,7 @@ import { effectivePluginDir, generateEffectivePlugin, paths, resolveLayout, rout
 import { copyAppToHome } from './appcopy.ts';
 import { projectCommand } from './project.ts';
 import { configCommand, presetCommand, reloadCommand, roleCommand, type SettingsDeps } from './settings.ts';
-import { SettingsParseError, defaultClaudeSettings, ensureLocalState, planBackupClean, planProject, planStatusLine, promptStorageSummary, readConfig, writeConfig, type PlannedChange } from './setup.ts';
+import { SettingsParseError, daemonPlanLine, defaultClaudeSettings, ensureLocalState, planBackupClean, planProject, planStatusLine, promptStorageSummary, readConfig, writeConfig, type PlannedChange } from './setup.ts';
 import { CLI_VERSION, UPDATE_QUESTION, updateCommand } from './update.ts';
 import { start, status, stop } from './daemonctl.ts';
 import { MIN_CLAUDE, doctor, installedClaudeVersion, versionAtLeast } from './doctor.ts';
@@ -240,7 +240,7 @@ async function setup(f: Record<string, string | boolean>) {
   for (const c of changes) console.log(`  - ${c.file}: ${c.summary}`);
   if (installPluginStep) console.log(`  - install the plugin in Claude Code (a local marketplace in ${home})`);
   else console.log('  - (the plugin is already installed from the marketplace; leaving it as is)');
-  console.log('  - start the router daemon (subscription mode)');
+  console.log(`  - ${daemonPlanLine(f['no-start'] === true)}`);
   let go = f.yes === true;
   if (!go) {
     if (process.stdin.isTTY !== true) { console.log('Not a terminal: re-run with --yes to finish setup.'); return; }

@@ -67,15 +67,22 @@ function phaseOf(id: string): number { let n = 7; for (const ch of id) n = (n * 
 
 // ------------------------------------------------------------------ one member, one frame
 
-type Cell = { ch: string; kind: 'body' | 'fx' | 'none' }
+/** A cell of a desk's picture: the member's body, a mark floating by it, the monitor (a prop, with its colour), or nothing. */
+type Cell = { ch: string; kind: 'body' | 'fx' | 'prop' | 'none'; color?: string }
+
+/** The monitor beside the member, row by row (row 4 is its screen, drawn from the status). */
+const MONITOR = ['       ', '       ', '       ', '▗▄▄▄▄▄▖', '', '▝▀▀▀▀▀▘', '  ▗█▖  ']
+/** The rightmost column a shape draws in. */
+const lastCol = (shape: readonly string[]) => Math.max(...shape.map(line => Math.max(line.lastIndexOf('#'), line.lastIndexOf('o'))))
 
 function member(a: SceneAgent, st: State, gaze: number, geo: Geom): Cell[][] {
   const t = st.t / 1000
   const ph = phaseOf(a.id)
   const fr = frameAt(st.react[a.id], st.t)
   const shape = fr ? fr.shape : BODY
-  // at rest the eyes move within the face; the shape around them does not
-  const g = fr ? 0 : Math.max(-1, Math.min(1, gaze))
+  // the eyes move within the face (at rest toward the pointer or the monitor; in a reaction where it looks); the
+  // shape around them does not
+  const g = Math.max(-1, Math.min(1, fr ? fr.look : gaze))
   const rows = shape.map(line => {
     if (!line.includes('o') || g === 0) return line
     const plain = line.replace(/o/g, '#').split('')
@@ -87,13 +94,15 @@ function member(a: SceneAgent, st: State, gaze: number, geo: Geom): Cell[][] {
   const eyes = fr ? fr.eyes : eye
   const eyeAt = (x: number) => (eyes.length > 1 ? eyes[x < 5 ? 0 : 1]! : eyes)
   // the body stands at the bottom of the canvas, `inset` cells in: the rows above it and the columns to its right
-  // stay free for what floats around it, so nothing reaches the monitor or the next desk. A reaction lifts or moves
-  // it within the canvas, never past its edges (the small desk has one row over the head, the narrow none); a shape
-  // taller than the canvas keeps its feet on the ground and loses the top of its head
+  // stay free for what floats around it, so nothing reaches the monitor or the next desk. A reaction lifts it (never
+  // past the top: the small desk has one row over the head, the narrow none), sinks it behind the desk (out of
+  // sight at +4) or moves it across the desk, behind the monitor. A shape taller than the canvas keeps its feet on
+  // the ground and loses the top of its head.
   const tall = shape.length / 2
-  const top0 = Math.max(Math.min(0, geo.canvas - tall), Math.min(geo.canvas - tall, geo.canvas - tall + (fr?.dy ?? 0)))
-  const left0 = Math.max(0, Math.min(geo.cw - 11, geo.inset + (fr?.dx ?? 0)))
-  const grid: Cell[][] = Array.from({ length: geo.canvas }, () => Array.from({ length: geo.cw }, () => ({ ch: ' ', kind: 'none' as const })))
+  const base = geo.canvas - tall
+  const top0 = Math.max(Math.min(0, base), Math.min(geo.canvas, base + (fr?.dy ?? 0)))
+  const left0 = Math.max(0, Math.min(geo.w - 1 - lastCol(shape), geo.inset + (fr?.dx ?? 0)))
+  const grid: Cell[][] = Array.from({ length: geo.canvas }, () => Array.from({ length: geo.w }, () => ({ ch: ' ', kind: 'none' as const })))
   for (let r = 0; r < tall; r++) {
     const top = rows[r * 2]!
     const bot = rows[r * 2 + 1]!
@@ -106,10 +115,26 @@ function member(a: SceneAgent, st: State, gaze: number, geo: Geom): Cell[][] {
       if (up || down) { cell.ch = up && down ? '█' : up ? '▀' : '▄'; cell.kind = 'body' }
     }
   }
+  // the monitor stands in front of the member, who can creep behind it: its frame and screen hide what is behind
+  // them, and the member shows through the gaps by its stand
+  if (geo.monitor) {
+    const screen = screenOf(a, t + ph * 5)
+    const screenColor = a.status === 'failed' ? 'error' : a.status === 'waiting' ? 'inactive' : 'success'
+    for (let r = 0; r < geo.canvas; r++) {
+      const line = r === 4 ? `▐${screen}▌` : MONITOR[r] ?? ''
+      ;[...line].forEach((ch, k) => {
+        const cell = grid[r]?.[geo.cw + k]
+        if (!cell || (ch === ' ' && r !== 4)) return
+        cell.ch = ch
+        cell.kind = 'prop'
+        cell.color = r === 4 && k > 0 && k < line.length - 1 ? screenColor : 'inactive'
+      })
+    }
+  }
   const put = (r: number, c: number, ch: string) => { const cell = grid[r]?.[c]; if (cell && cell.kind === 'none') { cell.ch = ch; cell.kind = 'fx' } }
   // a reaction's own marks, around the body where it is now: kept on the canvas, where a free cell is
   const clampR = (r: number) => Math.max(0, Math.min(geo.canvas - 1, r))
-  const clampC = (c: number) => Math.max(0, Math.min(geo.cw - 1, c))
+  const clampC = (c: number) => Math.max(0, Math.min(geo.w - 1, c))
   if (fr) {
     for (const [r, c, ch] of fr.fx) put(clampR(top0 + r), clampC(left0 + c), ch)
     return grid
@@ -173,7 +198,7 @@ function pick(surface: ClientSurface<State>, i: number, now: number): void {
   const a = latest.agents[i]
   const s = surface.state
   if (!a || !s) return
-  surface.setState({ ...s, t: now, hover: i, react: { ...s.react, [a.id]: react(s.react[a.id], a.id, a.status, now) } })
+  surface.setState({ ...s, t: now, hover: i, react: { ...s.react, [a.id]: react(s.react[a.id], a.id, a.status, now, geomOf(latest).monitor) } })
   surface.post({ type: 'select', id: a.id })
 }
 
@@ -253,17 +278,13 @@ const OfficeScene: ClientModule<SceneProps, State> = (props, surface) => {
     const grid = member(a, st, gaze, geo)
     const tone = ROLE_COLOR[a.role]
     const dim = a.status === 'waiting' && !isSel && !isHover
-    const scr = screenOf(a, t + phaseOf(a.id) * 5)
-    const monitor = ['       ', '       ', '       ', '▗▄▄▄▄▄▖', '', '▝▀▀▀▀▀▘', '  ▗█▖  ']
+    const colorOf = (c: Cell) => (c.kind === 'fx' ? STATUS_COLOR[a.status] : c.kind === 'prop' ? c.color ?? 'inactive' : tone)
     const rows = grid.map((cells, r) => {
-      const runs: Array<{ text: string; kind: Cell['kind'] }> = []
-      for (const c of cells) { const last = runs[runs.length - 1]; if (last && last.kind === c.kind) last.text += c.ch; else runs.push({ text: c.ch, kind: c.kind }) }
+      const runs: Array<{ text: string; color: string }> = []
+      for (const c of cells) { const color = colorOf(c); const last = runs[runs.length - 1]; if (last && last.color === color) last.text += c.ch; else runs.push({ text: c.ch, color }) }
       return (
         <Text key={`m-${a.id}-${r}`}>
-          {runs.map((run, k) => <Text key={`m-${a.id}-${r}-${k}`} color={run.kind === 'fx' ? STATUS_COLOR[a.status] : tone} dimColor={dim}>{run.text}</Text>)}
-          {!geo.monitor ? null : r === 4
-            ? <Text><Text color="inactive" dimColor={dim}>▐</Text><Text color={a.status === 'failed' ? 'error' : a.status === 'waiting' ? 'inactive' : 'success'} dimColor={dim}>{scr}</Text><Text color="inactive" dimColor={dim}>▌</Text></Text>
-            : <Text color="inactive" dimColor={dim}>{monitor[r]}</Text>}
+          {runs.map((run, k) => <Text key={`m-${a.id}-${r}-${k}`} color={run.color} dimColor={dim}>{run.text}</Text>)}
         </Text>
       )
     })

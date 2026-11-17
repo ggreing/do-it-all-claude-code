@@ -14,15 +14,18 @@ clock and the pointer. That interface is early access ("this surface may change 
 notice", says its declaration file). Every choice below follows from that: a change in Claude Code may cost the
 panel, never the router.
 
-## The look (decision 182; the click as decision 200 changed it)
+## The look (decision 182; the click as decisions 200 and 202 changed it)
 
 - At rest each member is drawn in one fixed shape. Only three things move: the eyes, the sign above the head (z
   while waiting, sparkles when done, a drop when failed) and the monitor.
-- A click picks the member, and the member reacts (decision 200, `reactions.ts`): a reaction chosen at random from
-  those for its status (a nod while working, a hop when done, a startle while waiting, a sulk when failed). Clicks
-  less than 1.6 s apart make the reaction bigger. While it lasts the body stretches, squashes, jumps or shakes, each
-  reaction at its own pace, and it always ends in the shape the member had. A jump stays inside the desk: the small
-  desk has one row over the head, so it jumps lower there. There are no speech bubbles.
+- A click picks the member, and the member reacts (decisions 200 and 202, `reactions.ts`): one of eleven everyday
+  reactions chosen at random (nod, wave, hop, wiggle, stretch, squish, startle, shake, spin, hiding behind the desk
+  and popping up, peeking out from behind the monitor); the status shows in its eyes and marks. Clicks less than
+  1.6 s apart bring a bigger one (dizzy, huff). While it lasts the body stretches, squashes, jumps, shakes or turns,
+  each reaction at its own pace, and it always ends in the shape the member had. A jump stays inside the desk: the
+  small desk has one row over the head, so it jumps lower there, and a desk without a monitor peeks from behind the
+  desk instead. The monitor is drawn in front of the member, so the member can go behind it. There are no speech
+  bubbles.
 - The office is at the top; the picked member's session is in the space below, drawn the way Claude Code draws
   its own rows (a dot for a tool call, `⎿` for its result).
 - Under each desk are three lines: the name, the model and effort (`Haiku · low`), and the status with the
