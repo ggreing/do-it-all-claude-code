@@ -28,7 +28,8 @@ const prompt = (sid: string, cwd: string, text: string): HookInput => ({ ...base
 const stop = (sid: string, cwd: string, msg: string): HookInput => ({ ...base(sid, cwd), hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: msg });
 const agent = (sid: string, cwd: string, type: string, tag: string, model: string, effort: string): HookInput => ({
   ...base(sid, cwd), hook_event_name: 'PreToolUse', tool_name: 'Agent',
-  tool_input: { subagent_type: `do-it-all-claude-code:${type}`, prompt: `[subtask:${tag}] work`, model, effort },
+  // one scope per subtask: writers running at once need disjoint scopes (decision 178)
+  tool_input: { subagent_type: `do-it-all-claude-code:${type}`, prompt: `[subtask:${tag}] work\n[scope: src/${tag.toLowerCase()}/**]`, model, effort },
 });
 const ctx = (o: Out) => o.hookSpecificOutput?.additionalContext ?? '';
 const denied = (o: Out) => o.hookSpecificOutput?.permissionDecision === 'deny';

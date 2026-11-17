@@ -160,3 +160,31 @@ test('escalation on request (decision 128)', () => {
   assert.deepEqual(decideEscalation({ ...base, step: 's6', fableOptIn: true, evidence: 'independent' }), { granted: true, to: 's7', leadOnly: false });
   assert.deepEqual(decideEscalation({ ...base, step: 's7', fableOptIn: true, evidence: 'independent' }), { granted: false, code: 'needs_user', why: 'limit' });
 });
+
+test('decision 178: oneFileDirect, and the brief of an uncertain team request offers the lead the one-file path', async () => {
+  const { ONE_FILE_DIRECT, oneFileDirect, ReportTriageInput, triage, formatTriageContext, withLeadModel, DEFAULT_PRESETS } = await import('../src/index.ts');
+  assert.equal(ReportTriageInput.safeParse({ kind: 'direct', level: 'L1', files: 1, lines: 8, confidence: 0.8 }).success, true);
+  assert.equal(ReportTriageInput.safeParse({ kind: 'direct', level: 'L1', files: 1, lines: -1, confidence: 0.8 }).success, false);
+  assert.ok(oneFileDirect({ kind: 'direct', level: 'L1', files: 1, lines: ONE_FILE_DIRECT.lines, confidence: 0.6 }));
+  for (const v of [{ files: 2, lines: 8 }, { files: 1, lines: ONE_FILE_DIRECT.lines + 1 }, { files: 1 }, { files: 0, lines: 3, kind: 'team' as const }]) {
+    assert.ok(!oneFileDirect({ kind: 'direct', level: 'L1', confidence: 0.9, ...v } as never), JSON.stringify(v));
+  }
+  const presets = withLeadModel(DEFAULT_PRESETS, 'claude-sonnet-5-5');
+  const uncertain = triage({ prompt: 'Make the date picker remember the last chosen month' }, presets);
+  assert.equal(uncertain.kind, 'uncertain');
+  const brief = formatTriageContext(uncertain, presets[uncertain.level], presets);
+  assert.match(brief, /if the whole change is in one file and about 15 changed lines or fewer, do not delegate\. Call router_report_triage with kind "direct", level "L1", files 1, lines/);
+  assert.match(brief, /unless router_report_triage answered leadDirect true/);
+  const spec = triage({ prompt: 'Refactor the validation module across multiple files and add an audit log' }, presets);
+  assert.doesNotMatch(formatTriageContext(spec, presets[spec.level], presets), /one-file|router_report_triage with kind "direct"/);
+});
+
+test('decision 178: a team brief with two writer slots tells the lead to send independent parts together, disjoint', async () => {
+  const { triage, formatTriageContext, DEFAULT_PRESETS } = await import('../src/index.ts');
+  const spec = triage({ prompt: 'Refactor the validation module across multiple files and add an audit log' });
+  const brief = formatTriageContext(spec, DEFAULT_PRESETS.L2, DEFAULT_PRESETS);
+  assert.match(brief, /two or more independent parts that write different files or directories, give each its own coder subtask with a \[scope: \.\.\.\] that no other subtask writes, and send those subtasks in one message/);
+  assert.match(brief, /The router refuses a writer whose scope overlaps one still running/);
+  // the one-coder team (L1) gets no such line
+  assert.doesNotMatch(formatTriageContext({ ...spec, level: 'L1' }, { ...DEFAULT_PRESETS.L1, leadDirect: undefined } as never, DEFAULT_PRESETS), /independent parts/);
+});

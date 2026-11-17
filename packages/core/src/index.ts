@@ -16,4 +16,5 @@ export * from './egress.ts';
 export * from './update.ts';
 export * from './settings.ts';
 export * from './role-overrides.ts';
+export * from './layout.ts';
 export type * from './proxy-wire.ts';

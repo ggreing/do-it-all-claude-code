@@ -50,7 +50,8 @@ test('E13 / #14: a zero-usage "<synthetic>" line is skipped, and a later notific
     const n = await post({ hook_event_name: 'UserPromptSubmit', prompt: '<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n<usage><subagent_tokens>50000</subagent_tokens></usage>\n</task-notification>' });
     assert.deepEqual(rows(d, 'SELECT source, usd FROM costs'), [{ source: 'transcript', usd }]);
     assert.equal(rows(d, 'SELECT used_usd FROM requests')[0]!.used_usd, usd);
-    assert.match(n.hookSpecificOutput?.additionalContext ?? '', new RegExp(`cost \\$${usd.toFixed(4)} \\(already verified`));
+    // no test command in this setup: the decision-178 wording for a verify that ran no tests follows the cost
+    assert.match(n.hookSpecificOutput?.additionalContext ?? '', new RegExp(`cost \\$${usd.toFixed(4)} \\(verify ran no tests for this change`));
   } finally { rmrf(repo); }
 }));
 

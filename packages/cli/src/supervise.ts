@@ -14,7 +14,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { paths, routerHome } from '@do-it-all-claude-code/core';
 import { proveProxy } from '@do-it-all-claude-code/proxy';
-import { proxyEntry } from './apimode.ts';
+import { copyHelpersToHome, proxyEntry } from './apimode.ts';
 import { daemonEntry, daemonRequest, health } from './daemonctl.ts';
 import { renewTlsIfDue } from './localtls.ts';
 import { readConfig, writeJsonAtomic } from './setup.ts';
@@ -223,6 +223,10 @@ export async function runSupervisor(home = routerHome()): Promise<void> {
   fs.rmSync(files.stop, { force: true });
   fs.rmSync(files.reload, { force: true });
   fs.writeFileSync(files.pid, String(process.pid));
+  // review L3: in a packaged install the global folder can change with the Node version, so refresh the home
+  // copies of the apiKeyHelpers at start (compare-and-copy; a no-op in the workspace).
+  try { const w = copyHelpersToHome(home); if (w.length) log('refreshed apiKeyHelpers in the router home', { helpers: w }); }
+  catch (e) { log('could not refresh the apiKeyHelpers', { error: String(e) }); }
   const sup = new Supervisor({ specs: childSpecs(home), statusFile: files.status, log });
   sup.start();
   // decision 157: at the supervisor's start (do-it-all-claude-code start) the certificate is renewed inside RENEW_WITHIN_DAYS

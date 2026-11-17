@@ -21,10 +21,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { LEGACY_SLUG, ROUTER_PLUGIN_NAME, legacyRouterHome, routerHome, sealedCall } from '@do-it-all-claude-code/core';
 import { VAULT_SERVICE, VaultError, deleteKey, keyStatus, readKey, storeKey, type VaultErrorCode } from '@do-it-all-claude-code/proxy';
-import { isRouterHelper } from './apimode.ts';
+import { isRouterHelper, proxyEntry } from './apimode.ts';
 import { cliEntry, daemonEntry, isAlive, processInfo } from './daemonctl.ts';
 import type { Check } from './doctor.ts';
 import { removeEndpointFiles } from './endpointfiles.ts';
@@ -238,10 +237,7 @@ function currentEntries(): { supervisor: string[]; child: string[] } {
   const out = { supervisor: [] as string[], child: [] as string[] };
   try { out.supervisor.push(cliEntry()); } catch { /* not resolvable */ }
   try { out.child.push(daemonEntry()); } catch { /* not resolvable */ }
-  try {
-    const index = fileURLToPath(import.meta.resolve('@do-it-all-claude-code/proxy'));
-    out.child.push(path.join(path.dirname(index), index.endsWith('.ts') ? 'main.ts' : 'main.js'));
-  } catch { /* not resolvable */ }
+  try { out.child.push(proxyEntry()); } catch { /* not resolvable */ }
   return out;
 }
 

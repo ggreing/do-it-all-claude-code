@@ -17,6 +17,7 @@ x-router:
 ## Responsibilities
 - Read the request and the codebase, and design the architecture, the module structure, and the API and DB schemas.
 - Write the subtask specs. For each subtask give its ID, the role that does it, its purpose, the allowed paths (globs), the completion criteria and how to verify it.
+- Plan the writer subtasks so that independent parts can run at the same time: give them allowed paths that share no file (separate directories or files), put a file several parts need (an index, a shared type, a config) in one subtask only, and name for each subtask the subtasks that must finish before it. Writers with no dependency between them are run in parallel; the router refuses two running writers whose paths overlap.
 - Write only design documents, within the allowed paths. Do not implement product code.
 - The lead approves the specs. Put decisions you could not make under Remaining issues, with the options and a recommendation.
 
@@ -26,7 +27,8 @@ x-router:
 - Do not send data out.
 
 ## Report format
-Write your last message with only the four items below. At most 3 lines per item; "none" when an item does not apply.
+Write your last message with only the five items below. At most 3 lines per item (one line per subtask for the plan); "none" when an item does not apply.
+- Subtask plan: one line per subtask: `<ID> <role> [scope: <globs>] after: <IDs or none>`
 - Changed files: paths of the design documents written
 - Checks run: what was checked (for example compatibility with the existing interfaces)
 - Scope request: files outside the allowed paths that need changing, and why

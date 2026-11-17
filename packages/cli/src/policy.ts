@@ -4,8 +4,8 @@
 // record (plugin/hooks/guard.mjs); this is its front end, and doctor's line.
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { LEGACY_PROJECT_DIR, PROJECT_DIR } from '@do-it-all-claude-code/core';
+import { pathToFileURL } from 'node:url';
+import { LEGACY_PROJECT_DIR, PROJECT_DIR, resolveLayout } from '@do-it-all-claude-code/core';
 import type { Check } from './doctor.ts';
 import { readConfig } from './setup.ts';
 
@@ -30,7 +30,7 @@ export interface GuardPolicy {
 
 /** guard.mjs of the plugin this router uses (config.pluginDir, else the repository's plugin folder). */
 export async function loadGuard(pluginDir = readConfig()?.pluginDir): Promise<GuardPolicy> {
-  const dir = pluginDir ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../plugin');
+  const dir = pluginDir ?? resolveLayout(import.meta.url).pluginTemplateDir;
   return await import(pathToFileURL(path.join(dir, 'hooks', 'guard.mjs')).href) as GuardPolicy;
 }
 

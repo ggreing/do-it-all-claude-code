@@ -41,13 +41,12 @@ router workers: they can only write while the daemon is up, so they never edit o
 
 ## Getting started
 
-Nothing is on npm yet. You need Node 24+, Claude Code 2.1.295 or newer, and Git Bash if you're on
+Nothing is on npm yet. You need Node 24+, Claude Code 2.1.325 or newer, and Git Bash if you're on
 Windows.
 
 ```
 git clone https://github.com/ggreing/do-it-all-claude-code && cd do-it-all-claude-code
 npm ci
-npm run build:dashboard
 node packages/cli/src/index.ts init
 node packages/cli/src/index.ts start
 ```
@@ -61,7 +60,6 @@ Other commands you'll probably use:
 | Command | What it does |
 |---|---|
 | `status`, `stop` | show or stop the daemon |
-| `dashboard` | open the local dashboard |
 | `mode subscription\|api\|direct\|proxy` | switch modes (below) |
 | `policy show\|accept` | review a project's `.do-it-all-claude-code/policy.json` before it takes effect |
 | `data export`, `data purge` | export or delete what the router has recorded |
@@ -139,11 +137,31 @@ address and a generic client name — and nothing else: no prompts, no usage, no
 then shows in the status line (` | update 0.4.0`) and as a one-line note at the start of a session, only to
 you and at most once a day per version. Nothing updates itself.
 
-## The dashboard
+## The team office
 
-`do-it-all-claude-code dashboard` opens a read-only page served by the daemon: recent requests, who did what,
-which checks passed, what it cost (lead versus workers), and how often the router's first guess about a
-request's size turned out right. It's available in English, Korean, Japanese and Simplified Chinese.
+Type `/office` in Claude Code and a panel opens beside the chat that shows the team at work. On a wide
+terminal it also opens by itself when a request's first worker starts. The panel only reads: it has no input
+line, and settings are changed with the CLI (`config`, `preset`, `role`).
+
+| Tab | What it shows |
+|---|---|
+| Office | each member at a desk: role, model and effort, what it's doing now; above them the request's level, cost against budget and your rate limits |
+| History | recent requests with level, outcome, cost, duration and failed checks; open one to see its subtasks and checks |
+| Cost | the last 24 hours, 7 days or 30 days: the total, lead versus workers, cost by level, cost per accepted request |
+| Routing | how often the router's first guess about a request's size turned out right, and the comparison described in the next section |
+
+Click the panel, or press ctrl+x then tab, to give it the keyboard. Tab and shift+Tab walk its buttons, Enter
+presses one, and Esc returns to the prompt. `o`, `h`, `c` and `r` switch tabs. In Office, 1–9 pick a member,
+←/→ move the highlight, Enter or a click picks, and `v` shows that member's transcript in the main view. In
+History, the buttons are the recent requests: Enter opens one below, and `b` goes back. In Cost, `t`, `w` and
+`m` show 24 hours, 7 days and 30 days.
+
+`/office demo` shows a preview with made-up members, and `/office clear` empties the panel. The panel never
+shows prompt text. While the daemon isn't running it still shows the team from Claude Code's own events,
+without the router's numbers.
+
+`do-it-all-claude-code config set office off` turns the panel off for sessions started after that. It needs
+Claude Code 2.1.325 or newer. Versions before 0.5.0 had a browser dashboard instead; it's gone.
 
 ## Checking that delegation still pays off
 
@@ -158,7 +176,7 @@ The checks after a worker finishes are the project's own tests, so a fix that's 
 don't cover will still pass. When that happens the lead can send the work back up a rung, but it has to
 notice first.
 
-"Accepted" in the dashboard means nobody reverted the change, asked for it again, or complained within
+"Accepted" in the History and Cost tabs means nobody reverted the change, asked for it again, or complained within
 the next couple of prompts. That's a ceiling on how often the work was good, not a measurement of it.
 
 The automatic switch-off is meant to catch delegation that has become clearly more expensive, not to

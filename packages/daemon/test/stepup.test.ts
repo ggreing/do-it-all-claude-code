@@ -22,9 +22,9 @@ const session = (d: TestDaemon, sid: string, cwd: string) => async (h: HookInput
   return r.body as Out;
 };
 let seq = 0;
-const call = (tag: string, model: string, effort: string): HookInput => ({
+const call = (tag: string, model: string, effort: string, scope = 'src/**'): HookInput => ({
   hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_s${++seq}`,
-  tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work\n[scope: src/**]`, model, effort },
+  tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work\n[scope: ${scope}]`, model, effort },
 });
 const start = (id: string): HookInput => ({ hook_event_name: 'SubagentStart', agent_id: id, agent_type: 'do-it-all-claude-code:coder' });
 const stop = (id: string, again = false): HookInput => ({ hook_event_name: 'SubagentStop', agent_id: id, agent_type: 'do-it-all-claude-code:coder', stop_hook_active: again });
@@ -52,8 +52,8 @@ test('spec 3.5: a miss raises the slot one step; the next call for it must use t
   assert.match(denied(await post(call('A2', 'haiku', 'low'))), /the coder runs at step s2 \(model="haiku", effort="high"\) for this L2 request \(slot 0 was raised to s2 after a miss\)/);
   assert.deepEqual(await post(call('A2', 'haiku', 'high')), {});
   assert.deepEqual(rows(d, "SELECT slot, step FROM subtasks WHERE id = 'A2'"), [{ slot: 0, step: 's2' }]);
-  // with slot 0 busy, the second coder slot still starts at s1
-  assert.deepEqual(await post(call('B', 'haiku', 'low')), {});
+  // with slot 0 busy, the second coder slot still starts at s1 (B writes elsewhere: concurrent writers need disjoint scopes, decision 178)
+  assert.deepEqual(await post(call('B', 'haiku', 'low', 'lib/**')), {});
   assert.deepEqual(rows(d, "SELECT slot, step FROM subtasks WHERE id = 'B'"), [{ slot: 1, step: 's1' }]);
   const st = (await getStatus(d.port, 'up')).body as StatusView;
   assert.deepEqual(st.roles.filter(r => r.role === 'coder').map(r => [r.slot, r.step]), [[0, 's2'], [1, 's1']]);

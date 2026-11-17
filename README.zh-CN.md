@@ -34,12 +34,11 @@ CLI 和软件包都叫 `do-it-all-claude-code`。
 
 ## 开始使用
 
-还没发布到 npm。需要 Node 24 以上、Claude Code 2.1.295 或更新版本，Windows 上还要有 Git Bash。
+还没发布到 npm。需要 Node 24 以上、Claude Code 2.1.325 或更新版本，Windows 上还要有 Git Bash。
 
 ```
 git clone https://github.com/ggreing/do-it-all-claude-code && cd do-it-all-claude-code
 npm ci
-npm run build:dashboard
 node packages/cli/src/index.ts init
 node packages/cli/src/index.ts start
 ```
@@ -53,7 +52,6 @@ node packages/cli/src/index.ts start
 | 命令 | 作用 |
 |---|---|
 | `status`, `stop` | 查看或停止守护进程 |
-| `dashboard` | 打开本地仪表板 |
 | `mode subscription\|api\|direct\|proxy` | 切换模式（见下文） |
 | `policy show\|accept` | 在项目的 `.do-it-all-claude-code/policy.json` 生效前先查看 |
 | `data export`, `data purge` | 导出或删除路由器记录的内容 |
@@ -120,10 +118,28 @@ claude --allowedTools "Bash(npm test)" "Bash(npm run *)"
 的客户端名称），不会发送别的：没有提示、没有用量、没有身份信息。有新版本时，会在状态栏（` | update 0.4.0`）
 和会话开始时的一行提示里显示，只给你看，而且每个版本每天最多一次。它不会自动更新。
 
-## 仪表板
+## 团队办公室
 
-运行 `do-it-all-claude-code dashboard`，会打开守护进程提供的一个只读页面：最近的请求、谁做了什么、哪些检查通过了、
-成本（主控对工作者），以及路由器对请求大小的第一判断有多准。支持英语、韩语、日语和简体中文。
+在 Claude Code 里输入 `/office`，对话旁边会打开一个面板，显示团队的工作情况。终端够宽时，请求的第一个工作者
+启动时它也会自己打开。面板是只读的：没有输入行，设置用 CLI（`config`、`preset`、`role`）修改。
+
+| 标签页 | 显示的内容 |
+|---|---|
+| 办公室 | 每个成员坐在桌前：角色、模型和努力级别、正在做什么；上方是请求的级别、相对预算的成本和用量上限 |
+| 历史 | 最近请求的级别、结果、成本、耗时和失败的检查；打开一个可以看到它的子任务和检查 |
+| 成本 | 最近 24 小时、7 天或 30 天：总计、主控对工作者、按级别的成本、每个被受理请求的成本 |
+| 路由 | 路由器对请求大小的第一判断有多准，以及下一节所说的比较 |
+
+点击面板，或者按 ctrl+x 再按 tab，键盘就交给面板。Tab 和 shift+Tab 在按钮之间移动，Enter 按下按钮，Esc
+回到提示符。`o`、`h`、`c`、`r` 切换标签页。在办公室里，1–9 选成员，←/→ 移动高亮，Enter 或点击选定，`v` 在
+主视图里显示该成员的记录。在历史里，按钮就是最近的请求：Enter 在下方打开一个，`b` 返回。在成本里，`t`、
+`w`、`m` 分别是 24 小时、7 天和 30 天。
+
+`/office demo` 用虚构的成员显示预览，`/office clear` 清空面板。面板从不显示提示词内容。守护进程没有运行时，
+它仍然根据 Claude Code 自己的事件显示团队，只是没有路由器的数字。
+
+运行 `do-it-all-claude-code config set office off` 后，之后启动的会话不再显示面板。它需要 Claude Code 2.1.325
+或更新的版本。0.5.0 之前版本里的浏览器仪表板已经移除。
 
 ## 确认委派是否仍然划算
 
@@ -135,7 +151,7 @@ claude --allowedTools "Bash(npm test)" "Bash(npm run *)"
 工作者结束后跑的检查，归根结底是项目自己的测试。以测试覆盖不到的方式出错的修复，照样会通过。出现这种情况
 时主控可以把活儿往上退一档，但得先察觉到。
 
-仪表板里的「受理」指的是，在接下来的几个提示内没人撤销这次改动、没再提一次同样的请求、也没抱怨。这是「有
+历史和成本标签页里的「受理」指的是，在接下来的几个提示内没人撤销这次改动、没再提一次同样的请求、也没抱怨。这是「有
 多大比例的工作是好的」的上限，不是对它的测量。
 
 自动关闭是用来抓住明显变贵的委派的，不是用来精细调节的。以涉及的样本量，它分不清 25% 的损失和噪声。

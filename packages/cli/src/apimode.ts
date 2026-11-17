@@ -11,8 +11,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { redact } from '@do-it-all-claude-code/core';
+import { redact, resolveLayout, routerHome } from '@do-it-all-claude-code/core';
 import { NO_PROXY_VARS, PROXY_VARS, noProxyCovers, shownProxyUrl, splitNoProxy } from '@do-it-all-claude-code/proxy';
 import type { TlsChoice } from './localtls.ts';
 import { backupNote, readConfig, readJsonFile, writeBackup, writeConfig, writeJsonAtomic, type CliConfig, type PlannedChange } from './setup.ts';
@@ -22,18 +21,78 @@ export type ApiMode = 'proxy' | 'direct';
 export const HINT_HEADERS_ENV = 'CLAUDE_CODE_GATEWAY_HINT_HEADERS';
 const CREDENTIAL_ENV = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'];
 
-/** The proxy package's folder (src/index.ts resolved, one level up). */
-export function proxyPackageDir(): string {
-  return path.dirname(path.dirname(fileURLToPath(import.meta.resolve('@do-it-all-claude-code/proxy'))));
-}
-export const proxyEntry = (dir = proxyPackageDir()) => path.join(dir, 'src', 'main.ts');
-export const localTokenHelper = (dir = proxyPackageDir()) => `node "${path.join(dir, 'bin', 'local-token.mjs')}"`;
-export const keyHelper = (dir = proxyPackageDir()) => `node "${path.join(dir, 'bin', 'key-helper.mjs')}"`;
+/** The proxy's runnable entry for this layout (packages/proxy/src|dist/main in the workspace, dist/proxy.js
+ *  when packaged). */
+export const proxyEntry = (): string => resolveLayout(import.meta.url).proxyEntry;
 export const proxyBaseUrl = (port: number, tls = false) => `${tls ? 'https' : 'http'}://127.0.0.1:${port}`;
 
-/** True when an apiKeyHelper command is one of ours (any install location, this release's name or the previous one's). */
-export function isRouterHelper(command: unknown): boolean {
-  return typeof command === 'string' && /(local-token|key-helper)\.mjs/.test(command) && /do-it-all-claude-code|agentic-router|[\\/]proxy[\\/]bin[\\/]/i.test(command);
+const layoutHere = () => resolveLayout(import.meta.url);
+/**
+ * The apiKeyHelper target. In a packaged install the self-contained copies in the router home (the global /
+ * package folder moves with the Node version manager). In the workspace the files in place — they resolve their
+ * imports there (key-helper.mjs imports ../src/vault.ts) and the checkout does not move; copying them would
+ * break that import (review H1).
+ */
+function helperTarget(name: 'local-token' | 'key-helper', home = routerHome()): string {
+  const l = layoutHere();
+  return l.mode === 'packaged' ? path.join(home, `${name}.mjs`) : (name === 'local-token' ? l.localTokenHelper : l.keyHelper);
+}
+export const localTokenHelper = (home = routerHome()): string => `node "${helperTarget('local-token', home)}"`;
+export const keyHelper = (home = routerHome()): string => `node "${helperTarget('key-helper', home)}"`;
+
+/**
+ * Copy the self-contained helper bundles into the router home when packaged (compares bytes, replaces a
+ * differing or symlinked copy without following links, writes 0700 via a temp + rename). A no-op in the
+ * workspace, where the helper command points at the files in place. Returns the helpers it (re)wrote. Run by
+ * init and refreshed at start (decision: the global folder may change with the Node version).
+ */
+export function copyHelpersToHome(home = routerHome()): string[] {
+  const l = layoutHere();
+  if (l.mode !== 'packaged') return [];
+  fs.mkdirSync(home, { recursive: true });
+  const src: Record<'local-token' | 'key-helper', string> = { 'local-token': l.localTokenHelper, 'key-helper': l.keyHelper };
+  const written: string[] = [];
+  for (const name of ['local-token', 'key-helper'] as const) {
+    const data = fs.readFileSync(src[name]);
+    const to = path.join(home, `${name}.mjs`);
+    let st: fs.Stats | null = null;
+    try { st = fs.lstatSync(to); } catch { /* missing */ }
+    if (st?.isSymbolicLink()) { fs.rmSync(to, { force: true }); st = null; }   // never follow a link
+    if (st?.isFile()) { try { if (fs.readFileSync(to).equals(data)) continue; } catch { /* rewrite */ } }
+    const tmp = `${to}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, data, { mode: 0o700 });
+    fs.renameSync(tmp, to);
+    written.push(name);
+  }
+  return written;
+}
+
+/** Packaged only (review L3): the helpers whose router-home copy is missing or differs from the shipped bundle,
+ *  for doctor. Always [] in the workspace, where the files are used in place. */
+export function staleHelpers(home = routerHome()): string[] {
+  const l = layoutHere();
+  if (l.mode !== 'packaged') return [];
+  const src: Record<'local-token' | 'key-helper', string> = { 'local-token': l.localTokenHelper, 'key-helper': l.keyHelper };
+  const out: string[] = [];
+  for (const name of ['local-token', 'key-helper'] as const) {
+    try {
+      const want = fs.readFileSync(src[name]);
+      const st = fs.lstatSync(path.join(home, `${name}.mjs`));
+      if (!st.isFile() || st.isSymbolicLink() || !fs.readFileSync(path.join(home, `${name}.mjs`)).equals(want)) out.push(name);
+    } catch { out.push(name); }
+  }
+  return out;
+}
+
+/**
+ * True when an apiKeyHelper command is one of ours (review M1): exactly this home's two helper commands, or an
+ * older install's — the previous product name (`agentic-router`) or the old `<proxy>/bin/<helper>.mjs` location.
+ * It must NOT take a user's own `node …/key-helper.mjs` for ours.
+ */
+export function isRouterHelper(command: unknown, home = routerHome()): boolean {
+  if (typeof command !== 'string') return false;
+  if (command === localTokenHelper(home) || command === keyHelper(home)) return true;
+  return /(?:local-token|key-helper)\.mjs/.test(command) && /agentic-router|[\\/]proxy[\\/]bin[\\/]/i.test(command);
 }
 export const isOurBaseUrl = (v: unknown): boolean => typeof v === 'string' && /^https?:\/\/(127\.0\.0\.1|localhost):\d+\/?$/.test(v);
 
@@ -182,10 +241,10 @@ export function recordApiState(o: { envAdded: EnvAdded[]; tls?: TlsChoice }): vo
 
 /** What Claude Code's user settings should hold in a mode, as a planned change (null: already so). `tls` (proxy
  *  mode): from localtls.prepareTls; without it the proxy is reached over plain HTTP. */
-export function planApiSettings(settingsFile: string, mode: ApiMode, proxyPort: number, pkgDir = proxyPackageDir(), shellEnv: NodeJS.ProcessEnv = process.env, tls?: TlsChoice): PlannedChange | null {
+export function planApiSettings(settingsFile: string, mode: ApiMode, proxyPort: number, helperDir = routerHome(), shellEnv: NodeJS.ProcessEnv = process.env, tls?: TlsChoice): PlannedChange | null {
   const settings = readJsonFile<Record<string, any>>(settingsFile, {});
   const env: Record<string, unknown> = settings.env && typeof settings.env === 'object' ? { ...settings.env } : {};
-  const helper = mode === 'proxy' ? localTokenHelper(pkgDir) : keyHelper(pkgDir);
+  const helper = mode === 'proxy' ? localTokenHelper(helperDir) : keyHelper(helperDir);
   const notes: string[] = [];
   const prevHelper = settings.apiKeyHelper;
   if (prevHelper !== undefined && prevHelper !== helper) {

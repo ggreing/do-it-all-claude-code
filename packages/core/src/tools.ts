@@ -74,7 +74,23 @@ export const ReportTriageInput = z.strictObject({
   level: z.enum(['L0', 'L1', 'L2', 'L3']),
   files: z.number().int().min(0).max(999),
   confidence: z.number().min(0).max(1),
+  /** Decision 178: the lead's estimate of the lines the change touches (added plus removed). */
+  lines: z.number().int().min(0).max(100_000).optional(),
 });
+
+/**
+ * Decision 178 (나): a change the lead, after a look at the code, judges to be one file and a small edit is
+ * handled by the lead alone. Delegating it costs a fixed 15 to 25 s (the brief, the worker's start, reading its
+ * result; decision 174), more than the fix: one-file public L2 issues took 12 and 20 s direct, 38 and 49 s
+ * delegated. Multi-file changes (the c-l1 tasks that touch 2 or 3 files) stay delegated: there the worker saves
+ * the lead's tokens.
+ */
+export const ONE_FILE_DIRECT = { files: 1, lines: 15, confidence: 0.6 } as const;
+
+/** Whether a lead's size report says "one file, a small edit" (and is sure enough to act on). */
+export function oneFileDirect(v: ReportTriageInput): boolean {
+  return v.kind === 'direct' && v.files <= ONE_FILE_DIRECT.files && v.lines !== undefined && v.lines <= ONE_FILE_DIRECT.lines && v.confidence >= ONE_FILE_DIRECT.confidence;
+}
 
 export const REVIEW_CATEGORIES = ['wrong_behavior', 'incomplete', 'regression', 'out_of_scope', 'style'] as const;
 

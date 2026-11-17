@@ -6,19 +6,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ACCEPTANCE_RULE_VERSION, ACCEPT_WINDOW_PROMPTS, MAX_STEP_UPS, PRICING_PER_MTOK, ROUTER_TOOL_PREFIX, RouterToolCall, dissatisfactionRule, holdoutDraw, isReask, promptSimilarity, afterEasyPass, afterOtherResult, afterRaise, atDispatch, costUsd, decideEscalation, formatTriageContext, isRouterToolName, l3SignalRoles, ladderStep,
-  effectiveRoleText, isRoleName, leadModelClass, normalizeLeadTriage, parseRoleFile, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, stepIndex, stepUp, triage,
+  effectiveRoleText, isRoleName, leadModelClass, normalizeLeadTriage, oneFileDirect, parseRoleFile, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, stepIndex, stepUp, triage,
   type LeadModelClass, type Level, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
   type RouterEvent, type RouterToolErrorCode, type RouterToolName, type RouterToolResult, type Step, type TeamPreset, type TriageResult, type Usage,
   type UpdateNotice, type VerifySignal,
 } from '@do-it-all-claude-code/core';
 import type { ConfigFile } from './config.ts';
-import { awaitsUser, classifyPrompt } from './continuation.ts';
-import { takeSnapshot } from './git.ts';
+import { AWAITING_USER_MARKER, awaitsUser, classifyPrompt } from './continuation.ts';
+import { changedFiles, fileFingerprint, takeSnapshot } from './git.ts';
 import { writeJsonAtomic, type HomeLayout } from './home.ts';
 import type { AcceptState, AgentRow, ClientRow, Holdout, Ledger, RequestRow, SlotRow, SubtaskReview, SubtaskRow } from './ledger.ts';
 import { errorText, nullLogger, type Logger } from './log.ts';
 import { cleanVerifyEnv, verifyEnv, withoutEnvValues } from './env.ts';
 import { eventPayload, minimalPayload, storedPromptKind, tailText } from './payload.ts';
+import { matchesScope } from './glob.ts';
 import { PresetResolver } from './presets.ts';
 import { crossCheck, type CrossCheck } from './proxyusage.ts';
 import { checkEndState, requestChanges, requestEndState, takeRequestSnapshot, type ChangeStats, type RequestEndState, type RequestSnapshot } from './record.ts';
@@ -26,15 +27,19 @@ import { parseReportVerdict, reportAsksForScope, type ReportVerdict } from './re
 import { PromptMemory, acceptanceBlob, addSignal, newAcceptState, storedAcceptance } from './accept.ts';
 import { LEAD_CLASSES, RELEASE_LEVELS, applyRelease, releaseChange, routingHoldoutRate, routingMode, routingView, type RoutingView } from './routing.ts';
 import { BASH_NOT_FOUND, type Shell } from './shell.ts';
-import { checkAgentCall, isAgentTool, managedRole, parseScope, parseTag, scopeFileBody, startStep, stepOf } from './policy.ts';
+import { checkAgentCall, concurrentWriterProblem, isAgentTool, managedRole, parseScope, parseTag, scopeFileBody, startStep, stepOf } from './policy.ts';
 import { SessionQueue } from './queue.ts';
 import { TicketStore, addGlobs, removeGlobs, sortScopeGlobs, toolUseIdOf } from './tools.ts';
 import {
   readEditedPaths, readLastModel, readLeadUsage, readSubtaskTag, readTranscriptUsage, subagentTranscriptPath, waitForQuiet,
   type LeadUsage, type TranscriptUsage,
 } from './transcript.ts';
+import {
+  MAX_REPRO_FILES, MAX_REPRO_RUNS, REPRO_START_NOTE, checkAtStop, defaultRepro, editNote, isTestFile, isTestSupport, leadNote, parseReproTag, pickTemplate, reproMode,
+  resolveReproTemplates, runRepro, treePath, type ReproRecord, type ReproTag, type ReproTemplate, type StopCheck,
+} from './repro.ts';
 import { resolveVerifyCommands } from './verify-source.ts';
-import { COMMAND_TIMEOUT_MS, TOTAL_TIMEOUT_MS, isEnvFailure, runVerify, type VerifyCommand, type VerifyPlan } from './verify.ts';
+import { COMMAND_TIMEOUT_MS, TOTAL_TIMEOUT_MS, existsInTree, isEnvFailure, runVerify, subagentChanges, type VerifyCommand, type VerifyPlan } from './verify.ts';
 
 export interface VerifySettings {
   commandTimeoutMs: number;
@@ -43,6 +48,8 @@ export interface VerifySettings {
   resolveCommands?: (i: { role: string; cwd: string; repoRoot?: string; baseRef?: string }) => Promise<VerifyCommand[]>;
   /** Override of the verify shell (tests). Default: verifyShell(), decision 98. */
   shell?: Shell;
+  /** Override of the reproduction templates (tests). Default: the project's verify.json "repro" list, else the built-in ones. */
+  reproTemplates?: readonly ReproTemplate[];
 }
 
 export interface RouterOptions {
@@ -284,7 +291,8 @@ export class Router {
 
   /** The brief for the lead; an uncertain triage also names the L2 team the lead would call (core). */
   #triageContext(t: TriageResult, team: TeamPreset, cwd: string | undefined, leadModel: string | null): string {
-    return formatTriageContext(t, team, this.#resolver.resolve(cwd, leadModel ?? undefined).presets);   // the L2 and L3 of teams.yaml (decision 113)
+    const brief = formatTriageContext(t, team, this.#resolver.resolve(cwd, leadModel ?? undefined).presets);   // the L2 and L3 of teams.yaml (decision 113)
+    return reproMode(this.#config) === 'off' ? brief : `${brief}\n${REPRO_BRIEF}`;
   }
 
   /**
@@ -588,6 +596,9 @@ export class Router {
 
   // ------------------------------------------------------------------ pre_tool_use (Agent)
 
+  /** Decision 178 (다): refusals of a concurrent writer, per request, subtask and reason. */
+  readonly #writerRefusals = new Map<string, number>();
+
   #preToolUse(ev: RouterEvent, ctx: Ctx): RouterDecision {
     if (isRouterToolName(ev.toolName)) return this.#preRouterTool(ev, ctx);
     if (ev.agentId || !isAgentTool(ev.toolName)) {
@@ -613,6 +624,10 @@ export class Router {
     }
     const scope = parseScope(prompt);
     if (!scope.ok) return deny(`subtask ${tag}: ${scope.reason}`);
+    // decision 175: a coder subtask may carry "[repro: required]" or "[repro: off <reason>]" after the scope line
+    const reproOn = role === 'coder' && reproMode(this.#config) !== 'off';
+    const reproTag = reproOn ? parseReproTag(prompt) : undefined;
+    if (reproTag && !reproTag.ok) return deny(`subtask ${tag}: ${reproTag.reason}`);
     // Audit #12: the same Agent call seen twice (a spooled copy of an event already handled) is not dispatched again.
     const toolUseId = str(ev.raw.tool_use_id);
     if (toolUseId && this.ledger.subtaskByToolUseId(ev.sessionId, toolUseId)) return NONE;
@@ -640,6 +655,20 @@ export class Router {
       ...(str(input.effort) ? { effort: str(input.effort)! } : {}),
     });
     if (!check.ok) return ev.spooled ? NONE : deny(check.reason);
+    // decision 178 (다): a writer sent while another writer of this request runs needs a scope no running writer shares,
+    // and its own worktree; the reason says how to send it instead. After two refusals of the same subtask for the
+    // same reason a third identical call is let through (logged); sending one writer after another always passes.
+    const writerProblem = concurrentWriterProblem({
+      tag, role, scope: scope.allowed, isolation: str(input.isolation),
+      running: subtasks.filter(s => active(s) && s.id !== tag).map(s => ({ id: s.id, role: s.role, scope: s.writeScope })),
+    });
+    if (writerProblem && !ev.spooled) {
+      const key = `${req.id}|${tag}|${writerProblem.kind}`;
+      const refused = (this.#writerRefusals.get(key) ?? 0) + 1;
+      if (refused <= 2) { this.#writerRefusals.set(key, refused); return deny(writerProblem.reason); }
+      this.#writerRefusals.delete(key);
+      this.#log.warn('a concurrent writer was let through after two refusals', { requestId: req.id, subtask: tag, kind: writerProblem.kind });
+    }
 
     // Compatibility #9: without its scope file the guard cannot hold the subagent to its scope, so the call
     // is denied (written first, so a failed write leaves no pending subtask behind).
@@ -655,6 +684,7 @@ export class Router {
       requestId: req.id, id: tag, role, slot: check.slot, step: check.step, writeScope: scope.allowed,
       unscoped: scope.unscoped, agentType: agentType!, toolUseId: str(ev.raw.tool_use_id) ?? null, at: this.#at(),
     });
+    this.ledger.updateSubtask(req.id, tag, { repro: reproOn ? this.#reproAtDispatch(req, reproTag, scope.allowed, scope.unscoped) : null }, this.#at());
     this.#slotDispatched(req.id, role, check.slot);   // step-down (decision 135)
     return NONE;
   }
@@ -685,6 +715,7 @@ export class Router {
       if (sub) {
         if (sub.status === 'pending') this.ledger.updateSubtask(sub.requestId, sub.id, { status: 'running' }, this.#at());
         this.#writeAgentFile(agentId, ev.sessionId, sub);
+        return this.#reproStart(sub, ev);
       }
       return NONE;
     }
@@ -716,7 +747,7 @@ export class Router {
     if (env) this.#rememberEnv(agentId, env);
     this.ledger.updateSubtask(sub.requestId, sub.id, { agentId, status: 'running' }, this.#at());
     this.#writeAgentFile(agentId, ev.sessionId, sub);
-    return NONE;
+    return this.#reproStart(sub, ev);
   }
 
   /** Audit E16: re-pairs an agent with the subtask its transcript's tag names (same request, same agent type, still active). */
@@ -779,6 +810,8 @@ export class Router {
     try {
       writeJsonAtomic(this.#home.agentFile(agentId), {
         sessionId, subtaskId: sub.id, role: sub.role, slot: sub.slot, step: sub.step, pairing, scope: scopeBody(sub.writeScope, sub.unscoped, sub.protectedGranted),
+        // decision 175: while set, the relay sends this agent's file edits to the router (the test is run when it is written)
+        ...(reproOpen(sub.repro) ? { repro: true } : {}),
       });
     } catch (e) {
       // the guard falls back to the transcript tag and the scope file
@@ -818,11 +851,15 @@ export class Router {
     return {
       deferred: async () => {
         // verify first: by then Claude Code has written the subagent's last lines (measurement, decision 107 runs)
-        const signals = plan ? await this.#runPlan(plan, sub!, agent!, ev.agentTranscriptPath) : undefined;
+        // decision 175: the reproduction test runs first; when it still fails the verify commands are not run
+        const rep = plan && sub && agent ? await this.#reproAtStop(agent, sub, plan, ev.lastAssistantMessage) : undefined;
+        const signals = plan ? await this.#runPlan(plan, sub!, agent!, ev.agentTranscriptPath, rep?.check.signal?.ok === false) : undefined;
+        if (rep?.check.signal && signals) signals.unshift(rep.check.signal);
         await waitForQuiet(ev.agentTranscriptPath);
         const usage = await readTranscriptUsage(ev.agentTranscriptPath);
         return () => {
           this.#recordTranscriptCost(ev, agentId, requestId, agent?.subtaskId ?? null, usage, managed);
+          if (rep && sub) this.#saveReproAtStop(agentId, sub, rep);
           if (signals && plan) {
             const decision = this.#finishStop(ev, agentId, signals, plan);
             if (judge) this.#applyReportVerdict(agentId, reported);
@@ -916,10 +953,15 @@ export class Router {
     const st = ladderStep(sub.step);
     const head = `[do-it-all-claude-code] subtask ${sub.id} (${sub.role} @${sub.step}, model=${st.alias}, effort=${st.effort})`;
     const signals = this.ledger.listSignals(agent.requestId, sub.id).filter(x => x.agentId === agentId && x.attempt === agent.stopCount);
-    const checks = signals.map(x => `${x.kind} ${!x.ok ? 'failed' : /: skipped \(/.test(x.detail ?? '') ? 'skipped' : 'ok'}`).join(', ');
+    const skipped = (x: { detail?: string | undefined }) => /: skipped \(/.test(x.detail ?? '');
+    // decision 178 (가): the test count goes with "test ok", so the lead sees what verify covered
+    const checks = signals.map(x => `${x.kind} ${!x.ok ? 'failed' : skipped(x) ? 'skipped' : 'ok'}${x.kind === 'test' && !skipped(x) && x.testsPassed !== undefined ? ` (${x.testsPassed} passed${x.testsFailed ? `, ${x.testsFailed} failed` : ''})` : ''}`).join(', ');
+    const testsRan = signals.some(x => x.kind === 'test' && x.ok && !skipped(x) && (x.testsPassed === undefined || x.testsPassed > 0));
     const scope = signals.find(x => x.kind === 'scope');
     const files = /(\d+) file\(s\) changed/.exec(scope?.detail ?? '')?.[1];
-    const tree = agent.snapshot?.isolated === false ? 'working tree' : agent.snapshot?.isolated ? 'worktree' : undefined;
+    // decision 178 (다): a concurrent writer's branch, which the lead merges (the skill's Integrate steps)
+    const tree = agent.worktreeBranch ? `worktree, branch ${agent.worktreeBranch}: merge it`
+      : agent.snapshot?.isolated === false ? 'working tree' : agent.snapshot?.isolated ? 'worktree' : undefined;
     const where = [files !== undefined ? `${files} file(s)` : undefined, tree].filter(Boolean).join(', ');
     const state = this.ledger.agentCostState(agentId);
     const { usd, partlyEstimated: partly } = this.ledger.agentCostUsd(agentId);   // proxy rows first (decision 130)
@@ -929,18 +971,21 @@ export class Router {
     const firstFailure = signals.find(x => !x.ok)?.detail?.split('\n')[0]?.slice(0, 200);
     switch (sub.status) {
       case 'passed':
-        // Decision 87: tell the lead not to spend a turn re-running what the router already ran.
-        return `${head}: verify passed — ${checks || 'no checks configured'}${tail} (already verified by the router; no need to re-run).`
-          + this.#passedNote(agent.requestId, sub, agentId);
+        // Decision 87: tell the lead not to spend a turn re-running what the router already ran. Decision 178 (가): a
+        // lead re-ran a whole suite (407 s) after a passing verify; when verify ran no tests, a targeted run is enough.
+        return `${head}: verify passed — ${checks || 'no checks configured'}${tail} (${testsRan
+          ? 'already verified by the router: do not re-run the test suite; for more assurance run only the tests of the changed code'
+          : 'verify ran no tests for this change: if the changed code has tests, run those once yourself, a targeted run, not the whole suite'}).`
+          + this.#passedNote(agent.requestId, sub, agentId) + leadNote(sub.repro);
       case 'failed':
         if (sub.verdict === 'rejected') {
-          return `${head}: its result was reported as wrong (review by ${sub.review?.by ?? 'the lead'})${tail}.` + this.#raisedNote(sub) + ' Decide: dispatch a new attempt with what was wrong, or report to the user.';
+          return `${head}: its result was reported as wrong (review by ${sub.review?.by ?? 'the lead'})${tail}.` + this.#afterFailure(sub, 'what was wrong');
         }
         if (!signals.length) {
           return `${head}: the subagent ended with an error before it finished; verify did not run${tail}. Decide: dispatch a new attempt or report to the user.`;
         }
         return `${head}: verify failed again after one fix attempt (miss) — ${checks}${firstFailure ? `. First failure: ${firstFailure}` : ''}${tail}.`
-          + this.#raisedNote(sub) + ' Decide: dispatch a new attempt with what failed, or report to the user.';
+          + this.#afterFailure(sub, 'what failed');
       case 'hitl': {
         if (sub.verdict === 'held') {
           if (signals.some(x => x.detail?.includes(`: held, ${BASH_NOT_FOUND}`))) {
@@ -1003,7 +1048,7 @@ export class Router {
     };
   }
 
-  async #runPlan(plan: VerifyPlan, sub: SubtaskRow, agent: AgentRow, transcript: string | undefined): Promise<VerifySignal[]> {
+  async #runPlan(plan: VerifyPlan, sub: SubtaskRow, agent: AgentRow, transcript: string | undefined, scopeOnly = false): Promise<VerifySignal[]> {
     try {
       const root = agent.snapshot?.root;
       const baseRef = agent.snapshot?.head;
@@ -1012,17 +1057,21 @@ export class Router {
         const edited = await readEditedPaths(transcript, root);
         if (edited) plan.scope.editedPaths = edited;
       }
-      const src = { role: sub.role, cwd: plan.cwd, ...(root ? { repoRoot: root } : {}), ...(baseRef ? { baseRef } : {}) };
-      if (this.#verify.resolveCommands) plan.commands = await this.#verify.resolveCommands(src);
-      else {
-        const r = await resolveVerifyCommands({ ...src, ...(this.#config.pluginDir ? { pluginDir: this.#config.pluginDir } : {}), readRole: role => { try { return this.#roleText(role); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e; } } });
-        plan.commands = r.commands;
-        if (r.warning) this.#log.warn('verify source', { subtaskId: sub.id, warning: r.warning });
-      }
+      if (!scopeOnly) plan.commands = await this.#verifyCommands(sub, agent, plan.cwd);
       return await runVerify(plan);
     } catch (e) {
       return [{ kind: 'tool_error', ok: false, detail: `verification could not run: ${tailText(errorText(e), 500, this.#secrets)}` }];
     }
+  }
+
+  async #verifyCommands(sub: SubtaskRow, agent: AgentRow, cwd: string): Promise<VerifyCommand[]> {
+    const root = agent.snapshot?.root;
+    const baseRef = agent.snapshot?.head;
+    const src = { role: sub.role, cwd, ...(root ? { repoRoot: root } : {}), ...(baseRef ? { baseRef } : {}) };
+    if (this.#verify.resolveCommands) return this.#verify.resolveCommands(src);
+    const r = await resolveVerifyCommands({ ...src, ...(this.#config.pluginDir ? { pluginDir: this.#config.pluginDir } : {}), readRole: role => { try { return this.#roleText(role); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e; } } });
+    if (r.warning) this.#log.warn('verify source', { subtaskId: sub.id, warning: r.warning });
+    return r.commands;
   }
 
   #finishStop(ev: RouterEvent, agentId: string, signals: VerifySignal[], plan: VerifyPlan): RouterDecision {
@@ -1112,8 +1161,9 @@ export class Router {
     return NONE;
   }
 
-  #postToolUse(ev: RouterEvent, ctx: Ctx): RouterDecision {
+  #postToolUse(ev: RouterEvent, ctx: Ctx): Outcome {
     if (!ev.agentId && EDIT_TOOLS.has(ev.toolName ?? '')) return this.#leadEdit(ev, ctx);   // decision 145
+    if (ev.agentId && EDIT_TOOLS.has(ev.toolName ?? '')) return this.#reproOnEdit(ev, ctx);   // decision 175
     if (ev.agentId || !isAgentTool(ev.toolName)) {
       ctx.requestId = this.ledger.latestRequest(ev.sessionId)?.id ?? null;
       return NONE;
@@ -1177,6 +1227,185 @@ export class Router {
     });
   }
 
+  // ------------------------------------------------------------------ reproduce first (decisions 175, 177, 179)
+
+  #reproAtDispatch(req: RequestRow, tag: ReproTag | undefined, scope: string[], unscoped: boolean): ReproRecord {
+    const observe = reproMode(this.#config) === 'observe' ? { observe: true } : {};
+    if (tag?.ok) return tag.required ? { required: true, by: 'lead', state: 'pending', ...observe } : { required: false, by: 'lead', ...(tag.reason ? { reason: tag.reason } : {}) };
+    const d = defaultRepro(req.triage.taskType, scope, unscoped);
+    return d.required ? { required: true, by: 'router', state: 'pending', ...observe } : { required: false, by: 'router', ...(d.reason ? { reason: d.reason } : {}) };
+  }
+
+  /** The coder of a subtask that must reproduce is told so when it starts (a replayed start tells nobody). */
+  #reproStart(sub: SubtaskRow, ev: RouterEvent): RouterDecision {
+    return !ev.spooled && sub.repro?.required && sub.repro.state === 'pending' ? { context: REPRO_START_NOTE } : NONE;
+  }
+
+  async #reproTemplates(agent: AgentRow, subtaskId: string): Promise<readonly ReproTemplate[]> {
+    if (this.#verify.reproTemplates) return this.#verify.reproTemplates;
+    const r = await resolveReproTemplates(agent.snapshot!.root, agent.snapshot!.head);
+    if (r.warning) this.#log.warn('repro source', { subtaskId, warning: r.warning });
+    return r.templates;
+  }
+
+  /** Runs `fn` and returns what it wrote in the work tree (caches, build output), so that is not counted as the subagent's change. */
+  async #withArtifacts<T>(agent: AgentRow, fn: () => Promise<T>): Promise<{ value: T; artifacts: Record<string, string> }> {
+    const snap = agent.snapshot!;
+    const state = async () => {
+      const m: Record<string, string> = {};
+      try { for (const f of await changedFiles(snap.root, snap.head)) m[f] = fileFingerprint(snap.root, f); } catch { /* without it the scope check is only stricter */ }
+      return m;
+    };
+    const before = await state();
+    const value = await fn();
+    const after = await state();
+    const artifacts: Record<string, string> = {};
+    for (const [f, now] of Object.entries(after)) if (before[f] !== now) artifacts[f] = now;
+    for (const f of Object.keys(before)) if (!(f in after)) artifacts[f] = fileFingerprint(snap.root, f);
+    return { value, artifacts };
+  }
+
+  #addArtifacts(agentId: string, artifacts: Record<string, string>): void {
+    const agent = this.ledger.getAgent(agentId);
+    if (!agent?.snapshot || !Object.keys(artifacts).length) return;
+    this.ledger.updateAgent(agentId, { snapshot: { ...agent.snapshot, artifacts: { ...agent.snapshot.artifacts, ...artifacts } } });
+  }
+
+  /**
+   * A coder saved a file while its subtask still has to show a failing test. A test file saved while nothing
+   * but tests changed is run where it is (the tree is the start state plus the test), and the coder is told
+   * what the router saw. The run is outside the session queue; its result is written back through it.
+   */
+  #reproOnEdit(ev: RouterEvent, ctx: Ctx): Outcome {
+    const agent = this.ledger.getAgent(ev.agentId!);
+    ctx.requestId = agent?.requestId ?? this.ledger.latestRequest(ev.sessionId)?.id ?? null;
+    if (ev.spooled || !agent?.requestId || !agent.subtaskId || !agent.snapshot || reproMode(this.#config) === 'off') return NONE;
+    const sub = this.ledger.getSubtask(agent.requestId, agent.subtaskId);
+    const rec = sub?.repro;
+    if (!sub || !rec || !reproOpen(rec)) return NONE;
+    const root = agent.snapshot.root;
+    const cwd = ev.cwd ?? agent.cwd ?? root;
+    const input = obj(ev.toolInput);
+    const file = str(input.file_path) ?? str(input.notebook_path);
+    const rel = file ? treePath(root, cwd, file) : undefined;
+    if (!rel) return NONE;
+    const known = rec.files?.[rel];
+    if (!known && !isTestFile(rel)) return NONE;
+    const plan = this.#planVerify(agent, sub, cwd);
+    const agentId = agent.agentId;
+    const head = `[do-it-all-claude-code] reproduction for subtask ${sub.id}:`;
+    /** Applies a change to the subtask's current record (another run may have finished meanwhile). */
+    const done = (change: ((now: ReproRecord) => ReproRecord) | undefined, context?: string, artifacts?: Record<string, string>) => (): RouterDecision => {
+      try {
+        const cur = this.ledger.getSubtask(sub.requestId, sub.id);
+        if (change && cur?.repro && cur.agentId === agentId) {
+          const next = change(cur.repro);
+          this.ledger.updateSubtask(sub.requestId, sub.id, { repro: next }, this.#at());
+          if (!reproOpen(next)) this.#writeAgentFile(agentId, agent.sessionId, { ...cur, repro: next });
+        }
+        if (artifacts) this.#addArtifacts(agentId, artifacts);
+      } catch (e) {
+        this.#log.error('repro record failed', { agentId, error: errorText(e) });
+      }
+      return context ? { context } : NONE;
+    };
+    return {
+      deferred: async () => {
+        try {
+          const changed = await subagentChanges(plan.cwd, plan.scope!);
+          if (!changed) return done(undefined);
+          const other = changed.filter(f => !isTestSupport(f));
+          // Writers with disjoint scopes may share one tree (decision 103): a change in another writer's scope is not
+          // this coder's, but the tree is then not "start state plus the test", so nothing is run.
+          const theirs = this.ledger.listAgents(sub.requestId)
+            .filter(a => a.agentId !== agentId && a.subtaskId && a.subtaskId !== sub.id && a.snapshot?.root === root)
+            .map(a => this.ledger.getSubtask(sub.requestId, a.subtaskId!))
+            .filter((s): s is SubtaskRow => !!s && !s.unscoped)
+            .flatMap(s => s.writeScope);
+          const foreign = theirs.length ? other.filter(f => matchesScope(f, theirs) && (sub.unscoped || !matchesScope(f, sub.writeScope))) : [];
+          if (foreign.length && foreign.length === other.length && !known) {
+            if (rec.state !== 'pending') return done(undefined);
+            return done(now => (now.state === 'pending' ? { ...now, state: 'unconfirmed', reason: 'shared-tree' } : now),
+              `${head} another subtask is changing files in this work tree (${foreign.slice(0, 3).join(', ')}), so the router cannot run ${rel} against the unchanged code. It is recorded as unconfirmed; go on.`);
+          }
+          if (other.length) {
+            if (known) {
+              if (fileFingerprint(root, rel) === known.fingerprint) return done(undefined);
+              return done(undefined, `${head} ${rel} was seen failing on the unchanged code and has now been edited. The router can only count it if it is the same file: restore it and put further tests in another file, or say why in "Remaining issues".`);
+            }
+            if (rec.state !== 'pending') return done(undefined);
+            return done(now => (now.state === 'pending' ? { ...now, state: 'unconfirmed', reason: 'changed-first' } : now),
+              `${head} other files were changed before a test was seen failing (${other.slice(0, 3).join(', ')}), so the router cannot show that ${rel} fails without your change. It is recorded as unconfirmed; go on.`);
+          }
+          if ((rec.runs ?? 0) >= MAX_REPRO_RUNS) return done(undefined, `${head} the router ran reproduction tests ${MAX_REPRO_RUNS} times for this subtask and does not run ${rel} again. Go on with the change.`);
+          if (!known && Object.keys(rec.files ?? {}).length >= MAX_REPRO_FILES) return done(undefined);
+          const template = pickTemplate(await this.#reproTemplates(agent, sub.id), root, rel);
+          if (!template) {
+            return done(now => (now.state === 'pending' ? { ...now, reason: 'no-tests' } : now),
+              `${head} the router has no test command for ${rel} in this project, so it cannot run it. Go on with the change and write "Repro: none (no-tests)" in your report.`);
+          }
+          // an install step that is still due (decision 86) would make every test fail to load
+          const due = (await this.#verifyCommands(sub, agent, plan.cwd)).filter(c => c.ifMissing !== undefined && existsInTree(root, c.ifMissing) === false
+            && (c.ifExists === undefined || existsInTree(root, c.ifExists) === true));
+          if (due.length) {
+            return done(undefined, `${head} the dependencies are not installed (${due.map(c => c.ifMissing).join(', ')} missing), so the router did not run ${rel}. Install them (${due.map(c => c.command).join('; ')}), then save ${rel} once more before you change any other file.`);
+          }
+          const { value: run, artifacts } = await this.#withArtifacts(agent, () => runRepro({
+            root, rel, template, ...(plan.env ? { env: plan.env } : {}), ...(plan.shell ? { shell: plan.shell } : {}), signal: this.#abort.signal, secrets: this.#secrets,
+          }));
+          const fingerprint = fileFingerprint(root, rel);
+          this.#log.info('reproduction run', { agentId, subtaskId: sub.id, file: rel, result: run.outcome.result, exitCode: run.exitCode, durationMs: run.durationMs });
+          return done(now => {
+            const files = { ...now.files };
+            if (run.outcome.result === 'failed') files[rel] = { fingerprint, kind: run.outcome.kind, ...(run.outcome.failed !== undefined ? { failed: run.outcome.failed } : {}) };
+            else delete files[rel];
+            const any = Object.keys(files).length > 0;
+            const { reason: _was, ...rest } = now;
+            return {
+              ...rest, state: any ? 'confirmed' : 'pending', files, runs: (now.runs ?? 0) + 1,
+              ...(!any && run.outcome.result === 'passed' ? { reason: 'cannot-reproduce' } : !any && run.outcome.result === 'not-checked' ? { reason: `not-checked: ${run.outcome.why}`.slice(0, 120) } : {}),
+            };
+          }, editNote(sub.id, rel, run), artifacts);
+        } catch (e) {
+          this.#log.error('reproduction run failed', { agentId, error: errorText(e) });
+          return done(undefined);
+        }
+      },
+    };
+  }
+
+  /** The reproduction check of a stop (outside the queue): the confirmed test must pass now and be unchanged. */
+  async #reproAtStop(agent: AgentRow, sub: SubtaskRow, plan: VerifyPlan, lastMessage: unknown): Promise<{ check: StopCheck; artifacts: Record<string, string> } | undefined> {
+    const rec = sub.repro;
+    if (!rec?.required || !agent.snapshot || reproMode(this.#config) === 'off') return undefined;
+    try {
+      const root = agent.snapshot.root;
+      const templates = await this.#reproTemplates(agent, sub.id);
+      const { value: check, artifacts } = await this.#withArtifacts(agent, () => checkAtStop(rec, lastMessage, {
+        root, templates, ...(plan.env ? { env: plan.env } : {}), ...(plan.shell ? { shell: plan.shell } : {}), signal: this.#abort.signal, secrets: this.#secrets,
+      }));
+      // what the run wrote is not the subagent's, and its time comes out of the stop's total
+      if (plan.scope?.snapshot && Object.keys(artifacts).length) plan.scope.snapshot = { ...plan.scope.snapshot, artifacts: { ...plan.scope.snapshot.artifacts, ...artifacts } };
+      plan.totalTimeoutMs = Math.max(30_000, (plan.totalTimeoutMs ?? TOTAL_TIMEOUT_MS) - check.spentMs);
+      return { check, artifacts };
+    } catch (e) {
+      this.#log.error('reproduction check failed', { agentId: agent.agentId, error: errorText(e) });
+      return undefined;
+    }
+  }
+
+  #saveReproAtStop(agentId: string, sub: SubtaskRow, rep: { check: StopCheck; artifacts: Record<string, string> }): void {
+    try {
+      const cur = this.ledger.getSubtask(sub.requestId, sub.id);
+      if (!cur || cur.agentId !== agentId) return;
+      this.ledger.updateSubtask(sub.requestId, sub.id, { repro: rep.check.record }, this.#at());
+      this.#addArtifacts(agentId, rep.artifacts);
+      this.#log.info('reproduction at stop', { agentId, subtaskId: sub.id, state: rep.check.record.state, reason: rep.check.record.reason });
+    } catch (e) {
+      this.#log.error('repro record failed', { agentId, error: errorText(e) });
+    }
+  }
+
   // ------------------------------------------------------------------ session_start / stop
 
   #sessionStart(ev: RouterEvent, ctx: Ctx): RouterDecision {
@@ -1202,6 +1431,9 @@ export class Router {
     const latest = this.ledger.latestRequest(ev.sessionId);
     ctx.requestId = latest?.id ?? null;
     this.#expireStale(ev.sessionId);
+    // Decision 175: the turn does not end here, so nothing below (acceptance, turn-end state, close) runs yet.
+    const hold = latest && latest.status !== 'closed' ? this.#leadStopBlock(latest, ev) : undefined;
+    if (hold) return { block: { reason: hold } };
     if (!ev.spooled) this.#acceptOnTurnEnd(ev.sessionId, true);   // decision 137
     if (!latest || latest.status === 'closed') return NONE;
     if (!ev.spooled) await this.#takeTurnEnd(latest.id, ev);   // decision 137: before the hook answers
@@ -1216,6 +1448,53 @@ export class Router {
       this.#recordClose(latest.id, ev);
     }
     return NONE;
+  }
+
+  /**
+   * Decision 175: the lead is ending its turn although a coder subtask failed and can be tried again. The Stop
+   * is blocked, once per request, when all of these hold: nothing of the request is still pending or running
+   * (a later notification gives the lead another turn), the failed subtask is the latest one on its slot (no
+   * newer attempt was dispatched), the slot was raised or can still be raised, the budget is not used up, and
+   * the lead is not asking the user (the awaiting-user marker). Returns the reason shown to the lead.
+   */
+  #leadStopBlock(req: RequestRow, ev: RouterEvent): string | undefined {
+    if (ev.spooled || ev.stopHookActive === true || req.stopBlocks > 0 || req.team.leadDirect) return undefined;
+    // a request already waiting for the user's answer keeps waiting (the question is still open)
+    if (req.status === 'awaiting_user' || awaitsUser(ev.lastAssistantMessage) || req.usedUsd >= req.budgetUsd) return undefined;
+    const subs = this.ledger.listSubtasks(req.id);
+    if (subs.some(s => s.status === 'pending' || s.status === 'running')) return undefined;
+    const slots = this.ledger.getSlots(req.id);
+    const fableOptIn = this.#config.fableOptIn === true;
+    for (const sub of subs) {
+      if (sub.role !== 'coder' || sub.status !== 'failed') continue;
+      if (this.ledger.latestSubtaskOnSlot(req.id, sub.role, sub.slot) !== sub.id) continue;
+      const slot = slots.find(x => x.role === sub.role && x.slot === sub.slot);
+      const step = slot?.step ?? sub.step;
+      const raised = stepIndex(step) > stepIndex(sub.step);
+      if (!raised && !((slot?.upCount ?? 0) < MAX_STEP_UPS && stepUp(step, fableOptIn))) continue;
+      const st = ladderStep(step);
+      this.ledger.addStopBlock(req.id);
+      this.#log.info('lead stop blocked: a failed subtask can be tried again', { requestId: req.id, subtaskId: sub.id, step });
+      return `[do-it-all-claude-code] subtask ${sub.id} (${sub.role}) failed and no new attempt was dispatched. `
+        + `Its slot ${raised ? 'now runs' : 'runs'} at ${step}: call the Agent tool for it again now with model="${st.alias}", effort="${st.effort}", `
+        + 'and include what failed in the prompt. Do not tell the user the work is done or stop here. '
+        + `If you need the user's decision instead, ask and end your message with ${AWAITING_USER_MARKER}.`;
+    }
+    return undefined;
+  }
+
+  /**
+   * Decision 175: the last sentence of a failed subtask's result. While its slot was raised and the budget allows
+   * another attempt, the lead is told to dispatch it again; reporting to the user is offered only otherwise.
+   */
+  #afterFailure(sub: SubtaskRow, what: string): string {
+    const raised = this.#raisedNote(sub);
+    const req = this.ledger.getRequest(sub.requestId);
+    const slot = this.ledger.getSlots(sub.requestId).find(x => x.role === sub.role && x.slot === sub.slot);
+    if (req && req.usedUsd < req.budgetUsd && slot && stepIndex(slot.step) > stepIndex(sub.step)) {
+      return `${raised} Dispatch subtask ${sub.id} again now with these values, and include ${what} in its prompt. Do not report to the user before that attempt has finished.`;
+    }
+    return `${raised} Decide: dispatch a new attempt with ${what}, or report to the user.`;
   }
 
   readonly #roleTools = new Map<string, { stamp: string; writes: boolean }>();
@@ -1455,6 +1734,7 @@ export class Router {
           id: s.id, role: s.role, slot: s.slot, step: s.step, status: s.status, verdict: s.verdict, attempts: s.attempts,
           scope: s.unscoped ? null : s.writeScope, unscoped: s.unscoped, protectedGranted: s.protectedGranted,
           review: s.review ? { verdict: s.review.verdict, by: s.review.by } : null,
+          ...(s.repro ? { repro: { required: s.repro.required, ...(s.repro.state ? { state: s.repro.state } : {}), ...(s.repro.reason ? { reason: s.repro.reason } : {}) } } : {}),
         })),
         pendingUser: this.ledger.listConfirmations(r.id).map(c => ({ kind: c.kind, subtaskId: c.subtaskId })),
         boundBy: bind.boundBy,
@@ -1483,6 +1763,17 @@ export class Router {
       } else if (wantL3 && this.#offersL3(req)) {
         now = this.#replanAs(req, 'L3', presets, why);
       }
+    } else if (oneFileDirect(v) && !req.team.leadDirect && !req.forcedFrom && req.triage.source !== 'manual') {
+      // decision 178: one file and a small edit, by the lead's own look at the code: the lead makes it alone
+      const { presets } = this.#resolver.resolve(bind.cwd, req.leadModel ?? undefined);
+      const level: Level = v.level === 'L0' ? 'L0' : 'L1';
+      const team: TeamPreset = { ...presets[level], leadDirect: true };
+      const t = withKind({
+        ...req.triage, level, preset: team.id, budgetUsd: team.budgetUsd,
+        rationale: `re-planned as lead-direct ${level}: the lead judged the change as one file and about ${v.lines} line${v.lines === 1 ? '' : 's'} (confidence ${v.confidence.toFixed(2)}) (${req.triage.rationale})`,
+      }, team);
+      this.#log.info('request re-planned as lead-direct', { requestId: req.id, from: req.level, to: level });
+      now = this.ledger.escalateRequest(req.id, t, team);
     }
     const replanned = now.level !== req.level || now.team.leadDirect !== req.team.leadDirect;
     return {
@@ -1844,7 +2135,8 @@ export class Router {
     const step = row?.step ?? sub.step;
     const agent = sub.agentId ? this.ledger.getAgent(sub.agentId) : undefined;
     const easy = this.#stepDownOn() && review.margin === 'easy' && review.by !== 'lead'
-      && sub.attempts === 1 && sub.status === 'passed' && sub.verdict === 'meet' && (agent?.failCount ?? 0) === 0 && sub.step === step;
+      && sub.attempts === 1 && sub.status === 'passed' && sub.verdict === 'meet' && (agent?.failCount ?? 0) === 0 && sub.step === step
+      && !reproNotEasy(sub.repro);   // decision 175: a reproduction that was not shown cleanly is never an easy pass
     if (!easy) {
       this.#otherResult(req.id, sub, at);
       return undefined;
@@ -2034,7 +2326,7 @@ export class Router {
     }
   }
 
-  /** What status, router_get_plan and the dashboard show about auto-release. */
+  /** What status, router_get_plan and the team office show about auto-release. */
   routing(): RoutingView {
     return routingView(this.ledger, this.#config, this.#at());
   }
@@ -2158,6 +2450,14 @@ function scopeBody(allowed: string[], unscoped: boolean, granted: readonly strin
 }
 /** Tools that write files (decision 103): a role file without any of them is read-only. */
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+/** Decision 175: the subtask still has a reproduction to show or to keep unchanged. */
+const reproOpen = (r: ReproRecord | null | undefined): boolean => !!r?.required && (r.state === 'pending' || r.state === 'confirmed');
+/** Decision 175: required, counted, and not shown by a test that failed in its body and passes unchanged. */
+const reproNotEasy = (r: ReproRecord | null | undefined): boolean => !!r?.required && !r.observe
+  && (r.state !== 'reproduced' || Object.values(r.files ?? {}).some(f => f.kind !== 'body'));
+const REPRO_BRIEF = 'Reproduce first is on: a coder subtask for a bug fix or a new behavior first writes a test that fails, which the router runs. After the [scope: ...] line of such a subtask put "[repro: required]" and include the test folder in its scope; '
+  + 'for work a test cannot show put "[repro: off <reason>]" with a reason of refactor, docs, config, no-tests or not-testable. Without the line the router decides.';
 /** Audit #14: the fallback for pricing an unknown model's tokens when the subagent's step is not known. */
 const MOST_EXPENSIVE_MODEL = Object.entries(PRICING_PER_MTOK).sort((a, b) => b[1].output - a[1].output)[0]![0];
 

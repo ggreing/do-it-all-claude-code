@@ -487,3 +487,108 @@ test('the request record keeps the lead\'s judgement and the reviews; a v7 ledge
     db.close();
   } finally { rmrf(dir); }
 });
+
+// decision 178 (나): the lead's own look at the code says one file and a small edit: the lead makes it alone
+test('decision 178: a direct report of one file and a few lines re-plans a team request as lead-direct; anything else stays a team', () => withDaemon(async (d, repo) => {
+  const team = async (sid: string) => {
+    const s = session(d, sid, repo);
+    await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+    assert.equal(rows(d, `SELECT level FROM requests WHERE session_id = '${sid}'`)[0]!.level, 'L2');
+    return s;
+  };
+  const s = await team('one-file');
+  const r = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 8, confidence: 0.8 });
+  assert.deepEqual([r.ok, r.result?.replanned, r.result?.level, r.result?.leadDirect], [true, true, 'L1', true]);
+  assert.match(r.result?.brief, /Level L1 is handled by you directly \(team preset lead_direct\): make the change yourself, without subagents/);
+  const row = rows(d, "SELECT level, team, triage, lead_triage FROM requests WHERE session_id = 'one-file'")[0]!;
+  assert.equal(JSON.parse(String(row.team)).leadDirect, true);
+  assert.match(JSON.parse(String(row.triage)).rationale, /^re-planned as lead-direct L1: the lead judged the change as one file and about 8 lines \(confidence 0\.80\)/);
+  assert.equal(JSON.parse(String(row.lead_triage)).lines, 8);
+  // the lead may still change its mind: its first Agent call re-plans the request as a team again
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'haiku', 'low')), {});
+  assert.equal(rows(d, "SELECT level FROM requests WHERE session_id = 'one-file'")[0]!.level, 'L2');
+  // not one file, not small, not sure, no line estimate: the team stays
+  for (const [i, input] of [
+    { kind: 'direct', level: 'L1', files: 2, lines: 8, confidence: 0.9 },
+    { kind: 'direct', level: 'L1', files: 1, lines: 40, confidence: 0.9 },
+    { kind: 'direct', level: 'L1', files: 1, lines: 5, confidence: 0.4 },
+    { kind: 'direct', level: 'L1', files: 1, confidence: 0.9 },
+    { kind: 'team', level: 'L2', files: 1, lines: 5, confidence: 0.9 },
+  ].entries()) {
+    const t = await team(`keep-${i}`);
+    const k = await t.tool('router_report_triage', input);
+    assert.deepEqual([k.ok, k.result?.replanned, k.result?.leadDirect], [true, false, false], JSON.stringify(input));
+  }
+}));
+
+test('decision 178: a level set by forceLevel is not re-planned down by the lead\'s report', () => withDaemon(async (d, repo) => {
+  const s = session(d, 'forced-one', repo);
+  await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  const r = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 3, confidence: 0.9 });
+  assert.deepEqual([r.result?.replanned, r.result?.level, r.result?.leadDirect], [false, 'L2', false]);
+}, { config: { forceLevel: 'L2' } }));
+
+// decision 178 (가): the passed notification carries the test count, and says what the lead may still run
+for (const [count, expect] of [
+  [3, /verify passed — test ok \(3 passed\).*\(already verified by the router: do not re-run the test suite; for more assurance run only the tests of the changed code\)/],
+  [0, /verify passed — test ok \(0 passed\).*\(verify ran no tests for this change: if the changed code has tests, run those once yourself, a targeted run, not the whole suite\)/],
+] as Array<[number, RegExp]>) {
+  let script = '';
+  test(`decision 178: a passed subtask's notification shows the test count (${count}) and what the lead may run`, () => withDaemon(async (d, repo) => {
+    script = path.join(d.home, 'count.cjs').split(path.sep).join('/');
+    fs.writeFileSync(script, `console.log('\u2139 pass ${count}'); console.log('\u2139 fail 0');\n`);
+    const s = session(d, `counts-${count}`, repo);
+    await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+    await s.pass('A', `ag-${count}`);
+    const note = await s.post({ hook_event_name: 'UserPromptSubmit', prompt: `<task-notification>\n<task-id>ag-${count}</task-id>\n<status>completed</status>\n<result>done</result>\n</task-notification>` });
+    assert.match(note.hookSpecificOutput?.additionalContext ?? '', expect);
+  }, { verify: { resolveCommands: async () => [{ kind: 'test' as const, command: `node "${script}"` }] } }));
+}
+
+// decision 178 (다): writers at the same time get scopes of their own; one after another always passes
+test('decision 178: concurrent writers with disjoint scopes pass, with or without a worktree; a reviewer alongside is not a writer', () => withDaemon(async (d, repo) => {
+  const s = session(d, 'par', repo);
+  await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+  const writer = (tag: string, scope: string, isolation?: string): HookInput => ({
+    hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_p${++seq}`,
+    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work\n[scope: ${scope}]`, model: 'haiku', effort: 'low', ...(isolation ? { isolation } : {}) },
+  });
+  // two writers sent in one message, disjoint, each in a worktree
+  assert.deepEqual(await s.post(writer('A', 'src/api/**', 'worktree')), {});
+  assert.deepEqual(await s.post(writer('B', 'src/web/**')), {}, 'disjoint and in the same tree: allowed (decision 103 explains its changes)');
+  // a reviewer alongside is not a writer
+  assert.deepEqual(await s.post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_p${++seq}`, tool_input: { subagent_type: 'do-it-all-claude-code:reviewer', prompt: '[subtask:R] look', model: 'sonnet', effort: 'medium' } }), {});
+  const rows2 = () => rows(d, "SELECT id FROM subtasks ORDER BY id").map(r => r.id);
+  assert.deepEqual(rows2(), ['A', 'B', 'R']);
+}, {}));
+
+test('decision 178: an overlapping writer is refused twice with what to do, then let through; one sent after the other finished always passes', () => withDaemon(async (d, repo) => {
+  const s = session(d, 'ovl', repo);
+  await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+  const writer = (tag: string, scope: string, isolation?: string): HookInput => ({
+    hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_o${++seq}`,
+    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work\n[scope: ${scope}]`, model: 'haiku', effort: 'low', ...(isolation ? { isolation } : {}) },
+  });
+  assert.deepEqual(await s.post(writer('A', 'src/**', 'worktree')), {});
+  for (let i = 0; i < 2; i++) {
+    const r = denied(await s.post(writer('B', 'src/b/**', 'worktree')));
+    assert.match(r, /subtask B: its write scope overlaps subtask A's, which is still running/);
+    assert.match(r, /or send B after A has finished \(its task-notification\)/);
+  }
+  assert.deepEqual(await s.post(writer('B', 'src/b/**', 'worktree')), {}, 'the third identical call goes through');
+  // one after another: A and B finish, then an overlapping, unisolated writer passes
+  const t = session(d, 'seq', repo);
+  await t.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+  await t.pass('X', 'ag-x');
+  assert.deepEqual(await t.post(t.call('Y', 'coder', 'haiku', 'low')), {}, 'sent after X finished: same scope, no isolation, allowed');
+}));
+
+test('decision 178: a writer that ran in a worktree is named with its branch in the passed line, so the lead merges it', () => withDaemon(async (d, repo) => {
+  const s = session(d, 'wt', repo);
+  await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  await s.pass('A', 'ag-w');
+  await s.post({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] work' },
+    tool_response: { status: 'completed', agentId: 'ag-w', worktreeBranch: 'worktree-agent-ag-w', worktreePath: path.join(repo, '.claude', 'worktrees', 'ag-w') } });
+  const note = await s.post({ hook_event_name: 'UserPromptSubmit', prompt: '<task-notification>\n<task-id>ag-w</task-id>\n<status>completed</status>\n<result>done</result>\n</task-notification>' });
+  assert.match(note.hookSpecificOutput?.additionalContext ?? '', /verify passed — .*\(\d+ file\(s\), worktree, branch worktree-agent-ag-w: merge it\)|\(worktree, branch worktree-agent-ag-w: merge it\)/);
+}));

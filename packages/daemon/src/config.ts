@@ -51,6 +51,7 @@ export function readConfig(file: string, warnings: string[] = []): ConfigFile {
   if (typeof o.pluginDir === 'string' && o.pluginDir) out.pluginDir = o.pluginDir;
   if (typeof o.pluginTemplateDir === 'string' && o.pluginTemplateDir) out.pluginTemplateDir = o.pluginTemplateDir;   // decision 168
   if (o.updateCheck === 'on' || o.updateCheck === 'off') out.updateCheck = o.updateCheck;   // decision 163
+  if (o.office === 'on' || o.office === 'off') out.office = o.office;   // decision 186: read by the office panel itself
   const budgets = parseBudgets(o.budgetsUsd, warnings);
   if (budgets) out.budgetsUsd = budgets;
   if (o.recordPrompts === true) out.recordPrompts = true;
@@ -76,6 +77,9 @@ export function readConfig(file: string, warnings: string[] = []): ConfigFile {
   else if (o.apiMode !== undefined) warnings.push(`config.apiMode ignored: ${JSON.stringify(o.apiMode)} is not "proxy" or "direct"`);
   if (o.stepDown === 'on' || o.stepDown === 'off') out.stepDown = o.stepDown;   // decision 135
   else if (o.stepDown !== undefined) warnings.push('config.stepDown ignored: not "on" or "off"');
+  // Decision 175: reproduce first (default off until the measurement has chosen the release default)
+  if (o.reproduceFirst === 'on' || o.reproduceFirst === 'observe' || o.reproduceFirst === 'off') out.reproduceFirst = o.reproduceFirst;
+  else if (o.reproduceFirst !== undefined) warnings.push('config.reproduceFirst ignored: not "on", "observe" or "off"');
   // Decisions 117-118: the first delegated level per lead model class
   if (o.delegateFrom !== undefined) {
     const v = o.delegateFrom;

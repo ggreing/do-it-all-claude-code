@@ -8,8 +8,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { legacyRouterHome, paths, routerHome, sealedCall } from '@do-it-all-claude-code/core';
+import { legacyRouterHome, paths, resolveLayout, routerHome, sealedCall } from '@do-it-all-claude-code/core';
 import { portOwner } from './portowner.ts';
 import { isFree, readConfig } from './setup.ts';
 import { proxyHealth, readSuperviseStatus, superviseFiles } from './supervise.ts';
@@ -20,6 +19,19 @@ const startLock = () => path.join(routerHome(), 'daemon.start.lock');
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 /** How long `start` waits for the daemon (and proxy) to answer before it reports them as not up yet. */
 export const START_WAIT_MS = 30_000;
+
+const normPath = (s: string): string => s.replace(/\\/g, '/').toLowerCase();
+/**
+ * True when a command line runs THIS install's daemon or proxy entry (review L1), so `stop` force-kills only
+ * our own children — not another install's `dist/daemon.js`. The entry paths come from resolveLayout, so this
+ * is layout-correct for both the workspace and the packaged tree.
+ */
+export function isOurChildCmd(cmd: string): boolean {
+  if (!cmd) return false;
+  const c = normPath(cmd);
+  const l = resolveLayout(import.meta.url);
+  return c.includes(normPath(l.daemonEntry)) || c.includes(normPath(l.proxyEntry));
+}
 
 /**
  * Talks to the daemon with node:http, never fetch: with NODE_USE_ENV_PROXY / --use-env-proxy and an
@@ -76,10 +88,10 @@ export async function health(port: number, timeoutMs = 800): Promise<{ ok: boole
   try { return JSON.parse(r.body) as { ok: boolean; version?: string }; } catch { return null; }
 }
 
-/** The daemon's runnable entry, next to the package's resolved index (src in dev, dist when built). */
+/** The daemon's runnable entry for this layout (packages/daemon/src|dist/main in the workspace, dist/daemon.js
+ *  when packaged). */
 export function daemonEntry(): string {
-  const index = fileURLToPath(import.meta.resolve('@do-it-all-claude-code/daemon'));
-  const main = path.join(path.dirname(index), index.endsWith('.ts') ? 'main.ts' : 'main.js');
+  const main = resolveLayout(import.meta.url).daemonEntry;
   if (!fs.existsSync(main)) throw new Error(`daemon entry not found: ${main}`);
   return main;
 }
@@ -163,10 +175,10 @@ export function daemonProcessAlive(): boolean {
   return pid !== undefined && isAlive(pid) && isOurDaemon(pid);
 }
 
-/** This CLI's entry (src in dev, dist when built): what `start` runs as `<entry> supervise`. */
+/** This CLI's entry for this layout: what `start` runs as `<entry> supervise` (packages/cli/src|dist/index in
+ *  the workspace, dist/cli.js when packaged). */
 export function cliEntry(): string {
-  const self = fileURLToPath(import.meta.url);
-  return path.join(path.dirname(self), self.endsWith('.ts') ? 'index.ts' : 'index.js');
+  return resolveLayout(import.meta.url).cliEntry;
 }
 
 /** The running supervisor's pid, only when that pid really runs `<cli entry> supervise`. */
@@ -257,7 +269,7 @@ export async function stop(): Promise<string> {
     try { process.kill(sup); } catch { /* gone */ }
     for (const c of Object.values(children)) {
       if (!c.pid || !isAlive(c.pid)) continue;
-      if (/[\\/](daemon|proxy)[\\/](src|dist)[\\/]main\.(ts|js)/i.test(commandLineOf(c.pid) ?? '')) { try { process.kill(c.pid); } catch { /* gone */ } }
+      if (isOurChildCmd(commandLineOf(c.pid) ?? '')) { try { process.kill(c.pid); } catch { /* gone */ } }
     }
     fs.rmSync(files.stop, { force: true });
     fs.rmSync(files.pid, { force: true });

@@ -66,6 +66,73 @@ export function parseScope(prompt: string | undefined): ScopeParse {
   return { ok: true, allowed: globs, unscoped: false };
 }
 
+// ------------------------------------------------------------------ writers at the same time (decision 178)
+
+const WILD = /[*?[{]/;
+
+/** A glob's fixed leading directories (before the first segment with a wildcard), and whether it names one path. */
+function fixedPart(glob: string): { segs: string[]; exact: boolean } {
+  const segs = glob.toLowerCase().split('/').filter(Boolean);
+  const i = segs.findIndex(s => WILD.test(s));
+  return i < 0 ? { segs, exact: true } : { segs: segs.slice(0, i), exact: false };
+}
+
+/**
+ * Whether two write-scope globs can name the same file. They cannot when they part at a fixed directory or file name
+ * ("src/a/**" and "src/b/**", "src/a.ts" and "src/b/**"); two exact paths meet only when equal. Anything else counts
+ * as overlapping ("src/**" and "src/a/**", "src/index.ts" and "src/*.ts", "**\/*.ts" and anything): conservative, and
+ * compared without case (case-insensitive file systems).
+ */
+export function globsMayMeet(a: string, b: string): boolean {
+  const pa = fixedPart(a), pb = fixedPart(b);
+  const n = Math.min(pa.segs.length, pb.segs.length);
+  for (let i = 0; i < n; i++) if (pa.segs[i] !== pb.segs[i]) return false;
+  return pa.exact && pb.exact ? pa.segs.length === pb.segs.length : true;
+}
+
+/** The first pair of globs, one from each scope, that may name the same file; undefined when the scopes are disjoint. */
+export function scopesOverlap(a: readonly string[], b: readonly string[]): [string, string] | undefined {
+  for (const x of a) for (const y of b) if (globsMayMeet(x, y)) return [x, y];
+  return undefined;
+}
+
+/** Roles that write files: the ones the concurrent-writer rule applies to. */
+export const WRITER_ROLES: ReadonlySet<Role> = new Set<Role>(['coder', 'ui-designer']);
+
+export interface ConcurrentWriterInput {
+  tag: string;
+  role: Role;
+  scope: readonly string[];
+  isolation: string | undefined;
+  /** The other writer subtasks of the request that are dispatched and not finished. */
+  running: ReadonlyArray<{ id: string; role: Role; scope: readonly string[] }>;
+}
+
+/**
+ * Decision 178 (다): a writer sent while another writer of the request is still running must have a write scope
+ * that does not overlap any of theirs, so the two never edit the same file. The reason tells the lead how to send it instead. A writer sent when no other writer
+ * runs is never refused here, so sending one after another always works.
+ */
+export function concurrentWriterProblem(i: ConcurrentWriterInput): { kind: 'overlap'; reason: string } | null {
+  if (!WRITER_ROLES.has(i.role)) return null;
+  const others = i.running.filter(w => WRITER_ROLES.has(w.role) && w.id !== i.tag);
+  if (!others.length) return null;
+  for (const w of others) {
+    const pair = scopesOverlap(i.scope, w.scope);
+    if (pair) {
+      return {
+        kind: 'overlap',
+        reason: `subtask ${i.tag}: its write scope overlaps subtask ${w.id}'s, which is still running ("${pair[0]}" and "${pair[1]}" can name the same file). `
+          + `Either give the two subtasks scopes that share no file (separate directories or files, such as "src/a/**" and "src/b/**"; a file both need, like an index or a shared type, goes to one of them only), `
+          + `or send ${i.tag} after ${w.id} has finished (its task-notification): a writer sent while no other writer runs is never refused for this.`,
+      };
+    }
+  }
+  // A worktree per concurrent writer stays the instruction (decision 83), not a refusal: disjoint writers in one
+  // working tree are supported (decision 103 explains a scoped sibling's changes).
+  return null;
+}
+
 export function scopeFileBody(allowed: string[], unscoped: boolean) {
   return { allowed, protected: [...PROTECTED_WRITE_PATHS], ...(unscoped ? { unscoped: true } : {}) };
 }

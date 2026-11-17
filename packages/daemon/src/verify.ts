@@ -365,6 +365,12 @@ interface ScopeResult {
   changed?: string[];
 }
 
+/** The files a subagent changed since its start (decision 175: is the tree still the start state plus tests?); undefined when git cannot say. */
+export async function subagentChanges(cwd: string, spec: ScopeSpec): Promise<string[] | undefined> {
+  const r = await scopeCheck(cwd, spec);
+  return r.gitBlocked ? undefined : r.changed;
+}
+
 export async function checkScope(cwd: string, spec: ScopeSpec): Promise<VerifySignal> {
   return (await scopeCheck(cwd, spec)).signal;
 }

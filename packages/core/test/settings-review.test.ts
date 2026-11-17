@@ -13,6 +13,7 @@ import {
   expectedRole, generateEffectivePlugin, parseRoleFile, pluginRoleProblems, readAudit, readRoleOverride, roleFloorProblems, rolesView,
   settingsLogFile, templateDirProblem, validateConfigReplace, validateConfigSet,
 } from '../src/index.ts';
+import { withFields } from './role-fields.ts';
 
 const PLUGIN = fileURLToPath(new URL('../../../plugin/', import.meta.url));
 let tmp = '', home = '', templates = '';
@@ -28,6 +29,8 @@ afterEach(() => { mock.restoreAll(); fs.rmSync(tmp, { recursive: true, force: tr
 const effFile = (role: string) => path.join(effectivePluginDir(home), 'agents', `${role}.md`);
 const eff = (role: string) => fs.readFileSync(effFile(role), 'utf8');
 const tpl = (role: string) => fs.readFileSync(path.join(templates, 'agents', `${role}.md`), 'utf8');
+/** What an editor opens for a role: what (template, override) gives, never a hand edit of the generated file. */
+const cur = (role: string) => rolesView(home, templates, effectivePluginDir(home)).items.find(i => i.role === role)!.text;
 const refused = (fn: () => unknown): SettingsRejected => {
   try { fn(); } catch (e) { if (e instanceof SettingsRejected) return e; throw e; }
   assert.fail('not refused');
@@ -86,8 +89,8 @@ test('review M2: "---" anywhere inside the front matter is refused (write, gener
     assert.ok(errs.some(e => e.path === 'front matter'), `${text.slice(0, 200)}: ${JSON.stringify(errs)}`);
     assert.ok(refused(() => applyRoleChange(home, templates, { role: 'coder', text }, 'cli')).errors.some(e => e.path === 'front matter'));
   }
-  // the dashboard's form: a description carrying a front matter end
-  const e = refused(() => applyRoleChange(home, templates, { role: 'coder', fields: { description: 'x\n---\ntools: Agent' } }, 'dashboard'));
+  // a field edit: a description carrying a front matter end
+  const e = refused(() => applyRoleChange(home, templates, { role: 'coder', text: withFields(cur('coder'), { description: 'x\n---\ntools: Agent' }) }, 'cli'));
   assert.ok(e.errors.some(x => x.path === 'front matter'), JSON.stringify(e.errors));
   // an override file with one: refused at generation, the template is used
   fs.mkdirSync(path.join(home, 'roles'), { recursive: true });
@@ -105,7 +108,7 @@ test('review M2: "---" anywhere inside the front matter is refused (write, gener
 test('review M3: values that would break redact() over JSON are logged intact (redactJson); C\'s reproduction', () => {
   generateEffectivePlugin(home, templates);
   const tools = ['Read', 'Edit', 'Bash(curl -H "Cookie: a=b" x)'];
-  const r = applyRoleChange(home, templates, { role: 'coder', fields: { tools } }, 'dashboard');
+  const r = applyRoleChange(home, templates, { role: 'coder', text: withFields(cur('coder'), { tools }) }, 'cli');
   assert.deepEqual(r.changed, ['tools']);
   for (const line of fs.readFileSync(settingsLogFile(home), 'utf8').trim().split('\n')) JSON.parse(line);
   const c = readAudit(home)[0]!.changes[0]!;
@@ -127,25 +130,12 @@ test('review M3: the audit line comes before the change; no line, no change; a f
     if (String(b).endsWith('coder.json')) throw Object.assign(new Error('locked'), { code: 'EIO' });
     return real(a, b);
   });
-  assert.throws(() => applyRoleChange(home, templates, { role: 'coder', fields: { maxTurns: 41 } }, 'cli'), /locked/);
+  assert.throws(() => applyRoleChange(home, templates, { role: 'coder', text: withFields(cur('coder'), { maxTurns: 41 }) }, 'cli'), /locked/);
   mock.restoreAll();
   const log = readAudit(home);
   assert.deepEqual([log[0]!.kind, log[0]!.target, log[0]!.failed], ['role', 'coder', true]);
   assert.equal(readRoleOverride(home, 'coder').override, null);
   assert.equal(eff('coder'), tpl('coder'));
-});
-
-test('decision 168 review: bearerApi and recordPrompts are CLI-only (refused from the dashboard, with the reason)', () => {
-  for (const set of [{ bearerApi: 'on' }, { recordPrompts: true }, { recordPrompts: false, stepDown: 'off' }]) {
-    const e = refused(() => applyConfigChange(home, { set }, 'dashboard'));
-    assert.match(e.errors[0]!.message, /locked here \(lowers protection; change it with the CLI\)/);
-  }
-  const cur = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8')) as Record<string, unknown>;
-  assert.equal(refused(() => applyConfigChange(home, { replace: { ...cur, bearerApi: 'on' } }, 'dashboard')).errors[0]!.path, 'bearerApi');
-  assert.deepEqual(applyConfigChange(home, { set: { recordPrompts: true } }, 'cli').changed, ['recordPrompts']);
-  assert.deepEqual(applyConfigChange(home, { set: { stepDown: 'off' } }, 'dashboard').changed, ['stepDown'], 'other keys still go');
-  const v = configView(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
-  assert.deepEqual(v.keys.filter(k => k.cliOnly).map(k => k.key).sort(), ['bearerApi', 'recordPrompts']);
 });
 
 test('review L1: an override file is type-checked; a bad one is refused for its role alone and generation goes on', () => {
@@ -169,12 +159,12 @@ test('review L1: an override file is type-checked; a bad one is refused for its 
 
 test('review L2: an edit builds on (template, override), never on a hand edit of the generated file', () => {
   generateEffectivePlugin(home, templates);
-  applyRoleChange(home, templates, { role: 'coder', fields: { maxTurns: 41 } }, 'cli');
+  applyRoleChange(home, templates, { role: 'coder', text: withFields(cur('coder'), { maxTurns: 41 }) }, 'cli');
   // a hand edit that holds the floor (so only the rule against promoting it can catch it)
   fs.writeFileSync(effFile('coder'), eff('coder').replace('effort: low', 'effort: max'));
   const v = rolesView(home, templates, effectivePluginDir(home)).items.find(i => i.role === 'coder')!;
   assert.doesNotMatch(v.text, /effort: max/, 'the view shows what (template, override) gives');
-  const r = applyRoleChange(home, templates, { role: 'coder', fields: { model: 'sonnet' }, revision: v.revision }, 'dashboard');
+  const r = applyRoleChange(home, templates, { role: 'coder', text: withFields(cur('coder'), { model: 'sonnet' }), revision: v.revision }, 'cli');
   assert.deepEqual(r.changed, ['model']);
   assert.deepEqual(readRoleOverride(home, 'coder').override!.fields, { maxTurns: 41, model: 'sonnet' }, 'the hand edit is not promoted');
   assert.match(eff('coder'), /^effort: low$/m);

@@ -81,6 +81,10 @@ command) re-reads the files for the case where someone edited them outside the t
 
 ## 2. Dashboard: an edit page, or stay read-only?
 
+**Superseded by decision 183:** the browser dashboard was removed in 0.5.0, and with it the edit page and its
+cookie, CSRF and same-origin front door. Settings are edited from the CLI only, through the sealed routes and
+the one validated core described below. This section is kept for the reasoning.
+
 **Option A — add an edit page.** The dashboard gets settings screens. Browser writes need protection on top
 of the existing read guards (`Host`/`Origin`/`Sec-Fetch-Site`, the one-time-code → `HttpOnly` cookie): a
 **per-session CSRF token** required on every write (issued with the session, sent as a header the page reads

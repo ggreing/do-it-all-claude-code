@@ -10,7 +10,7 @@ open an issue to discuss anything substantial before you start.
 - **Triage rules** — the stage-1 rules, including the Japanese and Chinese rule sets.
 - **Client adapters** — translating another client's events to the router's neutral event model
   (`packages/adapter-*`).
-- **The dashboard** — the read-only local web UI (`packages/dashboard`), including UI translations.
+- **The team office** — the panel inside Claude Code (`plugin/office/`).
 - **Docs and translations** — the README and these guides, in any of the supported languages.
 
 ## Development setup
@@ -19,8 +19,9 @@ open an issue to discuss anything substantial before you start.
 - Install: `npm ci`.
 - Before every PR, all of these must pass:
   - `npm test` — the unit tests (`node --test`).
-  - `npx tsc -b` — the TypeScript build.
-  - `npm run build:dashboard` — the dashboard type-check and build.
+  - `npx tsc -b` — the TypeScript build. It also checks the team office (`plugin/office`) against
+    `typecheck/office/claude-code.d.ts`, our own declarations for the parts of Claude Code's plugin API it uses;
+    an office change that uses more of that API adds it there.
 - For a change to the subagent guard (`plugin/hooks/guard.mjs`, `plugin/hooks/hooks.json`, the scope
   records, or `plugin/agents/`), also run:
   - `node --test packages/adapter-claude-code/test/guard.test.ts packages/adapter-claude-code/test/guard-hardening.test.ts`
@@ -51,5 +52,5 @@ open an issue to discuss anything substantial before you start.
 ## Commit messages
 
 - Use **[Conventional Commits](https://www.conventionalcommits.org/)** for the **PR title** (for example
-  `feat(dashboard): add routing panel` or `fix(daemon): …`). PRs are **squash-merged**, so the PR title
+  `feat(office): add routing tab` or `fix(daemon): …`). PRs are **squash-merged**, so the PR title
   becomes the commit message.

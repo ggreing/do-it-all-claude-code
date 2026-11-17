@@ -13,13 +13,13 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "build:dashboard": "npm run build --workspace @do-it-all-claude-code/dashboard",
     "clean": "tsc -b --clean",
-    "test": "node --test \"packages/*/test/**/*.test.ts\"",
+    "test": "node --test \"packages/*/test/**/*.test.ts\" \"bench/test/**/*.test.ts\"",
     "bench": "node bench/src/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "esbuild": "0.28.2",
     "typescript": "^7.0.2"
   }
 }

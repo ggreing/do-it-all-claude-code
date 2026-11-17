@@ -10,6 +10,7 @@ import {
   GENERATED_STAMP, ROLE_NAMES, SettingsRejected, applyRoleChange, effectivePluginDir, generateEffectivePlugin, pluginRoleProblems, readAudit,
   readRoleOverride, roleFloorProblems, rolesView, templateHash,
 } from '../src/index.ts';
+import { withFields } from './role-fields.ts';
 
 const PLUGIN = fileURLToPath(new URL('../../../plugin/', import.meta.url));
 let tmp = '', home = '', templates = '';
@@ -23,6 +24,8 @@ beforeEach(() => {
 afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 const eff = (role: string) => fs.readFileSync(path.join(effectivePluginDir(home), 'agents', `${role}.md`), 'utf8');
 const tpl = (role: string) => fs.readFileSync(path.join(templates, 'agents', `${role}.md`), 'utf8');
+/** What an editor opens for a role: what (template, override) gives, never a hand edit of the generated file. */
+const cur = (role: string) => rolesView(home, templates, effectivePluginDir(home)).items.find(i => i.role === role)!.text;
 const refused = (fn: () => unknown): SettingsRejected => {
   try { fn(); } catch (e) { if (e instanceof SettingsRejected) return e; throw e; }
   assert.fail('not refused');
@@ -105,35 +108,37 @@ test('decision 168: the floor: every edit that would weaken a role is refused, w
   assert.equal(refused(() => applyRoleChange(home, undefined, { role: 'coder', text: base }, 'cli')).status, 409, 'an install without the generated plugin');
 });
 
-test('decision 168: verify steps are editable (runs as you), partial fields and reset work, and the audit has no secret', () => {
+test('decision 168: verify steps are editable (runs as you), an edit of some keys and reset work, and the audit has no secret', () => {
   generateEffectivePlugin(home, templates);
   const fake = 'sk-ant-api03-abcdefghijklmnop';
-  const r = applyRoleChange(home, templates, { role: 'tester', fields: { 'x-router.verify': [`API_KEY=${fake} npm test`], model: 'opus', body: 'Test it all.\n' } }, 'dashboard');
+  const r = applyRoleChange(home, templates, { role: 'tester', text: withFields(cur('tester'), { 'x-router.verify': [`API_KEY=${fake} npm test`], model: 'opus', body: 'Test it all.\n' }) }, 'cli');
   assert.deepEqual(r.changed.sort(), ['body', 'model', 'x-router.verify']);
   assert.match(r.notes[0]!, /run on your machine, as you/);
   assert.match(eff('tester'), new RegExp(`API_KEY=${fake} npm test`));
   const log = fs.readFileSync(path.join(home, 'logs', 'settings.jsonl'), 'utf8');
   assert.ok(!log.includes(fake) && !log.includes('Test it all'), 'free text and secrets stay out of the log');
   assert.deepEqual(readAudit(home)[0]!.changes.find(c => c.path === 'model'), { path: 'model', from: 'haiku', to: 'opus' });
-  // locked fields cannot be set through the form either
-  assert.match(refused(() => applyRoleChange(home, templates, { role: 'tester', fields: { name: 'x' } }, 'dashboard')).errors[0]!.message, /locked/);
+  // a locked key cannot be changed in the file
+  assert.ok(refused(() => applyRoleChange(home, templates, { role: 'tester', text: withFields(cur('tester'), { name: 'x' }) }, 'cli')).errors.some(e => e.path === 'name'));
+  // and a call without the file is refused (the field form of the removed dashboard is not an input any more)
+  assert.equal(refused(() => applyRoleChange(home, templates, { role: 'tester', fields: { model: 'opus' } } as never, 'cli')).errors[0]!.path, 'text');
   // a stale revision; then reset: back to the template, the override gone
   const v = rolesView(home, templates, effectivePluginDir(home)).items.find(i => i.role === 'tester')!;
   assert.deepEqual([v.overridden, v.overriddenFields.sort(), v.fields['x-router.verify']!.runsAsYou, v.fields.name!.locked], [true, ['body', 'model', 'x-router.verify'], true, true]);
-  applyRoleChange(home, templates, { role: 'tester', fields: { model: 'sonnet' }, revision: v.revision }, 'dashboard');
-  assert.equal(refused(() => applyRoleChange(home, templates, { role: 'tester', reset: true, revision: v.revision }, 'dashboard')).status, 409);
-  applyRoleChange(home, templates, { role: 'tester', reset: true }, 'dashboard');
+  applyRoleChange(home, templates, { role: 'tester', text: withFields(cur('tester'), { model: 'sonnet' }), revision: v.revision }, 'cli');
+  assert.equal(refused(() => applyRoleChange(home, templates, { role: 'tester', reset: true, revision: v.revision }, 'cli')).status, 409);
+  applyRoleChange(home, templates, { role: 'tester', reset: true }, 'cli');
   assert.equal(eff('tester'), tpl('tester'));
   assert.equal(readRoleOverride(home, 'tester').override, null);
   // editing back to the template's values removes the override too
-  applyRoleChange(home, templates, { role: 'tester', fields: { model: 'opus' } }, 'cli');
-  applyRoleChange(home, templates, { role: 'tester', fields: { model: 'haiku' } }, 'cli');
+  applyRoleChange(home, templates, { role: 'tester', text: withFields(cur('tester'), { model: 'opus' }) }, 'cli');
+  applyRoleChange(home, templates, { role: 'tester', text: withFields(cur('tester'), { model: 'haiku' }) }, 'cli');
   assert.equal(readRoleOverride(home, 'tester').override, null);
 });
 
 test('decision 168: an override that no longer holds is refused at generation; the role uses the template file (deterministic, review L3)', () => {
   generateEffectivePlugin(home, templates);
-  applyRoleChange(home, templates, { role: 'reviewer', fields: { maxTurns: 25 } }, 'cli');
+  applyRoleChange(home, templates, { role: 'reviewer', text: withFields(cur('reviewer'), { maxTurns: 25 }) }, 'cli');
   const good = eff('reviewer');
   // a hand-written override with a forbidden tool (not through the core)
   fs.writeFileSync(path.join(home, 'roles', 'reviewer.json'), JSON.stringify({ version: 1, role: 'reviewer', fields: { tools: ['Read', 'WebSearch'] } }));

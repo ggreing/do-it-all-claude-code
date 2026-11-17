@@ -15,7 +15,7 @@ Pre-release: only `main` is supported. There are no released versions yet.
 
 ## Scope
 
-The plugin hooks (`plugin/`), the local daemon, the API-key proxy, the CLI, and the dashboard.
+The plugin (`plugin/`: the hooks and the team office panel), the local daemon, the API-key proxy, and the CLI.
 
 ## If a credential leaks
 
@@ -96,6 +96,13 @@ which only your user can enter, so another local user can neither connect to it 
 daemon, and does not see those requests at all. If there is no private place for the socket (the home's
 path is too long and no private directory can be made), the daemon uses the local port with sealed messages
 and `daemon.log` says so. Windows uses the local port with sealed messages.
+
+The team office panel never handles the token either. While the panel is open, it starts one small Node
+program of the router's (`plugin/office/bridge.mjs`), which reads the token from the router home, makes the same
+sealed calls and hands the panel the daemon's answers, never the token or a prompt's text. That program ends
+when the panel closes, the session ends or Claude Code exits. What the panel keeps for the session is readable by
+other plugins in that session, so it keeps only what the transcript already shows (with the guard's secret
+patterns masked) and the router's own figures.
 
 In API-key mode Claude Code reaches the proxy over local TLS with a certificate only this router holds, so a
 program that takes the proxy's port can't complete the handshake and gets neither the token nor a prompt.

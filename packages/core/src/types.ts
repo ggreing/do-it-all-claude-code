@@ -46,7 +46,7 @@ export interface TeamPreset {
 
 // ---------------------------------------------------------------- evaluation (spec 3.5)
 
-export type SignalKind = 'build' | 'typecheck' | 'lint' | 'test' | 'scope' | 'review' | 'error_repeat' | 'max_turns' | 'tool_error';
+export type SignalKind = 'build' | 'typecheck' | 'lint' | 'test' | 'scope' | 'repro' | 'review' | 'error_repeat' | 'max_turns' | 'tool_error';
 export interface VerifySignal {
   kind: SignalKind;
   ok: boolean;

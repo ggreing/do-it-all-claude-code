@@ -73,10 +73,10 @@ test('a sealed call reaches every route and answers as a direct call does; nothi
   assert.equal((await sealed(d, 'GET', '/router/v1/nope')).status, 404);
   assert.equal((await sealed(d, 'GET', HOOK)).status, 405);
   assert.equal((await sealed(d, 'POST', HOOK, '{ not json')).status, 400);
-  // the dashboard's code is given to a sealed caller (the CLI), as it was to a bearer
-  const code = await sealed(d, 'POST', '/dashboard/register-code');
-  assert.equal(code.status, 200);
-  assert.match(JSON.parse(code.body).code, /^[A-Za-z0-9_-]{20,}$/);
+  // a route below a prefix (the metrics reads) is reached the same way
+  const metrics = await sealed(d, 'GET', '/router/v1/metrics/summary');
+  assert.equal(metrics.status, 200);
+  assert.equal(typeof JSON.parse(metrics.body).total, 'number');
 }));
 
 test('what the sealed route refuses: every reason looks the same from outside', () => withDaemon(async d => {
@@ -116,11 +116,11 @@ test('decision 164: the bearer route is off by default (the token as a header op
   for (const config of [{}, { bearerApi: 'off' }]) {
     await withDaemon(async d => {
       assert.equal((await bearer(d.port, '/router/v1/status')).status, 401, `${JSON.stringify(config)}: the token as a header opens nothing`);
-      assert.equal((await bearer(d.port, '/dashboard/register-code', 'POST')).status, 401);
+      assert.equal((await bearer(d.port, '/router/v1/metrics/summary')).status, 401);
       assert.equal((await request(d.port, { method: 'POST', path: HOOK, body: prompt('hi'), headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' } })).status, 401);
       assert.equal((await sealed(d, 'GET', '/router/v1/status')).status, 200);
       assert.equal((await sealed(d, 'POST', HOOK, prompt('Fix the typo in README.md'))).status, 200);
-      assert.equal((await sealed(d, 'POST', '/dashboard/register-code')).status, 200);
+      assert.equal((await sealed(d, 'GET', '/router/v1/metrics/summary')).status, 200);
       assert.equal((await request(d.port, { path: '/router/v1/health' })).status, 200, 'health needs no credential');
     }, config);
   }

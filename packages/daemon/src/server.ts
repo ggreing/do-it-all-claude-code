@@ -20,19 +20,20 @@
 //   delegated again; answers { cleared }. No body.
 // - Data management (spec 3.7, 4.4; data.ts): GET /router/v1/data/export?since=&until= answers JSON lines
 //   (application/x-ndjson); POST /router/v1/data/purge { before | all, dryRun? } answers the counts.
-// - /dashboard/* and /router/v1/metrics/* belong to the dashboard module (decision 132), which runs first and
-//   has its own rules (same-origin browser pages with a session cookie). Every other route still refuses any
-//   Origin header.
+// - Metrics reads (decision 132; metrics-routes.ts): GET /router/v1/metrics/{summary,requests,requests/<id>,
+//   triage-report}. Until 0.5.0 they were cookie routes of the browser dashboard (decision 183 removed it).
+// - /dashboard and /dashboard/* answer 410 with one line that names /office, for one release (decision 186).
+//   No route serves a browser: every route refuses any Origin header.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
-import { fileURLToPath } from 'node:url';
 import { NonceWindow, SEALED_PATH, SealError, openRequest, sealResponse } from '@do-it-all-claude-code/core';
 import type { ClientAdapter } from './adapter.ts';
-import { createDashboard, type Dashboard } from './dashboard.ts';
 import { exportLines, isoTime, liveSessions, purge, purgeFiles, type DataHome } from './data.ts';
 import type { Ledger } from './ledger.ts';
 import { recordLimits } from './limits.ts';
 import { errorText, type Logger } from './log.ts';
+import { DASHBOARD_GONE, isDashboardPath, isMetricsRoute, metricsRoute } from './metrics-routes.ts';
+import { OFFICE_PATH, officeRoute } from './office.ts';
 import type { ProxyUsage } from './proxyusage.ts';
 import type { Router } from './router.ts';
 import type { SettingsService } from './settings.ts';
@@ -54,17 +55,16 @@ export const API = {
   routingReset: '/router/v1/routing/reset',
   dataExport: '/router/v1/data/export',
   dataPurge: '/router/v1/data/purge',
-  // decision 168: settings, the CLI's front door (sealed); the dashboard's is /dashboard/settings/*
+  // decision 168: settings, the CLI's front door (sealed)
   settings: '/router/v1/settings',
   settingsHistory: '/router/v1/settings/history',
   config: '/router/v1/config',
   presets: '/router/v1/presets',
   role: '/router/v1/role',
   reload: '/router/v1/reload',
+  // decision 186: the team office panel's read (sealed)
+  office: OFFICE_PATH,
 } as const;
-
-/** The built dashboard (packages/dashboard/dist) next to this package in the workspace. */
-export const DEFAULT_DASHBOARD_DIST = fileURLToPath(new URL('../../dashboard/dist', import.meta.url));
 
 export interface ServerDeps {
   router: Router;
@@ -79,10 +79,8 @@ export interface ServerDeps {
   onShutdown?: () => void;
   /** API-key mode proxy rows and budget answers (decision 130). */
   proxyUsage?: ProxyUsage;
-  /** For the rate limits route and the dashboard; without it neither is served. */
+  /** For the rate limits route, the data routes and the metrics routes; without it none of them is served. */
   ledger?: Ledger;
-  /** The built dashboard; default DEFAULT_DASHBOARD_DIST. */
-  dashboardDir?: string;
   now?: () => Date;
   /** Data export: whether stored prompts go out (config.recordPrompts) and the token values to mask. */
   data?: { recordPrompts: boolean; secrets: () => string[] };
@@ -111,9 +109,11 @@ export function createHttpServer(d: ServerDeps): http.Server {
   const seen = new NonceWindow();
 
   const now = d.now ?? (() => new Date());
-  let dashboard: Dashboard | undefined;
   const server = http.createServer((req, res) => {
-    if ((req.url ?? '').split('?')[0] === SEALED_PATH) {
+    const pathname = (req.url ?? '').split('?')[0]!;
+    // decision 186: the browser dashboard is gone; for one release its address says where its content went
+    if (isDashboardPath(pathname)) { req.resume(); return sendText(res, 410, DASHBOARD_GONE); }
+    if (pathname === SEALED_PATH) {
       sealed(req, res).catch(e => {
         // every failure looks the same from outside: nothing about the secret, the time window or a replay
         if (!(e instanceof SealError) && !(e instanceof HttpError)) d.logger.error('sealed request failed', { error: errorText(e) });
@@ -124,12 +124,6 @@ export function createHttpServer(d: ServerDeps): http.Server {
       });
       return;
     }
-    try {
-      if (dashboard?.handle(req, res)) return;
-    } catch (e) {
-      d.logger.error('dashboard request failed', { url: req.url, error: errorText(e) });
-      return send(res, 500, { error: 'internal error' });
-    }
     handle(req, res).catch(e => {
       const status = e instanceof HttpError ? e.status : 500;
       if (status === 500) d.logger.error('request failed', { url: req.url, error: errorText(e) });
@@ -139,16 +133,6 @@ export function createHttpServer(d: ServerDeps): http.Server {
   });
   server.requestTimeout = 30_000;
   server.headersTimeout = 10_000;
-  if (d.ledger) {
-    dashboard = createDashboard({
-      ledger: d.ledger, token: bearer, distDir: d.dashboardDir ?? DEFAULT_DASHBOARD_DIST,
-      port: () => { const a = server.address(); return a && typeof a !== 'string' ? a.port : null; },
-      statusView: sessionId => d.router.status(sessionId),
-      ...(d.settings ? { settings: d.settings } : {}),   // decision 168: the edit page's writes, behind session + CSRF
-      recordPrompts: d.data?.recordPrompts === true,   // decision 142: a stored prompt shows only while the option is on
-    });
-  }
-
   const hostOk = (host: string | undefined): boolean => {
     const a = server.address();
     if (!host || !a || typeof a === 'string') return false;
@@ -164,7 +148,7 @@ export function createHttpServer(d: ServerDeps): http.Server {
   /**
    * A sealed call (decision 156): open the envelope, make the request it carries to this same server, seal the
    * answer. The inner request goes over the daemon's own listening socket, which nobody else can hold while
-   * the daemon runs, and so every route, the dashboard's included, behaves exactly as for a direct call.
+   * the daemon runs, and so every route behaves exactly as for a direct call.
    */
   async function sealed(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     if (!hostOk(req.headers.host)) throw new HttpError(403, 'host not allowed');
@@ -209,8 +193,20 @@ export function createHttpServer(d: ServerDeps): http.Server {
       if (req.method !== 'GET') throw methodNotAllowed(res, 'GET');
       return send(res, 200, { ok: true, version: d.version });
     }
-    if (!(Object.values(API) as string[]).includes(route) || route === API.health) throw new HttpError(404, 'not found');
+    const metrics = isMetricsRoute(route);
+    if ((!metrics && !(Object.values(API) as string[]).includes(route)) || route === API.health) throw new HttpError(404, 'not found');
     if (!authOk(req.headers.authorization)) throw new HttpError(401, 'unauthorized');
+
+    // ------------------------------------------------------------------ metrics reads (decision 132)
+    if (metrics) {
+      if (!d.ledger) throw new HttpError(404, 'not found');
+      req.resume();
+      const r = metricsRoute(d.ledger, req.method, url, {
+        recordPrompts: d.data?.recordPrompts === true,   // decision 142: a stored prompt shows only while the option is on
+        secrets: [d.token, ...(d.data?.secrets() ?? [])],
+      });
+      return send(res, r.status, r.body);
+    }
 
     if (route === API.shutdown) {
       if (req.method !== 'POST') throw methodNotAllowed(res, 'POST');
@@ -230,6 +226,12 @@ export function createHttpServer(d: ServerDeps): http.Server {
       if (req.method !== 'GET') throw methodNotAllowed(res, 'GET');
       const sessionId = url.searchParams.get('session_id') ?? undefined;
       return send(res, 200, d.router.status(sessionId || undefined));
+    }
+    if (route === API.office) {
+      if (req.method !== 'GET') throw methodNotAllowed(res, 'GET');
+      const r = officeRoute({ status: s => d.router.status(s), ledger: d.ledger }, req.method, url.searchParams);
+      if (r.status !== 200) throw new HttpError(r.status, (r.body as { error: string }).error);
+      return send(res, 200, r.body);
     }
 
     // ------------------------------------------------------------------ data management (spec 3.7, 4.4)

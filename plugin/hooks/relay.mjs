@@ -23,6 +23,8 @@ const ENDPOINT = '/router/v1/hooks/claude-code';
 
 // Per-event timeout (ms). SubagentStop waits for the daemon's verify run (up to ~240s); the rest are short.
 const TIMEOUTS = { SubagentStop: 300_000 };
+// Decision 175: a subagent's file edit while its subtask has a reproduction to show; the daemon may run that test (60 s at most).
+const REPRO_EDIT_TIMEOUT = 90_000;
 const DEFAULT_TIMEOUT = 10_000;
 
 function routerHome() {
@@ -282,7 +284,9 @@ export async function relay(raw, { home = routerHome(), write = s => process.std
   }
   // Decision 145: an edit tool's PostToolUse is relayed for the lead only (a takeover after delegating);
   // a subagent's edit (it has an agent_id) is answered at once, without the daemon.
-  if (isRecord(input) && EDIT_TOOL_PATH[input.tool_name] && input.hook_event_name === 'PostToolUse' && input.agent_id) {
+  // Decision 175: unless the router marked the agent's file (it then runs the test the subagent just wrote).
+  const subagentEdit = isRecord(input) && EDIT_TOOL_PATH[input.tool_name] && input.hook_event_name === 'PostToolUse' && !!input.agent_id;
+  if (subagentEdit && !reproWanted(home, input.agent_id)) {
     write('{}');
     return;
   }
@@ -302,19 +306,27 @@ export async function relay(raw, { home = routerHome(), write = s => process.std
     else if (EVENT === 'SubagentStart') input.verifyEnv = buildVerifyEnv();            // D4: verify env passthrough
   }
 
-  const timeoutMs = TIMEOUTS[EVENT] ?? DEFAULT_TIMEOUT;
+  const timeoutMs = subagentEdit ? REPRO_EDIT_TIMEOUT : TIMEOUTS[EVENT] ?? DEFAULT_TIMEOUT;
   try {
     // decision 149: the lead's edit reaches the daemon as tool name and path only; its content never leaves this hook
     const body = JSON.stringify(isRecord(input) && EDIT_TOOL_PATH[input.tool_name] ? minimalHookInput(input) : input);
     const response = await post({ home, port, token, body, timeoutMs });
     write(response);                        // verbatim: JSON for most events, text/plain for pre_compact
   } catch {
-    spool(home, input, receivedAt, cfg.recordPrompts === true);   // daemon down / slow / error: queue for replay, then pass
+    if (!subagentEdit) spool(home, input, receivedAt, cfg.recordPrompts === true);   // daemon down / slow / error: queue for replay, then pass (a subagent's edit has nothing to replay)
     write(fallbackOutput(EVENT));
   }
 }
 
 function isRecord(v) { return typeof v === 'object' && v !== null && !Array.isArray(v); }
+
+/** Decision 175: whether the router's file for this agent (<home>/agents/<id>.json) asks for its edits. */
+export function reproWanted(home, agentId) {
+  try {
+    const name = String(agentId).replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 128);   // core safeName
+    return JSON.parse(fs.readFileSync(path.join(home, 'agents', `${name}.json`), 'utf8')).repro === true;
+  } catch { return false; }
+}
 
 /** Real-path comparison so a junction/symlink/npm-link spelling of the plugin dir still runs the hook. */
 function isMain() {

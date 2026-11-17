@@ -56,6 +56,6 @@ test('doctor flags settings that disable the ladder', () => {
   assert.ok(names.includes('CLAUDE_CODE_SUBAGENT_MODEL_FORCE'));
   assert.ok(names.some(n => n.startsWith('ANTHROPIC_API_KEY')));
   assert.equal(ladderBreakers({}).length, 0);
-  assert.ok(versionAtLeast('2.1.319 (Claude Code)', [2, 1, 295]));
-  assert.ok(!versionAtLeast('2.1.290', [2, 1, 295]));
+  assert.ok(versionAtLeast('2.1.325 (Claude Code)', [2, 1, 325]));
+  assert.ok(!versionAtLeast('2.1.319', [2, 1, 325]));
 });

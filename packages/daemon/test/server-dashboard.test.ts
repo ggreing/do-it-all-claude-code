@@ -1,5 +1,5 @@
-// The daemon's HTTP server with the dashboard module (decision 132) and the rate limits route (spec 3.8):
-// browser rules apply to /dashboard and /dashboard/metrics only; the hook API still refuses any Origin.
+// The daemon's HTTP server: the rate limits route (spec 3.8), the metrics routes (decision 132, sealed since the
+// browser dashboard was removed, decision 183) and what /dashboard answers now. Every route refuses any Origin.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -46,29 +46,41 @@ test('spec 3.8: POST /router/v1/limits stores a session\'s latest rate limits (t
   assert.equal((await call(d.port, { path: '/router/v1/limits' })).status, 405);
 }));
 
-test('decision 132: the dashboard through the daemon: a one-time code for a sealed call (the CLI\'s), then a cookie for the metrics', () => withDaemon(async d => {
+test('decision 183: the metrics are routes of the API, reached by a sealed call only', () => withDaemon(async d => {
   await call(d.port, { method: 'POST', path: '/router/v1/limits', body: JSON.stringify({ sessionId: 's1', rateLimits: LIMITS }) });
-  assert.equal((await request(d.port, { path: '/dashboard/register-code', method: 'POST' })).status, 401);
-  assert.equal((await request(d.port, { path: '/dashboard/register-code', method: 'POST', headers: { authorization: `Bearer ${TOKEN}` } })).status, 401, 'the token as a header: refused (decision 164)');
-  const reg = await call(d.port, { path: '/dashboard/register-code', method: 'POST' });
-  assert.equal(reg.status, 200);
-  const { code, url } = reg.body as { code: string; url: string };
-  assert.equal(url, `http://127.0.0.1:${d.port}/dashboard#code=${code}`);
-  assert.ok(!url.includes(TOKEN) && !reg.text.includes(TOKEN), 'the token never reaches the page');
-  assert.equal((await request(d.port, { path: '/dashboard/metrics/now?session_id=s1' })).status, 401);
-  // the page posts the code once (same origin); a second use is refused
-  const page = { origin: `http://127.0.0.1:${d.port}`, 'sec-fetch-site': 'same-origin' };
-  const auth = await request(d.port, { path: '/dashboard/auth', ...json(null, { code }, page) });
-  assert.equal(auth.status, 200);
-  const cookie = String(auth.headers['set-cookie']?.[0] ?? '').split(';')[0]!;
-  assert.match(cookie, /^ar_dash=/);
-  assert.equal((await request(d.port, { path: '/dashboard/auth', ...json(null, { code }, page) })).status, 401);
-  const now = await request(d.port, { path: '/dashboard/metrics/now?session_id=s1', headers: { cookie, ...page } });
-  assert.equal(now.status, 200, now.text);
-  assert.equal((now.body as { limits: { fiveHour: { usedPercentage: number } } }).limits.fiveHour.usedPercentage, 23.5);
-  // the metrics refuse another origin even with the cookie; the hook API does not take the cookie
-  assert.equal((await request(d.port, { path: '/dashboard/metrics/now', headers: { cookie, origin: 'https://evil.example' } })).status, 403);
-  assert.equal((await request(d.port, { path: '/router/v1/status', headers: { cookie } })).status, 401);
+  for (const p of ['summary', 'requests?limit=5', 'triage-report']) {
+    const route = `/router/v1/metrics/${p}`;
+    assert.equal((await request(d.port, { path: route })).status, 401, `${p}: no credential`);
+    assert.equal((await request(d.port, { path: route, headers: { authorization: `Bearer ${TOKEN}` } })).status, 401, `${p}: the token as a header (decision 164)`);
+    assert.equal((await request(d.port, { path: route, headers: { origin: `http://127.0.0.1:${d.port}` } })).status, 403, `${p}: a browser page`);
+    assert.equal((await call(d.port, { path: route })).status, 200, p);
+  }
+  const summary = (await call(d.port, { path: '/router/v1/metrics/summary' })).body as { limits: { fiveHour: { usedPercentage: number } } };
+  assert.equal(summary.limits.fiveHour.usedPercentage, 23.5);
+  assert.ok(Array.isArray(((await call(d.port, { path: '/router/v1/metrics/requests' })).body as { rows: unknown[] }).rows));
+  assert.equal((await call(d.port, { path: '/router/v1/metrics/requests/nope' })).status, 404);
+  assert.equal((await call(d.port, { path: '/router/v1/metrics/requests?limit=abc' })).status, 400);
+  assert.equal((await call(d.port, { path: '/router/v1/metrics/summary?since=yesterday' })).status, 400);
+  assert.equal((await call(d.port, { path: '/router/v1/metrics/now' })).status, 404, 'the dashboard\'s live view is not a route any more');
+  assert.equal((await call(d.port, { method: 'POST', path: '/router/v1/metrics/summary', body: '{}' })).status, 405);
+}));
+
+test('decision 186: /dashboard answers 410 with one line that names /office, whoever asks', () => withDaemon(async d => {
+  const gone = 'The browser dashboard was removed in 0.5.0. Use /office inside Claude Code.\n';
+  for (const p of ['/dashboard', '/dashboard/', '/dashboard/metrics/summary', '/dashboard/settings', '/dashboard/assets/index.js']) {
+    const r = await request(d.port, { path: p });
+    assert.deepEqual([r.status, r.text], [410, gone], p);
+    assert.match(String(r.headers['content-type']), /^text\/plain/);
+  }
+  // the page's old login: no session is made
+  const auth = await request(d.port, { path: '/dashboard/auth', ...json(null, { code: 'x' }, { origin: `http://127.0.0.1:${d.port}`, 'sec-fetch-site': 'same-origin' }) });
+  assert.equal(auth.status, 410);
+  assert.equal(auth.headers['set-cookie'], undefined);
+  // the code route an older CLI calls, sealed: the same line, no code
+  const old = await call(d.port, { method: 'POST', path: '/dashboard/register-code' });
+  assert.deepEqual([old.status, old.text], [410, gone]);
+  // other paths are as before
+  assert.equal((await request(d.port, { path: '/dashboards' })).status, 404);
 }));
 
 test('ledger v11: a v10 ledger gains session_limits', () => {

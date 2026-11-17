@@ -168,8 +168,8 @@ test('decision 168: doctor checks the effective plugin (generated, current, floo
 test('decision 168 review L6: config edit sends the revision it opened (a change made meanwhile is not overwritten); old buffers are swept', async () => {
   const { applyConfigChange } = await import('@do-it-all-claude-code/core');
   const { sweepEditBuffers, EDIT_BUFFER_MAX_AGE_MS } = await import('../src/settings.ts');
-  // while the editor is open, the dashboard changes the file
-  const s = deps([t => { applyConfigChange(home, { set: { holdoutRate: 0.01 } }, 'dashboard'); return t.replace('"daemonPort"', '"stepDown": "off",\n  "daemonPort"'); }]);
+  // while the editor is open, another writer changes the file
+  const s = deps([t => { applyConfigChange(home, { set: { holdoutRate: 0.01 } }, 'cli'); return t.replace('"daemonPort"', '"stepDown": "off",\n  "daemonPort"'); }]);
   assert.equal(await configCommand('edit', [], s.d), 1);
   assert.match(s.text(), /revision: changed since you loaded it/);
   assert.deepEqual([cfg().holdoutRate, cfg().stepDown], [0.01, undefined], 'the other change stays; the stale edit is not written');

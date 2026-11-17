@@ -12,7 +12,8 @@
 //   node packages/core/src/triage-eval-cli.ts judge-score --items <judge-items.jsonl> --judge <out.jsonl>
 //       scores a judge run made from those inputs
 //   node packages/core/src/triage-eval-cli.ts regret <runs.jsonl> --tasks <tasks.jsonl> [--judge <out.jsonl>]
-//       regret of each policy on measured runs (decision 107); tasks.jsonl has { taskId, prompt, level? } per line
+//       regret of each policy on measured runs (decision 107); tasks.jsonl has { taskId, prompt, level?, files?, lines? } per line
+//       (files and lines: the real change size, from scripts/task-sizes.ts; with them the decision-178 one-file policies run)
 //
 // A judge run is one JSON line per prompt: { "id": ..., "model": ..., "output": <the reply, text or object>, "costUsd"?, "ms"? }.
 // A measured run is one JSON line per run: { "taskId", "arrangement": "direct"|"team-L2"|"team-L3", "passed", "costUsd", "wallSeconds", ... }.
@@ -25,6 +26,7 @@ import {
   type Answer, type Arrangement, type Classifier, type JudgeLine, type LabelledPrompt, type MeasuredRun, type SetScore,
 } from './triage-eval.ts';
 import { JUDGE_EFFORT, JUDGE_MODEL, JUDGE_SCHEMA, JUDGE_SYSTEM, buildJudgeRequest } from './triage-judge.ts';
+import { ONE_FILE_DIRECT } from './tools.ts';
 import { triage } from './triage.ts';
 import type { Level } from './types.ts';
 
@@ -195,9 +197,15 @@ if (cmd === 'set') {
   console.log(`\njudge run: ${lines.length} replies, ${lines.length - judge.size} unreadable, total $${cost.toFixed(4)}${ms.length ? `, latency p50 ${ms[Math.floor(ms.length / 2)]} ms, p90 ${ms[Math.floor(ms.length * 0.9)]} ms` : ''}`);
 } else if (cmd === 'regret' && pos[0] && opt.tasks) {
   const stats = summariseRuns(readJsonl<MeasuredRun>(pos[0]));
-  const taskRows = readJsonl<{ taskId: string; prompt: string; level?: Level }>(opt.tasks);
+  const taskRows = readJsonl<{ taskId: string; prompt: string; level?: Level; files?: number; lines?: number }>(opt.tasks);
   const prompts = new Map(taskRows.map(t => [t.taskId, t.prompt]));
   const levels = new Map(taskRows.flatMap(t => (t.level ? [[t.taskId, t.level] as [string, Level]] : [])));
+  // decision 178: the change's real size (scripts/task-sizes.ts), standing in for a lead who reads it right
+  const sizes = new Map(taskRows.flatMap(t => (typeof t.files === 'number' && typeof t.lines === 'number' ? [[t.taskId, { files: t.files, lines: t.lines }] as [string, { files: number; lines: number }]] : [])));
+  const oneFile = (maxLines: number) => (taskId: string): Arrangement => {
+    const s = sizes.get(taskId);
+    return s && s.files <= ONE_FILE_DIRECT.files && s.lines <= maxLines ? 'direct' : 'team-L2';
+  };
   const answer = (c: Classifier, uncertainAs: Arrangement = 'direct') => (taskId: string): Arrangement => {
     const prompt = prompts.get(taskId);
     return arrangementOf(prompt === undefined ? undefined : c({ id: taskId, task: taskId, lang: '', style: 'task', split: 'measured', label: { kind: 'direct', level: 'L1' }, prompt }), uncertainAs);
@@ -211,6 +219,10 @@ if (cmd === 'set') {
     'always direct': () => 'direct', 'always team-L2': () => 'team-L2', 'always team-L3': () => 'team-L3',
     ...(levels.size ? { 'authored level (L0, L1 direct)': byLevel('team-L3'), 'authored level, L3 as team-L2': byLevel('team-L2') } : {}),
     'stage 1, uncertain as direct': answer(stage1),
+    ...(sizes.size ? {
+      [`one file <=${ONE_FILE_DIRECT.lines} lines direct, else team-L2`]: oneFile(ONE_FILE_DIRECT.lines),
+      'one file <=25 lines direct, else team-L2': oneFile(25),
+    } : {}),
     ...(judge ? {
       'stage 1 + judge bands, open as direct': answer(cascade(stage1, fromMap(judge))),
       'stage 1 + judge bands, open as team-L2': answer(cascade(stage1, fromMap(judge)), 'team-L2'),
@@ -230,6 +242,11 @@ if (cmd === 'set') {
       }
     }
     console.log('  best arrangement per task: ' + Object.entries(stats).map(([t, s]) => `${t}=${bestArrangement(s, usdPerMinute)}`).join(', '));
+  }
+  if (sizes.size) {
+    // the answers the one-file rule changes against a lead that delegates everything (a Sonnet or Opus lead today)
+    const moved = Object.keys(stats).filter(t => oneFile(ONE_FILE_DIRECT.lines)(t) === 'direct');
+    console.log(`\ndecision 178: the one-file rule (<=${ONE_FILE_DIRECT.lines} lines) changes ${moved.length} of ${Object.keys(stats).length} answers from team-L2 to direct: ${moved.map(t => `${t} (${sizes.get(t)!.files} file, ${sizes.get(t)!.lines} lines)`).join(', ') || 'none'}`);
   }
   if (unsolved.length) console.log(`\nno arrangement passed: ${unsolved.join(', ')}`);
   console.log('\nper task (cost USD / seconds / pass rate):');

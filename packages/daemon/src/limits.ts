@@ -1,6 +1,6 @@
 // Subscription rate-limit capture (spec 3.8; decision 132 deferred this to Phase 3). The Claude Code
 // status line input carries `rate_limits`; plugin/statusline.mjs posts it here and the daemon stores the
-// latest per session for the dashboard. This module owns the storage: the ledger migration (v11) runs
+// latest per session for the team office and the metrics summary. This module owns the storage: the ledger migration (v11) runs
 // LIMITS_SCHEMA and the daemon's POST /router/v1/limits route calls recordLimits.
 //
 // rate_limits shape, from the Claude Code status line docs (code.claude.com/docs/en/statusline), verbatim:
@@ -111,7 +111,7 @@ function toLimits(r: Row): SessionLimits {
 
 /**
  * The latest stored limits for a session, or (no sessionId) the most recently updated session's. Returns
- * null when nothing is stored — and also when the table has not been created yet, so the dashboard
+ * null when nothing is stored — and also when the table has not been created yet, so a reader
  * degrades gracefully instead of erroring.
  */
 export function latestLimits(db: DatabaseSync, sessionId?: string): SessionLimits | null {

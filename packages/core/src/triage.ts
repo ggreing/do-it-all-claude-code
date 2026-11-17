@@ -22,6 +22,7 @@
 // repository signals predicted the size of the fix (AUC 0.45-0.64), so stage 1 does not guess.
 import { DEFAULT_PRESETS } from './presets.ts';
 import { ladderStep } from './ladder.ts';
+import { ONE_FILE_DIRECT } from './tools.ts';
 import type { Level, Role, TaskType, TeamPreset, TriageResult } from './types.ts';
 
 export interface TriageInput {
@@ -460,17 +461,30 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
     ...agentCalls(l3),
   ] : [];
   // Decision 121: an uncertain request on a delegating team. The lead staffs it; a small change is one coder.
-  const staffing = (t as Partial<Stage1Result>).kind === 'uncertain' && preset.roles.filter(r => r.count > 0).length > 1
-    ? [`The router could not tell the size of this request from its wording, so the staffing is yours: call only the roles the change needs. One coder subtask alone is right for a small change (fewer than ${TEAM_SIZE_RULE.files} files, one module). Use the rest of the team only when the change needs edits in ${TEAM_SIZE_RULE.files} or more files, or in ${TEAM_SIZE_RULE.dirs} or more modules or layers, or a design decision first (a new public API, schema or data model).`]
+  // Decision 178: a change of one file and a few lines costs more delegated than done, so the lead keeps it.
+  const uncertainTeam = (t as Partial<Stage1Result>).kind === 'uncertain' && preset.roles.filter(r => r.count > 0).length > 1;
+  const staffing = uncertainTeam
+    ? [
+      `The router could not tell the size of this request from its wording. First: if the whole change is in one file and about ${ONE_FILE_DIRECT.lines} changed lines or fewer, do not delegate. Call router_report_triage with kind "direct", level "L1", files 1, lines (your estimate) and confidence; when it answers leadDirect true, make the change yourself. To tell, you may open the one file you think it is. A change that needs a second file (an export, a caller, a type) is not one file.`,
+      `Otherwise the staffing is yours: call only the roles the change needs. One coder subtask alone is right for a small change (fewer than ${TEAM_SIZE_RULE.files} files, one module). Use the rest of the team only when the change needs edits in ${TEAM_SIZE_RULE.files} or more files, or in ${TEAM_SIZE_RULE.dirs} or more modules or layers, or a design decision first (a new public API, schema or data model).`,
+    ]
     : [];
   return [
     head,
     `team preset ${preset.id}: ${team}. budget $${t.budgetUsd}.`,
     'Routing is ON for this request. You are the lead: delegate, and keep your own work small (every call you make re-reads your whole context at the lead model\'s price).',
     ...staffing,
-    'Do not edit or write files yourself (unless the user explicitly asks you to); the team below does the changes.',
-    'Do not open or read source files to plan: hand the user\'s request, with the files and symbols it names, to the worker as the spec; the worker reads and investigates the code. Use at most one quick search only if you cannot tell which files are involved.',
+    uncertainTeam
+      ? 'Do not edit or write files yourself unless router_report_triage answered leadDirect true (or the user explicitly asks you to); otherwise the team below does the changes.'
+      : 'Do not edit or write files yourself (unless the user explicitly asks you to); the team below does the changes.',
+    `Do not open or read source files to plan${uncertainTeam ? ' (beyond the one-file check above)' : ''}: hand the user's request, with the files and symbols it names, to the worker as the spec; the worker reads and investigates the code. Use at most one quick search only if you cannot tell which files are involved.`,
     '1. Split the request into subtasks A, B, ... (a single subtask A is fine for a small change).',
+    // decision 178 (다): in the measurement of decision 174 every L3 run had one writer at a time and whole-repo scopes
+    ...(parallel ? [
+      '   When the change has two or more independent parts that write different files or directories, give each its own coder subtask with a [scope: ...] that no other subtask writes, and send those subtasks in one message so they run at the same time. '
+      + 'Keep in order what needs another subtask\'s result: an architect\'s plan first, a reviewer or tester after the writers. A file several parts need (an index, a shared type) belongs to one subtask only. '
+      + 'The router refuses a writer whose scope overlaps one still running, and says how to send it instead.',
+    ] : []),
     '2. Call the Agent tool once per subtask with exactly these parameters:',
     ...agentCalls(preset),
     PROMPT_SHAPE,

@@ -124,7 +124,7 @@ test('decision 145: the relay answers a subagent\'s edit at once and spools the 
   } finally { rmrf(home); }
 });
 
-test('decision 145: a no_changes writer does not make the request fail (dashboard success, auto-release accepted count); a miss still does', async () => {
+test('decision 145: a no_changes writer does not make the request fail (the success count, auto-release accepted count); a miss still does', async () => {
   const { recordVerifyOk } = await import('../src/routing.ts');
   const rec = (...subs: Array<[string, string | null]>) => ({ outcome: 'delegated', subtasks: subs.map(([status, verdict]) => ({ status, verdict })) });
   assert.equal(recordVerifyOk(rec(['passed', 'meet'], ['hitl', 'no_changes'])), true);

@@ -1,5 +1,5 @@
-// Decision 168: the daemon's settings service. Both front doors call it: the sealed /router/v1 routes (the CLI) and
-// the dashboard's cookie + CSRF routes. It runs the core's one write core (validate, atomic write, audit) and then
+// Decision 168: the daemon's settings service, behind the sealed /router/v1 routes the CLI calls (the browser
+// dashboard's cookie routes were its second front door until decision 183 removed it). It runs the core's one write core (validate, atomic write, audit) and then
 // reloads what the daemon holds: config.json into the router; teams.yaml is read for every request anyway; a role
 // change regenerates the effective plugin, whose files the router and verify read when they need them.
 import {

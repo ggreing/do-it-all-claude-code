@@ -5,6 +5,36 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **Small requests stay with the lead.** When the router cannot tell a request's size from its wording, it asks
+  the lead to check first whether the change is in one file and about 15 changed lines or fewer. If so, the
+  lead reports it (`router_report_triage` now takes a `lines` estimate) and makes the change itself; no worker
+  starts. A level set with `/router level` is kept.
+- **No second test run.** A worker's passed notification lists each check with its result and how many tests
+  passed, and tells the lead not to run the test suite again. When verify ran no tests for the change (none
+  configured, skipped, or 0 tests), the lead runs only the changed code's tests, once.
+- **Independent parts run at the same time.** The lead and the architect split a larger change into writer
+  subtasks with write scopes that share no file and send them together; the architect's report lists each
+  subtask's scope and what must finish before it. The router refuses a second writer whose scope can name a
+  file of a writer still running, and says how to send it instead (split the scopes, or after the other one
+  finishes); writers sent one after another are never refused. A worker that ran in its own worktree is named
+  with the branch to merge.
+
+### Removed
+
+- **The browser dashboard.** `do-it-all-claude-code dashboard` and the page the daemon served at `/dashboard`
+  are gone, with the one-time code, the session cookie and the settings pages that belonged to them. What the
+  page showed is in the team office inside Claude Code (`/office`: Office, History, Cost and Routing tabs).
+  Settings are changed with the CLI (`config`, `preset`, `role`), as before.
+  - For this release the command prints one line that names `/office`, and `/dashboard` on the daemon's port
+    answers 410 with a line that says the same, so an old bookmark says what happened.
+  - The numbers behind the page are still served, now as sealed routes like the rest of the daemon's API:
+    `GET /router/v1/metrics/summary`, `/requests`, `/requests/<id>` and `/triage-report`, with the same
+    parameters and answers. A `since` or `until` that is not a date is now refused (400).
+  - From a checkout, the `npm run build:dashboard` step is gone and `npm ci` installs fewer packages (Vue and
+    Vite are no longer dependencies).
+
 ## [0.4.0] — 2026-11-13
 
 Fourth pre-release: an optional update check, and the end of two transitions from earlier releases.

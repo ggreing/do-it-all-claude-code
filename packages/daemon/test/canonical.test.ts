@@ -5,13 +5,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import http from 'node:http';
 import path from 'node:path';
 import { canonicalPath, isWithin, relativeWithin } from '../src/canonical.ts';
-import { createDashboard } from '../src/dashboard.ts';
-import { Ledger } from '../src/ledger.ts';
 import { readEditedPaths } from '../src/transcript.ts';
-import { TOKEN, rmrf, tmpDir } from './helpers.ts';
+import { rmrf, tmpDir } from './helpers.ts';
 
 /** A link at `at` to the folder `to` (a junction on Windows, which needs no privilege); false when not possible. */
 function linkDir(to: string, at: string): boolean {
@@ -48,45 +45,6 @@ test('canonicalPath resolves the existing part and keeps the rest; isWithin stay
   } finally {
     if (linked) unlink(via);
     if (escaped) unlink(escape);
-    rmrf(real); rmrf(outside); rmrf(path.dirname(via));
-  }
-});
-
-function get(port: number, p: string): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path: p, headers: { host: `127.0.0.1:${port}` } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode ?? 0)); });
-    req.on('error', reject);
-    req.end();
-  });
-}
-
-test('dashboard: a dist folder reached through a link serves its routes and assets; a link inside dist that leads out is refused', async () => {
-  const real = tmpDir('canon-dist');
-  fs.writeFileSync(path.join(real, 'index.html'), '<!doctype html><div id=app></div>');
-  fs.mkdirSync(path.join(real, 'assets'));
-  fs.writeFileSync(path.join(real, 'assets', 'index-abcd1234.js'), 'console.log(1)');
-  const outside = tmpDir('canon-secret');
-  fs.writeFileSync(path.join(outside, 'secret.txt'), 'not for the browser');
-  const via = path.join(tmpDir('canon-dvia'), 'dist');
-  const linked = linkDir(real, via);
-  const leak = path.join(real, 'leak');
-  const leaked = linkDir(outside, leak);
-  const ledger = new Ledger(':memory:');
-  let port = 0;
-  const dash = createDashboard({ ledger, token: TOKEN, distDir: linked ? via : real, port: () => port });
-  const server = http.createServer((req, res) => { if (!dash.handle(req, res)) { res.writeHead(404); res.end(); } });
-  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
-  port = (server.address() as { port: number }).port;
-  try {
-    assert.equal(await get(port, '/dashboard'), 200);
-    assert.equal(await get(port, '/dashboard/some/spa/route'), 200, 'a route below folders that do not exist');
-    assert.equal(await get(port, '/dashboard/assets/index-abcd1234.js'), 200);
-    assert.equal(await get(port, '/dashboard/assets/missing.js'), 404);
-    if (leaked) assert.equal(await get(port, '/dashboard/leak/secret.txt'), 403, 'still confined');
-  } finally {
-    dash.stop(); await new Promise<void>(r => server.close(() => r())); ledger.close();
-    if (linked) unlink(via);
-    if (leaked) unlink(leak);
     rmrf(real); rmrf(outside); rmrf(path.dirname(via));
   }
 });

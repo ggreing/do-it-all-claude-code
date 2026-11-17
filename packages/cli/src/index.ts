@@ -1,19 +1,19 @@
 #!/usr/bin/env node
-// do-it-all-claude-code <init|start|stop|status|doctor|dashboard|routing|data|policy|uninstall|supervise|mode|token|key|proxy>
+// do-it-all-claude-code <init|start|stop|status|doctor|routing|data|policy|uninstall|supervise|mode|token|key|proxy>
 import fs from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { effectivePluginDir, generateEffectivePlugin, paths, routerHome, templateDirProblem, type Level } from '@do-it-all-claude-code/core';
+import { effectivePluginDir, generateEffectivePlugin, paths, resolveLayout, routerHome, templateDirProblem, type Level } from '@do-it-all-claude-code/core';
 import { configCommand, presetCommand, reloadCommand, roleCommand, type SettingsDeps } from './settings.ts';
 import { SettingsParseError, defaultClaudeSettings, ensureLocalState, planBackupClean, planProject, planStatusLine, promptStorageSummary, readConfig, writeConfig, type PlannedChange } from './setup.ts';
-import { UPDATE_QUESTION, updateCommand } from './update.ts';
+import { CLI_VERSION, UPDATE_QUESTION, updateCommand } from './update.ts';
 import { start, status, stop } from './daemonctl.ts';
-import { doctor } from './doctor.ts';
-import { keyHelper, localTokenHelper, planApiSettings } from './apimode.ts';
+import { MIN_CLAUDE, doctor, installedClaudeVersion, versionAtLeast } from './doctor.ts';
+import { copyHelpersToHome, keyHelper, localTokenHelper, planApiSettings } from './apimode.ts';
+import { installPlan, installPlugin, uninstallPlugin, writeHomeMarketplace } from './marketplace.ts';
 import { migrateHome, realKeys } from './migrate.ts';
 import { allowUpstream, configureApi, keySet, modeApi, modeSubscription, preflightApi, realLogin, realReload, realVault, setMode, tlsChoice, tokenRotate, type ApiDeps } from './apicmds.ts';
-import { dashboardCommand } from './dashboard.ts';
 import { dataExport, dataPurge, realDataDeps } from './data.ts';
 import { uninstall } from './uninstall.ts';
 import { loadGuard, policyCommand } from './policy.ts';
@@ -77,9 +77,14 @@ async function init(f: Record<string, string | boolean>) {
   const mode = f.mode;
   if (mode !== undefined && mode !== 'api') { console.error('--mode takes "api" (subscription mode is the default)'); process.exitCode = 2; return; }
   const api = mode === 'api' ? apiDeps(f) : undefined;
+  // decision 186: the team office needs a recent Claude Code; init points at an update when the installed one is
+  // older. doctor's `claude code` check is the blocking one — this is a heads-up so a fresh setup is not surprised.
+  const claudeVersion = installedClaudeVersion();
+  if (claudeVersion && !versionAtLeast(claudeVersion, MIN_CLAUDE))
+    console.log(`note: your Claude Code is ${claudeVersion}; the team office needs >= ${MIN_CLAUDE.join('.')}. Update it (e.g. \`claude update\`), then run \`do-it-all-claude-code doctor\` to re-check.`);
   // decision 168: the plugin as shipped is the template; Claude Code and the daemon use the effective plugin generated
   // from it (and the role overrides) in the router home
-  const templateDir = typeof f['plugin-dir'] === 'string' ? path.resolve(f['plugin-dir']) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../plugin');
+  const templateDir = typeof f['plugin-dir'] === 'string' ? path.resolve(f['plugin-dir']) : resolveLayout(import.meta.url).pluginTemplateDir;
   const pluginDir = effectivePluginDir(routerHome());
   const templateProblem = templateDirProblem(routerHome(), templateDir);   // review L5: never a folder inside the home
   if (templateProblem) { console.error(`init: ${templateProblem}`); process.exitCode = 2; return; }
@@ -104,6 +109,9 @@ async function init(f: Record<string, string | boolean>) {
     budgets[l] = v;
   }
   const local = await ensureLocalState(budgets, pluginDir, { newPort: f['new-port'] === true });
+  // The apiKeyHelper and status-line scripts live in the router home, not the package folder (which moves
+  // with the Node version / plugin cache). Copy them now so both survive updates.
+  try { copyHelpersToHome(routerHome()); } catch (e) { console.log(`note: could not copy the API-mode helpers into the router home (${(e as Error).message}); API-key mode will set them up later`); }
   try {
     const g = generateEffectivePlugin(routerHome(), templateDir);
     for (const r of g.refused) console.log(`role ${r.role}: your override does not hold against this template (${r.errors.map(e => `${e.path}: ${e.message}`).join('; ')}); the role uses the template's file until it is fixed. \`do-it-all-claude-code role edit ${r.role}\` fixes it.`);
@@ -151,7 +159,19 @@ async function init(f: Record<string, string | boolean>) {
     // L1: a running supervisor restarts the proxy when its TLS setting changed (as mode api does)
     if (api && realReload()) console.log('The supervisor applies the new API-key settings to the running proxy.');
   }
-  console.log(`\nLoad the plugin in Claude Code: claude --plugin-dir "${pluginDir}"  (generated from ${templateDir}; \`do-it-all-claude-code role edit <role>\` changes a role there)`);
+  // Install the generated plugin as a local marketplace from the router home: no --plugin-dir, and the user's
+  // role edits survive plugin updates (the local directory loads in place).
+  writeHomeMarketplace(routerHome());
+  const plan = installPlan(routerHome());
+  console.log('\nInstall the plugin in Claude Code (a local marketplace in your router home; role edits survive updates):');
+  for (const c of plan) console.log(`  - ${c}`);
+  let installed = false;
+  if (f.yes === true || (process.stdin.isTTY === true && await askDefaultYes('Install it now? [Y/n] '))) {
+    installed = await installPlugin({ out: line => console.log(line) });
+  }
+  console.log(installed
+    ? 'Plugin installed; `do-it-all-claude-code role edit <role>` changes a role in the generated folder, and the edit survives updates.'
+    : `Not installed yet — run the two commands above when ready, or load it directly with: claude --plugin-dir "${pluginDir}"`);
   if (api) console.log('API-key mode: run `do-it-all-claude-code start` (daemon and proxy), then start new Claude Code sessions. `do-it-all-claude-code doctor` checks the setup.');
 }
 
@@ -185,7 +205,8 @@ const positional = rest.filter((a, i) => !a.startsWith('--') && !(i > 0 && rest[
 const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 const isMain = !!process.argv[1] && real(process.argv[1]) === real(fileURLToPath(import.meta.url));
 if (isMain) {
-  if (cmd === 'init') await init(f);
+  if (cmd === 'version' || cmd === '--version' || cmd === '-v') console.log(CLI_VERSION);
+  else if (cmd === 'init') await init(f);
   else if (cmd === 'start') console.log(await start());
   else if (cmd === 'stop') console.log(await stop());
   else if (cmd === 'status') console.log(await status());
@@ -194,7 +215,7 @@ if (isMain) {
     for (const c of checks) console.log(`${c.ok ? 'ok  ' : c.blocking ? 'FAIL' : 'warn'} ${c.name.padEnd(36)} ${c.detail}`);
     if (checks.some(c => !c.ok && c.blocking)) process.exitCode = 1;
   } else if (cmd === 'supervise') await runSupervisor();
-  else if (cmd === 'dashboard') process.exitCode = await dashboardCommand(f);
+  else if (cmd === 'dashboard') { console.log('The browser dashboard has been removed — use the team office inside Claude Code: /office'); process.exitCode = 0; }
   else if (cmd === 'routing' && positional[0] === 'reset') process.exitCode = await routingResetCommand();
   else if (cmd === 'policy') {
     process.exitCode = await policyCommand(positional[0], f, {
@@ -204,7 +225,9 @@ if (isMain) {
     process.exitCode = await uninstall(f, {
       settingsFile: typeof f['claude-settings'] === 'string' ? f['claude-settings'] : defaultClaudeSettings(),
       projectDir: typeof f.project === 'string' ? f.project : process.cwd(),
-      stop, keyStatus: () => keyStatus(), deleteKey: () => deleteKey(), ask, isTTY: process.stdin.isTTY === true, out: line => console.log(line),
+      stop, keyStatus: () => keyStatus(), deleteKey: () => deleteKey(),
+      pluginUninstall: () => uninstallPlugin({ out: line => console.log(line) }),
+      ask, isTTY: process.stdin.isTTY === true, out: line => console.log(line),
     });
   }
   else if (cmd === 'data' && (positional[0] === 'export' || positional[0] === 'purge')) {
@@ -221,5 +244,5 @@ if (isMain) {
         : cmd === 'role' ? await roleCommand(positional[0], positional.slice(1), d) : await reloadCommand(d);
     } catch (e) { console.error((e as Error).message); process.exitCode = 1; }
   }
-  else console.log('usage: do-it-all-claude-code <init [--mode api]|start|stop|status|doctor|dashboard [--no-open]|routing reset|data export|data purge|uninstall [--keep-key]|policy show|accept|revoke|mode subscription|api|direct|proxy|token rotate [--no-grace]|key set|proxy allow-upstream <origin>|update on|off|check|config list|get|set|edit|preset show|edit|role show|edit <role>|reload>');
+  else console.log('usage: do-it-all-claude-code <version|init [--mode api]|start|stop|status|doctor|routing reset|data export|data purge|uninstall [--keep-key]|policy show|accept|revoke|mode subscription|api|direct|proxy|token rotate [--no-grace]|key set|proxy allow-upstream <origin>|update on|off|check|config list|get|set|edit|preset show|edit|role show|edit <role>|reload>');
 }

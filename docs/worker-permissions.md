@@ -50,6 +50,20 @@ but it doesn't look at what a test actually does.
 A refusal wins over your allow rules. With `"Bash(npm run *)"` allowed, `npm run env` (which prints the
 environment) is still refused, and with `"Bash(cat *)"` allowed, `cat .env` still is.
 
+### With `reproduceFirst` on
+
+When `reproduceFirst` is `on` or `observe` in the router's `config.json` (the default is `off`), a coder
+writes a failing test before its change, and the router runs that one test file itself: once when the file
+is saved, and again when the coder finishes. That run is the router's, with a command the router builds
+(`node --test <file>`, `python -m pytest -q -x <file>`, `npx vitest run <file>`, `npx jest <file>`,
+`go test <folder>`, or the `"repro"` list of your project's `.do-it-all-claude-code/verify.json` as it was
+at the commit the worker started on). It doesn't go through Claude Code, so it needs no Bash rule, and a
+coder without any test rule can still complete a reproduction.
+
+If you want the coder to be able to run a single test file too, allow the targeted forms, for example
+`"Bash(node --test *)"`, `"Bash(python -m pytest *)"` or `"Bash(npx vitest run *)"`. The same caution
+applies as above: the test file is a program the worker just wrote, and the router runs it as you.
+
 ## What workers can't do, whatever you allow
 
 They can't write outside their subtask's paths (`[scope: ...]`), or to CI configuration, `.claude/`,

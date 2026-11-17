@@ -1,5 +1,5 @@
-// Decision 168: the daemon's two front doors for settings, on one write core: sealed /router/v1 routes (the CLI) and the
-// dashboard's session + CSRF + same-origin routes. Validate, write, reload, audit; the metrics surface stays read-only.
+// Decision 168: the daemon's front door for settings: sealed /router/v1 routes (the CLI), on the core's one write
+// path. Validate, write, reload, audit. (The browser dashboard's second front door went with it, decision 183.)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -21,17 +21,6 @@ async function withDaemon(fn: (d: TestDaemon, templates: string) => Promise<void
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ ...cfg, pluginDir: effectivePluginDir(home) }));
   const d = await startTestDaemon({ home });
   try { await fn(d, templates); } finally { await d.close(); rmrf(home); rmrf(templates); }
-}
-
-/** The dashboard page's session: a code (sealed, as the CLI gets it), the cookie, and the CSRF token. */
-async function login(d: TestDaemon): Promise<{ cookie: string; csrf: string; page: Record<string, string> }> {
-  const { code } = (await call(d.port, { path: '/dashboard/register-code', method: 'POST' })).body as { code: string };
-  const page = { origin: `http://127.0.0.1:${d.port}`, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' };
-  const auth = await request(d.port, { method: 'POST', path: '/dashboard/auth', headers: page, body: json({ code }) });
-  assert.equal(auth.status, 200, auth.text);
-  const csrf = (auth.body as { csrf: string }).csrf;
-  assert.match(csrf, /^[A-Za-z0-9_-]{40,}$/);
-  return { cookie: String(auth.headers['set-cookie']?.[0] ?? '').split(';')[0]!, csrf, page };
 }
 
 test('decision 168: the CLI\'s sealed front door: read, write (applied at once), reject with every problem, reload', () => withDaemon(async (d, templates) => {
@@ -76,66 +65,6 @@ test('decision 168: the CLI\'s sealed front door: read, write (applied at once),
   // the history route
   const h = (await call(d.port, { path: '/router/v1/settings/history?limit=2' })).body as { entries: Array<{ kind: string }> };
   assert.deepEqual(h.entries.map(e => e.kind), ['role', 'presets']);
-}));
-
-test('decision 168: the dashboard\'s front door: a session, its CSRF token and the page\'s Origin on every write; the same core', () => withDaemon(async d => {
-  const { cookie, csrf, page } = await login(d);
-  const write = (p: string, body: unknown, h: Record<string, string> = {}) => request(d.port, { method: 'POST', path: `/dashboard/settings/${p}`, headers: { ...page, cookie, 'x-csrf-token': csrf, ...h }, body: json(body) });
-  // reading
-  const v = await request(d.port, { path: '/dashboard/settings', headers: { cookie, ...page } });
-  assert.equal(v.status, 200, v.text);
-  // review M4: the token comes only with the code exchange; no request that carries just the cookie gets it
-  const s = await request(d.port, { path: '/dashboard/session', headers: { cookie, ...page } });
-  assert.deepEqual([s.status, s.body], [200, { ok: true }]);
-  for (const p of ['/dashboard/settings', '/dashboard/session', '/dashboard/settings/history', '/dashboard/metrics/summary', '/dashboard/metrics/now']) {
-    const r = await request(d.port, { path: p, headers: { cookie } });
-    assert.ok(!r.text.includes(csrf), `${p} must not carry the CSRF token`);
-    assert.ok(!/csrf/i.test(r.text), `${p}: no csrf field`);
-  }
-  assert.ok(!/csrf/i.test(v.text));
-  assert.equal((await request(d.port, { path: '/dashboard/settings', headers: page })).status, 401, 'no session');
-  // the guards on a write
-  const before = fs.readFileSync(path.join(d.home, 'config.json'), 'utf8');
-  assert.equal((await write('config', { set: { stepDown: 'off' } }, { 'x-csrf-token': '' })).status, 403, 'no CSRF token');
-  assert.equal((await write('config', { set: { stepDown: 'off' } }, { 'x-csrf-token': 'x'.repeat(43) })).status, 403, 'a wrong one');
-  assert.equal((await write('config', { set: { stepDown: 'off' } }, { origin: 'https://evil.example' })).status, 403, 'another origin');
-  const noOrigin = { ...page, cookie, 'x-csrf-token': csrf } as Record<string, string>;
-  delete noOrigin.origin;
-  assert.equal((await request(d.port, { method: 'POST', path: '/dashboard/settings/config', headers: noOrigin, body: json({ set: { stepDown: 'off' } }) })).status, 403, 'no Origin');
-  assert.equal((await write('config', { set: { stepDown: 'off' } }, { 'sec-fetch-site': 'cross-site' })).status, 403, 'cross-site');
-  assert.equal((await request(d.port, { method: 'POST', path: '/dashboard/settings/config', headers: { ...page, 'x-csrf-token': csrf }, body: json({ set: { stepDown: 'off' } }) })).status, 401, 'no session');
-  assert.equal((await write('config', { set: { stepDown: 'off' } }, { 'content-type': 'text/plain' })).status, 415);
-  assert.equal(fs.readFileSync(path.join(d.home, 'config.json'), 'utf8'), before, 'nothing written');
-  // a worker-shaped request (no cookie, no CSRF, its own tools' headers) reaches no write
-  assert.equal((await request(d.port, { method: 'POST', path: '/dashboard/settings/role', headers: { 'content-type': 'application/json' }, body: json({ role: 'coder', reset: true }) })).status, 401);
-  // the read-only metrics surface has no write handler
-  assert.equal((await request(d.port, { method: 'POST', path: '/dashboard/metrics/summary', headers: { ...page, cookie, 'x-csrf-token': csrf }, body: '{}' })).status, 405);
-  // valid: written, the router uses it, audited as the dashboard
-  const ok = await write('config', { set: { stepDown: 'off' } });
-  assert.equal(ok.status, 200, ok.text);
-  assert.deepEqual([d.router.status().stepAdjust.down, readAudit(d.home)[0]!.source], ['off', 'dashboard']);
-  // the same invalid input gives the same answer at both front doors
-  const bad = { set: { holdoutRate: 2, 'budgetsUsd.L1': -1 } };
-  const viaDashboard = await write('config', bad);
-  const viaCli = await post(d, '/router/v1/config', bad);
-  assert.deepEqual([viaDashboard.status, viaDashboard.body], [viaCli.status, viaCli.body]);
-  assert.equal(viaCli.status, 400);
-  // bearerApi and recordPrompts are CLI-only: refused here with the reason, the file unchanged
-  const view = (v.body as { config: { keys: Array<{ key: string; cliOnly?: boolean; reason?: string }> } }).config.keys;
-  assert.deepEqual(view.filter(k => k.cliOnly).map(k => [k.key, k.reason]), [['recordPrompts', 'lowers protection; change it with the CLI'], ['bearerApi', 'lowers protection; change it with the CLI']]);
-  const cfgBefore = fs.readFileSync(path.join(d.home, 'config.json'), 'utf8');
-  for (const set of [{ bearerApi: 'on' }, { recordPrompts: true }, { recordPrompts: true, stepDown: 'on' }]) {
-    const r = await write('config', { set });
-    assert.equal(r.status, 400, JSON.stringify(set));
-    assert.match((r.body as { errors: Array<{ message: string }> }).errors[0]!.message, /lowers protection; change it with the CLI/);
-  }
-  assert.equal(fs.readFileSync(path.join(d.home, 'config.json'), 'utf8'), cfgBefore);
-  assert.equal((await post(d, '/router/v1/config', { set: { recordPrompts: true } })).status, 200, 'the CLI may');
-  // a role through the form, and the history
-  assert.equal((await write('role', { role: 'reviewer', fields: { maxTurns: 20 } })).status, 200);
-  assert.equal((await write('role', { role: 'reviewer', fields: { tools: ['Read', 'Agent'] } })).status, 400);
-  const h = await request(d.port, { path: '/dashboard/settings/history', headers: { cookie, ...page } });
-  assert.deepEqual((h.body as { entries: Array<{ kind: string; source: string }> }).entries.map(e => `${e.source}:${e.kind}`), ['dashboard:role', 'cli:config', 'dashboard:config']);
 }));
 
 test('decision 168: a direct write while the daemon is down is what the daemon uses at its next start; the start regenerates the plugin', async () => {

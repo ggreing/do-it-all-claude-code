@@ -13,10 +13,11 @@ import type {
 import type { AcceptSignal } from '@do-it-all-claude-code/core';
 import type { Snapshot } from './git.ts';
 import { LIMITS_SCHEMA } from './limits.ts';
+import type { ReproRecord } from './repro.ts';
 import { scrubProse, scrubStoredPrompts } from './data.ts';
 import { storedPromptKind } from './payload.ts';
 
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 17;
 
 export type RequestStatus = 'open' | 'awaiting_user' | 'closed';
 
@@ -79,6 +80,8 @@ export interface RequestRow extends RequestRecord {
   /** Decision 145: edit calls the lead made itself after the request's first dispatch, and the distinct files. */
   leadEdits: number;
   leadEditFiles: number;
+  /** Decision 175: times the lead's Stop was blocked because a failed coder subtask could still be tried again. */
+  stopBlocks: number;
   /** Decision 117: the lead's model when the request opened (null: not known) and its class. */
   leadModel: string | null;
   leadClass: string | null;
@@ -114,6 +117,8 @@ export interface SubtaskRow extends SubtaskRecord {
   review: SubtaskReview | null;
   /** Protected paths this subtask may edit, granted after a user turn (decision 129); kept across dispatches. */
   protectedGranted: string[];
+  /** Decision 175: whether this subtask must show a failing test first, and what was seen; null when the feature is off. */
+  repro: ReproRecord | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -225,7 +230,8 @@ CREATE TABLE IF NOT EXISTS requests (
   accept_state   TEXT,
   holdout        TEXT,
   lead_edits     INTEGER NOT NULL DEFAULT 0,
-  lead_edit_files TEXT
+  lead_edit_files TEXT,
+  stop_blocks    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS requests_by_session ON requests(session_id, created_at);
 
@@ -249,6 +255,7 @@ CREATE TABLE IF NOT EXISTS subtasks (
   updated_at  TEXT NOT NULL,
   review      TEXT,
   protected_granted TEXT,
+  repro       TEXT,
   PRIMARY KEY (request_id, id)
 );
 CREATE INDEX IF NOT EXISTS subtasks_pending ON subtasks(status, agent_type, dispatch_seq);
@@ -471,6 +478,7 @@ function toRequest(r: Row): RequestRow {
     presetSource: sn(r.preset_source), forcedFrom: sn(r.forced_from) as Level | null,
     leadModel: sn(r.lead_model), leadClass: sn(r.lead_class), holdout: sn(r.holdout) as Holdout | null,
     leadEdits: n(r.lead_edits), leadEditFiles: r.lead_edit_files ? (json<unknown[]>(r.lead_edit_files) ?? []).length : 0,
+    stopBlocks: n(r.stop_blocks),
     replannedFrom: r.replanned_from === null || r.replanned_from === undefined ? null : json<TriageResult>(r.replanned_from),
   };
 }
@@ -485,6 +493,7 @@ function toSubtask(r: Row): SubtaskRow {
     toolUseId: sn(r.tool_use_id), createdAt: s(r.created_at), updatedAt: s(r.updated_at),
     review: r.review === null || r.review === undefined ? null : json<SubtaskReview>(r.review),
     protectedGranted: r.protected_granted === null || r.protected_granted === undefined ? [] : json<string[]>(r.protected_granted),
+    repro: r.repro === null || r.repro === undefined ? null : json<ReproRecord>(r.repro),
   };
 }
 
@@ -588,7 +597,7 @@ export interface RecordRow {
   acceptSignals?: unknown;
 }
 
-export type SubtaskPatch = Partial<Pick<SubtaskRow, 'status' | 'verdict' | 'agentId' | 'upCount' | 'writeScope' | 'review' | 'protectedGranted'>>;
+export type SubtaskPatch = Partial<Pick<SubtaskRow, 'status' | 'verdict' | 'agentId' | 'upCount' | 'writeScope' | 'review' | 'protectedGranted' | 'repro'>>;
 
 export interface SlotRow {
   role: Role; slot: number; step: Step; upCount: number; failStreak: number; leadRaises: number;
@@ -657,6 +666,10 @@ export class Ledger {
     // v14 -> v15 (decision 149): structured verify results; with recordPrompts off a signal keeps its first line only
     const sigCols = (this.db.prepare('PRAGMA table_info(signals)').all() as Row[]).map(r => s(r.name));
     for (const c of ['exit_code', 'duration_ms', 'tests_passed', 'tests_failed']) if (!sigCols.includes(c)) this.db.exec(`ALTER TABLE signals ADD COLUMN ${c} INTEGER`);
+    // v15 -> v16 (decision 175): how often the lead's Stop was blocked for a failed subtask that could be tried again
+    if (!reqCols.includes('stop_blocks')) this.db.exec('ALTER TABLE requests ADD COLUMN stop_blocks INTEGER NOT NULL DEFAULT 0');
+    // v16 -> v17 (decision 175): what a subtask's reproduction test showed
+    if (!subCols.includes('repro')) this.db.exec('ALTER TABLE subtasks ADD COLUMN repro TEXT');
     this.#keepOutput = opts.keepPrompts === true;
     if (!this.#keepOutput) {
       const n = Number(this.db.prepare("UPDATE signals SET detail = substr(detail, 1, instr(detail, char(10)) - 1) WHERE instr(detail, char(10)) > 0").run().changes);
@@ -752,6 +765,11 @@ export class Ledger {
       if (file && !files.includes(file) && files.length < 200) files.push(file);
       this.db.prepare('UPDATE requests SET lead_edits = lead_edits + 1, lead_edit_files = ? WHERE id = ?').run(JSON.stringify(files), requestId);
     });
+  }
+
+  /** Decision 175: one more blocked Stop of the lead for this request. */
+  addStopBlock(requestId: string): void {
+    this.db.prepare('UPDATE requests SET stop_blocks = stop_blocks + 1 WHERE id = ?').run(requestId);
   }
 
   setOutcome(id: string, outcome: RequestOutcome): void {
@@ -1135,6 +1153,7 @@ export class Ledger {
     if (p.writeScope !== undefined) { sets.push('write_scope = ?'); vals.push(JSON.stringify(p.writeScope)); }
     if (p.review !== undefined) { sets.push('review = ?'); vals.push(p.review === null ? null : JSON.stringify(p.review)); }
     if (p.protectedGranted !== undefined) { sets.push('protected_granted = ?'); vals.push(JSON.stringify(p.protectedGranted)); }
+    if (p.repro !== undefined) { sets.push('repro = ?'); vals.push(p.repro === null ? null : JSON.stringify(p.repro)); }
     if (!sets.length) return;
     sets.push('updated_at = ?');
     vals.push(at, requestId, id);

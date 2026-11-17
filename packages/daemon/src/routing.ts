@@ -1,5 +1,5 @@
 // Routing auto-release over the ledger (spec 3.8, decision 138): the two arms per lead class and level, what
-// the rule says about them, and the view the status, the plan and the dashboard show. The rule itself is
+// the rule says about them, and the view the status, the plan and the team office show. The rule itself is
 // core's (release.ts); nothing here writes except applyRelease.
 //
 // Arms. While a level is delegated: the requests the rules or the judge planned at it and a team handled,
@@ -144,7 +144,7 @@ function classView(ledger: Ledger, cfg: RoutingConfig, leadClass: LeadModelClass
   return { leadClass, configuredFrom, autoFrom, effectiveFrom, levels };
 }
 
-/** What the status, router_get_plan and the dashboard show about auto-release. Read-only. */
+/** What the status, router_get_plan and the team office show about auto-release. Read-only. */
 export function routingView(ledger: Ledger, cfg: RoutingConfig, nowIso: string): RoutingView {
   const arms = releaseArms(ledger, nowIso);
   return { mode: routingMode(cfg), holdoutRate: routingHoldoutRate(cfg), rule: RELEASE_RULE, classes: LEAD_CLASSES.map(c => classView(ledger, cfg, c, arms)) };

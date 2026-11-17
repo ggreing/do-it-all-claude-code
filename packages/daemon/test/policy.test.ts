@@ -104,3 +104,30 @@ test('prompt classification (decision Q1: explicit markers; /router level)', () 
   assert.equal(awaitsUser('Done.'), false);
   assert.equal(awaitsUser(undefined), false);
 });
+
+test('decision 178: write scopes overlap unless they part at a fixed directory or file; case does not matter', async () => {
+  const { globsMayMeet, scopesOverlap } = await import('../src/policy.ts');
+  const meet: Array<[string, string]> = [['src/**', 'src/a/**'], ['src/index.ts', 'src/*.ts'], ['**/*.ts', 'lib/x/y.ts'], ['src/a.ts', 'src/a.ts'], ['Src/A/**', 'src/a/b.ts'], ['**', 'docs/**']];
+  const apart: Array<[string, string]> = [['src/a/**', 'src/b/**'], ['src/a.ts', 'src/b/**'], ['src/**', 'test/**'], ['src/a.ts', 'src/b.ts'], ['src/a/*.ts', 'src/b/*.ts']];
+  for (const [a, b] of meet) assert.equal(globsMayMeet(a, b), true, `${a} / ${b}`);
+  for (const [a, b] of apart) assert.equal(globsMayMeet(a, b), false, `${a} / ${b}`);
+  assert.deepEqual(scopesOverlap(['src/api/**', 'docs/api.md'], ['src/web/**', 'docs/**']), ['docs/api.md', 'docs/**']);
+  assert.equal(scopesOverlap(['src/api/**'], ['src/web/**', 'test/web/**']), undefined);
+});
+
+test('decision 178: a writer sent while another runs needs a scope of its own; the reason says what to do', async () => {
+  const { concurrentWriterProblem } = await import('../src/policy.ts');
+  const running = [{ id: 'A', role: 'coder' as const, scope: ['src/api/**'] }];
+  assert.equal(concurrentWriterProblem({ tag: 'B', role: 'coder', scope: ['src/web/**'], isolation: 'worktree', running }), null);
+  const o = concurrentWriterProblem({ tag: 'B', role: 'coder', scope: ['src/**'], isolation: 'worktree', running })!;
+  assert.equal(o.kind, 'overlap');
+  assert.match(o.reason, /subtask B: its write scope overlaps subtask A's, which is still running \("src\/\*\*" and "src\/api\/\*\*"/);
+  assert.match(o.reason, /give the two subtasks scopes that share no file .* or send B after A has finished/);
+  // a disjoint writer without a worktree is not refused: the worktree stays the instruction (decision 83)
+  assert.equal(concurrentWriterProblem({ tag: 'B', role: 'coder', scope: ['src/web/**'], isolation: undefined, running }), null);
+  // not a writer, nothing else running, the same subtask again, or a read-only role running: no problem
+  assert.equal(concurrentWriterProblem({ tag: 'R', role: 'reviewer', scope: ['**'], isolation: undefined, running }), null);
+  assert.equal(concurrentWriterProblem({ tag: 'B', role: 'coder', scope: ['**'], isolation: undefined, running: [] }), null);
+  assert.equal(concurrentWriterProblem({ tag: 'A', role: 'coder', scope: ['src/**'], isolation: undefined, running }), null);
+  assert.equal(concurrentWriterProblem({ tag: 'B', role: 'coder', scope: ['src/**'], isolation: undefined, running: [{ id: 'R', role: 'reviewer', scope: ['**'] }] }), null);
+});

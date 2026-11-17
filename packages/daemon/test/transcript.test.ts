@@ -182,7 +182,7 @@ test('decision 85: a task notification brings the subtask\'s verify result to th
   await post({ hook_event_name: 'SubagentStop', agent_id: 'ag-r', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: false, agent_transcript_path: copyTranscript(d.home, 'ag-r') });
   const passed = await post({ hook_event_name: 'UserPromptSubmit', prompt: notification('ag-r', 12764) });
   assert.equal(passed.hookSpecificOutput?.additionalContext,
-    `[do-it-all-claude-code] subtask A (coder @s1, model=haiku, effort=low): verify passed — scope ok; cost $${FIXTURE_USD.toFixed(4)} (already verified by the router; no need to re-run).`
+    `[do-it-all-claude-code] subtask A (coder @s1, model=haiku, effort=low): verify passed — scope ok; cost $${FIXTURE_USD.toFixed(4)} (verify ran no tests for this change: if the changed code has tests, run those once yourself, a targeted run, not the whole suite).`
     // decision 145: the one tool that matters for a passed writer, by its full name
     + ' If the result is wrong although verify passed, do not fix it yourself: call mcp__plugin_do-it-all-claude-code_router__router_request_escalation (load it with ToolSearch first) for this subtask, then dispatch it again.');
 

@@ -251,8 +251,9 @@ test('pairing by order is repaired from PostToolUse(Agent) when subagents start 
   const cwd = d.home;
   const sid = 'pairs';
   await out(d, prompt(sid, cwd, L1_PROMPT));
-  assert.deepEqual(await out(d, agentCall(sid, cwd, { prompt: '[subtask:A] a', model: 'haiku', effort: 'low' })), {});
-  assert.deepEqual(await out(d, agentCall(sid, cwd, { prompt: '[subtask:B] b', model: 'haiku', effort: 'low' })), {});   // L1: lead may add a 2nd coder (slot 1)
+  // two coders at once need disjoint scopes (decision 178)
+  assert.deepEqual(await out(d, agentCall(sid, cwd, { prompt: '[subtask:A] a\n[scope: src/a/**]', model: 'haiku', effort: 'low' })), {});
+  assert.deepEqual(await out(d, agentCall(sid, cwd, { prompt: '[subtask:B] b\n[scope: src/b/**]', model: 'haiku', effort: 'low' })), {});   // L1: lead may add a 2nd coder (slot 1)
   const start = (agentId: string) => ({ ...base(sid, cwd), hook_event_name: 'SubagentStart', agent_id: agentId, agent_type: 'do-it-all-claude-code:coder' });
   await Promise.all([out(d, start('ag-1')), out(d, start('ag-2'))]);
   const bound = Object.fromEntries(rows(d, 'SELECT id, agent_id FROM subtasks').map(r => [r.id, r.agent_id]));

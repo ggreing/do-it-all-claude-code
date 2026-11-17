@@ -120,7 +120,7 @@ non-interactively from a script on all three systems, and what they print when C
 | | A. One bundled package | B. Publish all packages | C. One package, compiled without a bundler |
 |---|---|---|---|
 | What is published | `do-it-all-claude-code` only | It plus four scoped packages | `do-it-all-claude-code` only |
-| Build | Bundle the CLI, daemon and proxy entries to a few `.js` files; copy `plugin/` and the dashboard build | `tsc` per package | `tsc`, then rewrite the internal package imports to relative paths with a script of our own |
+| Build | Bundle the CLI, daemon and proxy entries to a few `.js` files; copy `plugin/` (the dashboard build was copied too until decision 183 removed the dashboard) | `tsc` per package | `tsc`, then rewrite the internal package imports to relative paths with a script of our own |
 | Runtime dependencies | None (zod and yaml are bundled) | zod, yaml | zod, yaml |
 | npm setup | One name | An npm organization for the scope; five trusted-publisher entries; versions in lockstep | One name |
 | New build dependency | A bundler (see below) | None | None |

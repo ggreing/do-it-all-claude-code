@@ -43,6 +43,9 @@ export const VERIFY_NOTE = 'These commands run on your machine, as you, when a s
 export const EFFECTIVE_PLUGIN_DIR = 'plugin';
 export const ROLE_OVERRIDES_DIR = 'roles';
 export const GENERATED_STAMP = '.generated.json';
+/** The CLI registers the generated plugin folder as a local marketplace by writing this manifest inside it; the
+ *  generator keeps it (it is not a template file) so a regenerate/reload does not remove the install. */
+export const MARKETPLACE_MANIFEST = '.claude-plugin/marketplace.json';
 export const effectivePluginDir = (home: string): string => path.join(home, EFFECTIVE_PLUGIN_DIR);
 export const roleOverrideFile = (home: string, role: string): string => path.join(home, ROLE_OVERRIDES_DIR, `${role}.json`);
 export const isRoleName = (v: unknown): v is Role => typeof v === 'string' && (ROLE_NAMES as readonly string[]).includes(v);
@@ -169,28 +172,6 @@ export function applyRoleOverride(template: string, o: RoleOverride | null): str
   if (f.maxTurns !== undefined) doc.set('maxTurns', f.maxTurns);
   if (f.verify) doc.setIn(['x-router', 'verify'], doc.createNode(f.verify));
   return `---\n${doc.toString({ lineWidth: 0 }).replace(/\n+$/, '')}\n---\n${f.body ?? s.body}`;
-}
-
-/**
- * Partial fields (the dashboard's form) put into a role's current text. Keys: description, tools (a list or a comma
- * string), model, effort, maxTurns, x-router.verify, body; anything else is refused.
- */
-export function textWithFields(current: string, fields: unknown): string {
-  if (!isObject(fields) || !Object.keys(fields).length) throw new SettingsRejected([{ path: 'fields', message: 'nothing to change' }]);
-  const s = splitRole(current);
-  if (!s) throw new SettingsRejected([{ path: 'front matter', message: 'the current file has no front matter' }]);
-  const doc = parseDocument(s.fm);
-  let body = s.body;
-  const errors: SettingsError[] = [];
-  for (const [k, v] of Object.entries(fields)) {
-    if (k === 'body') { if (typeof v === 'string') body = normalizeText(v); else errors.push({ path: 'body', message: 'must be text' }); }
-    else if (k === 'x-router.verify') doc.setIn(['x-router', 'verify'], doc.createNode(v));
-    else if (k === 'tools') doc.set('tools', Array.isArray(v) ? v.map(String).join(', ') : v);
-    else if ((EDITABLE_ROLE_KEYS as readonly string[]).includes(k)) doc.set(k, v);
-    else errors.push({ path: k, message: (LOCKED_ROLE_KEYS as readonly string[]).includes(k) || k === 'x-router.role' ? `locked (${LOCKED_REASONS[k]})` : 'not a field a router role may set' });
-  }
-  if (errors.length) throw new SettingsRejected(errors);
-  return `---\n${doc.toString({ lineWidth: 0 }).replace(/\n+$/, '')}\n---\n${body}`;
 }
 
 /** The shape of an override's fields (review L1): a file that does not match is refused for its role alone. */
@@ -353,7 +334,7 @@ export function generateEffectivePlugin(home: string, templateDir: string, now =
   const keepDirs = new Set<string>();
   for (const rel of want.keys()) { const parts = rel.split('/'); for (let i = 1; i < parts.length; i++) keepDirs.add(parts.slice(0, i).join('/')); }
   const removed: string[] = [];
-  prune(dir, '', new Set([...want.keys(), GENERATED_STAMP]), keepDirs, removed);
+  prune(dir, '', new Set([...want.keys(), GENERATED_STAMP, MARKETPLACE_MANIFEST]), keepDirs, removed);
   const written: string[] = [];
   for (const [rel, content] of want) {
     const parts = rel.split('/');
@@ -447,10 +428,10 @@ export function rolesView(home: string, templateDir: string | undefined, pluginD
 }
 
 /**
- * Validate, store, regenerate, audit: one role. `text` (a whole file) or `fields` (a partial), or `reset` (back to the
- * template). Needs an install made by this release's init (`templateDir`).
+ * Validate, store, regenerate, audit: one role. `text` (the whole file), or `reset` (back to the template).
+ * Needs an install made by this release's init (`templateDir`).
  */
-export function applyRoleChange(home: string, templateDir: string | undefined, input: { role?: unknown; text?: unknown; fields?: unknown; reset?: unknown; revision?: unknown },
+export function applyRoleChange(home: string, templateDir: string | undefined, input: { role?: unknown; text?: unknown; reset?: unknown; revision?: unknown },
   source: SettingsSource, now = new Date()): WriteResult & { generated: GenerateResult } {
   if (!isRoleName(input.role)) throw new SettingsRejected([{ path: 'role', message: `must be one of ${ROLE_NAMES.join(', ')}` }]);
   const role = input.role;
@@ -464,9 +445,8 @@ export function applyRoleChange(home: string, templateDir: string | undefined, i
   checkRevision(input.revision, current);
   let next: RoleOverride | null = null;
   if (input.reset !== true) {
-    const text = typeof input.text === 'string' ? normalizeText(input.text)
-      : input.fields !== undefined ? textWithFields(current, input.fields)
-      : (() => { throw new SettingsRejected([{ path: 'text', message: 'send the role file (text), the fields to change, or reset' }]); })();
+    if (typeof input.text !== 'string') throw new SettingsRejected([{ path: 'text', message: 'send the role file (text) or reset' }]);
+    const text = normalizeText(input.text);
     const errors = roleFloorProblems(text, role, template);
     if (errors.length) throw new SettingsRejected(errors);
     next = overrideFromText(role, text, template);

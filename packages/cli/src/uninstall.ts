@@ -20,6 +20,8 @@ export interface UninstallDeps {
   stop(): Promise<string>;
   keyStatus(): Promise<string>;
   deleteKey(): Promise<void>;
+  /** Removes the plugin and its local marketplace from Claude Code (injected so tests stub the `claude` calls). */
+  pluginUninstall?(): Promise<void>;
   ask(question: string): Promise<boolean>;
   isTTY: boolean;
   out(line: string): void;
@@ -160,6 +162,7 @@ export async function uninstall(f: Record<string, string | boolean>, d: Uninstal
   if (key !== 'present' && key !== 'not_found' && key !== 'kept') d.out(`The OS keychain could not be checked (${key}): an API key may remain in it under "do-it-all-claude-code".`);
   d.out('do-it-all-claude-code uninstall will:');
   d.out('  - stop the daemon and the proxy');
+  if (d.pluginUninstall) d.out('  - remove the plugin and its local marketplace from Claude Code');
   for (const c of changes) d.out(`  - ${c.file}: ${c.summary}`);
   if (key === 'present') d.out('  - delete the API key from the OS keychain (--keep-key keeps it)');
   d.out(`Your router data stays in ${routerHome()}: \`do-it-all-claude-code data purge --all\` empties it, then delete the folder.`);
@@ -168,6 +171,9 @@ export async function uninstall(f: Record<string, string | boolean>, d: Uninstal
     if (!await d.ask('Uninstall? [y/N] ')) { d.out('Nothing changed.'); return 1; }
   }
   d.out(await d.stop());
+  if (d.pluginUninstall) {
+    try { await d.pluginUninstall(); } catch (e) { d.out(`Could not remove the plugin from Claude Code (${(e as Error).message}); remove it with \`claude plugin uninstall do-it-all-claude-code\`.`); }
+  }
   for (const c of changes) {
     try { c.apply(); } catch (e) { d.out(`Could not change ${c.file}: ${(e as Error).message}`); }
   }
@@ -175,6 +181,8 @@ export async function uninstall(f: Record<string, string | boolean>, d: Uninstal
     try { await d.deleteKey(); d.out('API key deleted from the OS keychain.'); }
     catch (e) { d.out(`The API key could not be deleted (${(e as Error).message}); remove it with the keychain tool.`); }
   }
-  d.out('Done. Restart running Claude Code sessions; to remove the plugin, stop loading it (--plugin-dir) or uninstall it in Claude Code.');
+  d.out(d.pluginUninstall
+    ? 'Done. Restart running Claude Code sessions.'
+    : 'Done. Restart running Claude Code sessions; to remove the plugin, stop loading it (--plugin-dir) or uninstall it in Claude Code.');
   return 0;
 }

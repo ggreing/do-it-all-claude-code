@@ -1,6 +1,6 @@
-// Read-only metrics read-model for the local dashboard (spec 2.2, 3.7, 3.8; decision 132).
+// Read-only metrics read-model (spec 2.2, 3.7, 3.8; decision 132): what the team office's History, Cost and Routing tabs show.
 // Pure queries over the ledger's request_records / costs / signals — no writes, no HTTP. The daemon's
-// dashboard routes call these and serialise the result; keeping them here makes the KPI math,
+// metrics routes (metrics-routes.ts) call these and serialise the result; keeping them here makes the KPI math,
 // keyset pagination and masking unit-testable against an in-memory Ledger with no server.
 //
 // Success (decision 137): the verify outcome, unless the request was seen not to be accepted by the user
@@ -22,7 +22,7 @@ function parse<T>(v: unknown, fallback: T): T {
   try { return JSON.parse(String(v)) as T; } catch { return fallback; }
 }
 
-/** The shape of the T7 `record` blob (packages/daemon/src/router.ts); only the fields the dashboard reads. */
+/** The shape of the T7 `record` blob (packages/daemon/src/router.ts); only the fields the metrics read. */
 interface RecordBlob {
   triage?: { kind?: string | null; level?: Level; confidence?: number; source?: string; rule?: string | null };
   plan?: { manualLevel?: Level | null; replannedFrom?: Level | null; leadClass?: string | null; forcedFrom?: Level | null; holdout?: string | null };
@@ -237,7 +237,7 @@ export interface RequestDetail {
 
 /** One request's full T7 record plus its verify/review signals, masked. `null` when the request is unknown. */
 /**
- * One request for the dashboard. The stored prompt is returned only while recordPrompts is on now (decision 142:
+ * One request, in detail. The stored prompt is returned only while recordPrompts is on now (decision 142:
  * turning the option off hides what was kept), masked with the token values too.
  */
 export function metricsRequestDetail(ledger: Ledger, requestId: string, o: { includePrompt?: boolean; secrets?: string[] } = {}): RequestDetail | null {

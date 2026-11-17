@@ -1,5 +1,5 @@
-// Decision 168: the one validated write core for settings, shared by both front doors (the daemon's sealed routes
-// for the CLI and its dashboard routes) and by the CLI when the daemon is down: config.json and teams.yaml here,
+// Decision 168: the one validated write core for settings, used by the daemon's sealed routes (the CLI's front
+// door) and by the CLI itself when the daemon is down: config.json and teams.yaml here,
 // the role overrides in role-overrides.ts. Every change is validated and rejected as a whole (never clamped; the
 // previous content stays), written atomically (temp file + rename, 0600), and logged as one audit line of what
 // changed (values redacted; free text only as "changed"). The audit line is written before the change itself, and a
@@ -34,7 +34,10 @@ export class SettingsRejected extends Error {
   }
 }
 
-export type SettingsSource = 'cli' | 'cli-direct' | 'dashboard';
+/** Who writes a setting: the CLI through the daemon, or the CLI itself while the daemon is down. */
+export type SettingsSource = 'cli' | 'cli-direct';
+/** In the history, also the browser dashboard of releases before 0.5.0 (decision 183 removed it; its lines stay readable). */
+export type AuditSource = SettingsSource | 'dashboard';
 export interface WriteResult { ok: true; changed: string[]; nextStart: string[]; notes: string[] }
 
 const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -95,7 +98,7 @@ export function issuePath(p: ReadonlyArray<PropertyKey>, prefix = ''): string {
 
 export interface AuditChange { path: string; from?: unknown; to?: unknown; changed?: true }
 export interface AuditEntry {
-  at: string; source: SettingsSource; kind: 'config' | 'presets' | 'role'; target?: string; changes: AuditChange[];
+  at: string; source: AuditSource; kind: 'config' | 'presets' | 'role'; target?: string; changes: AuditChange[];
   /** Ties a change to its failure line. */
   id?: string;
   /** Set by readAudit when the write after the line failed: the change did not apply. */
@@ -185,9 +188,11 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: 'autoRelease', type: 'enum', options: ['on', 'observe', 'off'], default: DEFAULT_AUTO_RELEASE, appliesAt: 'now', description: 'Hand a delegated level back to the lead when its teams cost more per accepted task (observe only reports)' },
   { key: 'holdoutRate', type: 'number', min: 0, max: MAX_HOLDOUT_RATE, default: DEFAULT_HOLDOUT_RATE, appliesAt: 'now', description: 'The share of delegated-level requests the lead handles alone, as the baseline for auto-release' },
   { key: 'stepDown', type: 'enum', options: ['on', 'off'], default: 'on', appliesAt: 'now', description: 'Move a slot one step down after two easy passes in a row' },
+  { key: 'reproduceFirst', type: 'enum', options: ['on', 'observe', 'off'], default: 'off', appliesAt: 'now', description: 'A coder first writes a test that fails, which the router runs before and after the change (observe records and blocks nothing; subtasks dispatched after the change)' },
   { key: 'recordPrompts', type: 'boolean', default: false, appliesAt: 'next start', description: 'Keep a redacted copy of each prompt in its request record (switching it off deletes them at the next start)' },
   { key: 'eventRetentionDays', type: 'integer', min: 0, max: MAX_EVENT_RETENTION_DAYS, default: DEFAULT_EVENT_RETENTION_DAYS, appliesAt: 'next start', description: 'Days hook events are kept (0 keeps them)' },
   { key: 'updateCheck', type: 'enum', options: ['on', 'off'], default: 'off', appliesAt: 'now', description: 'Check GitHub once a day for a newer release (only reads the public release list)' },
+  { key: 'office', type: 'enum', options: ['on', 'off'], default: 'on', appliesAt: 'now', description: 'Show the team office panel in Claude Code (/office; sessions started after the change)' },
   { key: 'forceLevel', type: 'enum', options: LEVELS, default: null, appliesAt: 'now', advanced: true, description: 'Benchmarks and debugging only: plan every new request at this level' },
   { key: 'fableOptIn', type: 'boolean', default: false, appliesAt: 'now', advanced: true, description: 'Let the ladder go up to the Fable step' },
   { key: 'bearerApi', type: 'enum', options: ['on', 'off'], default: 'off', appliesAt: 'next start', advanced: true, deprecated: true, description: 'Deprecated, to be removed: let the daemon accept the token as a Bearer header' },
@@ -208,11 +213,6 @@ export const MANAGED_CONFIG_KEYS: Readonly<Record<string, string>> = {
   localTls: 'kept by `mode api`',
 };
 
-/** Settings the dashboard may show but not change: each lowers the router's protection when switched (decision 168 review). */
-export const CLI_ONLY_CONFIG_KEYS: Readonly<Record<string, string>> = {
-  bearerApi: 'lowers protection; change it with the CLI',
-  recordPrompts: 'lowers protection; change it with the CLI',
-};
 /** Never a config key, whatever a file says (review L7: these would reach the prototype). */
 const RESERVED_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
 const own = (o: Record<string, unknown>, k: string): unknown => (Object.hasOwn(o, k) ? o[k] : undefined);
@@ -334,10 +334,10 @@ export function parseConfigInput(p: string, text: string): unknown {
   return text;
 }
 
-export interface ConfigKeyView extends ConfigKeySpec { value: unknown; set: boolean; cliOnly?: true; reason?: string }
+export interface ConfigKeyView extends ConfigKeySpec { value: unknown; set: boolean }
 export interface ConfigView { revision: string; keys: ConfigKeyView[]; managed: Array<{ key: string; reason: string }> }
 
-/** Each setting with its effective value (the default where it is not set); the CLI-only ones marked with the reason. */
+/** Each setting with its effective value (the default where it is not set). */
 export function configView(text: string | null): ConfigView {
   let cur: Record<string, unknown> = {};
   try { const j = text ? JSON.parse(text) as unknown : {}; if (isObject(j)) cur = j; } catch { /* shown as defaults */ }
@@ -345,8 +345,7 @@ export function configView(text: string | null): ConfigView {
     const raw = own(cur, s.key);
     const set = raw !== undefined;
     const value = s.type === 'levels' || s.type === 'byLeadClass' ? { ...(s.default as object), ...(isObject(raw) ? raw as object : {}) } : set ? raw : s.default;
-    const cli = Object.hasOwn(CLI_ONLY_CONFIG_KEYS, s.key) ? { cliOnly: true as const, reason: CLI_ONLY_CONFIG_KEYS[s.key]! } : {};
-    return { ...s, value, set, ...cli };
+    return { ...s, value, set };
   });
   return { revision: revisionOf(text), keys, managed: Object.entries(MANAGED_CONFIG_KEYS).map(([key, reason]) => ({ key, reason })) };
 }
@@ -370,10 +369,6 @@ export function applyConfigChange(home: string, input: { set?: unknown; replace?
   const { next, changes } = input.replace !== undefined ? validateConfigReplace(current, input.replace) : validateConfigSet(current, input.set);
   if (!changes.length) return { ok: true, changed: [], nextStart: [], notes: ['no change'], config: current };
   const keys = [...new Set(changes.map(c => c.path.split('.')[0]!))];
-  if (source === 'dashboard') {
-    const locked = keys.filter(k => Object.hasOwn(CLI_ONLY_CONFIG_KEYS, k));
-    if (locked.length) throw new SettingsRejected(locked.map(k => ({ path: k, message: `locked here (${CLI_ONLY_CONFIG_KEYS[k]})` })));
-  }
   auditedWrite(home, { at: now.toISOString(), source, kind: 'config', changes }, () => writeFileAtomic(configFile(home), JSON.stringify(next, null, 2) + '\n'));
   const nextStart = keys.filter(k => SPEC.get(k)?.appliesAt === 'next start');
   const notes = next.bearerApi === 'on' && current.bearerApi !== 'on' ? ['bearerApi is deprecated and will be removed: the router\'s own clients do not need it'] : [];

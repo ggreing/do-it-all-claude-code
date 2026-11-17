@@ -43,7 +43,7 @@ project names, tokens or API keys. The output can contain file paths from your m
 
 ## Logs or screenshots
 
-Any relevant log lines (also masked) or screenshots. The dashboard and the proxy log already mask keys and tokens, but check before pasting.
+Any relevant log lines (also masked) or screenshots. The team office and the proxy log already mask keys and tokens, but check before pasting.
 
 ## Additional context
 

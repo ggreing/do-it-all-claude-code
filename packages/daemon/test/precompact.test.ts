@@ -28,14 +28,14 @@ test('guidance keeps level, subtasks with step/status/scope, the unfinished ones
     tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work${scope ? `\n[scope: ${scope}]` : ''}`, model: 'haiku', effort: 'low' } });
   await agent('A', 'src/a/**, test/a/**');
   await post({ hook_event_name: 'SubagentStart', agent_id: 'ag-a', agent_type: 'do-it-all-claude-code:coder' });
-  await agent('B');
+  await agent('B', 'docs/**');   // a second writer while A runs: its own scope (decision 178)
 
   const text = await preCompact();
   const lines = text.split('\n');
   assert.equal(lines[0], 'Do It All Claude Code: keep this team state in the compacted summary.');
   assert.match(text, /- Request r-[\w-]+: level L1 \(source=rule\), preset L1, budget \$2, spent \$0\.0000\./);
   assert.ok(lines.includes('  - A: coder#0 @s1 (model=haiku, effort=low) running; scope: src/a/**, test/a/**'), text);
-  assert.ok(lines.includes('  - B: coder#1 @s1 (model=haiku, effort=low) pending; scope: whole repo'), text);
+  assert.ok(lines.includes('  - B: coder#1 @s1 (model=haiku, effort=low) pending; scope: docs/**'), text);
   assert.match(text, /- Unfinished: A, B\./);
   assert.match(text, /first line \[subtask:<ID>\], second line \[scope: <glob>, <glob>\]/);
 

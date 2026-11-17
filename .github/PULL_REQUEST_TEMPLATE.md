@@ -1,5 +1,5 @@
 <!--
-Use a Conventional Commits PR title (e.g. `feat(dashboard): add routing panel`, `fix(daemon): …`).
+Use a Conventional Commits PR title (e.g. `feat(office): add routing tab`, `fix(daemon): …`).
 PRs are squash-merged, so the title becomes the commit message. See CONTRIBUTING.md.
 -->
 
@@ -13,7 +13,6 @@ Before every PR (see CONTRIBUTING.md):
 
 - [ ] `npm test` passes (the whole suite is green).
 - [ ] `npx tsc -b` passes.
-- [ ] `npm run build:dashboard` passes (the dashboard type-check and build).
 - [ ] Behavior changes come with unit tests.
 
 If this PR changes the **subagent guard** (`plugin/hooks/guard.mjs`, `plugin/hooks/hooks.json`, the scope records, or `plugin/agents/`):

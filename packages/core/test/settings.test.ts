@@ -35,6 +35,9 @@ test('decision 168: config set validates every key and rejects the whole change 
   assert.match(e.errors.find(x => x.path === 'apiMode')!.message, /changed with `do-it-all-claude-code mode`: not editable here/);
   assert.match(e.errors.find(x => x.path === 'budgetsUsd.L2')!.message, /above 0/);
   assert.equal(rejected(() => validateConfigSet(cur, {})).errors[0]!.path, 'set');
+  // decision 175: reproduce first is a setting (on, observe, off)
+  assert.equal(validateConfigSet(cur, { reproduceFirst: 'observe' }).next.reproduceFirst, 'observe');
+  assert.match(rejected(() => validateConfigSet(cur, { reproduceFirst: 'yes' })).errors[0]!.message, /one of on, observe, off/);
   // typed input from the command line
   assert.deepEqual([parseConfigInput('holdoutRate', '0.1'), parseConfigInput('recordPrompts', 'on'), parseConfigInput('budgetsUsd', '{"L2":7}'), parseConfigInput('forceLevel', 'default'), parseConfigInput('holdoutRate', 'lots')],
     [0.1, true, { L2: 7 }, null, 'lots']);
@@ -90,8 +93,8 @@ test('decision 168: a crash between writing the new file and putting it in place
 test('decision 168: a stale revision is refused (409); the current one goes through', () => {
   const rev = configView(cfgText()).revision;
   assert.equal(rev, revisionOf(cfgText()));
-  applyConfigChange(home, { set: { stepDown: 'off' }, revision: rev }, 'dashboard');
-  const e = rejected(() => applyConfigChange(home, { set: { stepDown: 'on' }, revision: rev }, 'dashboard'));
+  applyConfigChange(home, { set: { stepDown: 'off' }, revision: rev }, 'cli');
+  const e = rejected(() => applyConfigChange(home, { set: { stepDown: 'on' }, revision: rev }, 'cli'));
   assert.deepEqual([e.status, e.errors[0]!.path], [409, 'revision']);
 });
 

@@ -77,7 +77,9 @@ export interface RouterConfig {
   forceLevel?: Level;        // benchmarks / debugging only (decision 107): plan every new request at this level
   recordPrompts?: boolean;   // decision 109: store redacted prompt text in request records (opt-in; default false)
   stepDown?: 'on' | 'off';   // decision 135: two easy passes in a row move a slot one step down (default on)
+  reproduceFirst?: 'on' | 'observe' | 'off';   // decision 175: a coder shows a failing test before its change (default off until measured)
   updateCheck?: 'on' | 'off';   // decision 163: check GitHub once a day for a newer release (opt-in; missing = off)
+  office?: 'on' | 'off';        // decision 186: the team office panel in Claude Code (missing = on)
   autoRelease?: 'on' | 'observe' | 'off';   // decision 138: default observe (holdout runs and the comparison is shown; nothing switches)
   holdoutRate?: number;      // decision 138: share of delegated-level requests handled lead-direct as the baseline, 0 to 0.2 (default 0.1)
   eventRetentionDays?: number;   // decision 141: hook events older than this are dropped (default 30; 0 keeps them)

@@ -1,0 +1,28 @@
+{
+  // The team office's hooks module under the root `tsc -b`, against claude-code.d.ts beside this file (decision
+  // 186 ④). The options are the ones the engine gives a hooks module: no Node, no DOM, classic JSX on `h`.
+  // The kit's tests (plugin/office/test) run under `claude plugin test` and are not checked here.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "types": [],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "jsx": "react",
+    "jsxFactory": "h",
+    "jsxFragmentFactory": "Fragment",
+    "composite": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "../..",
+    "outDir": "dist",
+    "skipLibCheck": true
+  },
+  "include": [
+    "claude-code.d.ts",
+    "../../plugin/office/*.ts",
+    "../../plugin/office/*.tsx",
+    "../../plugin/types/*.d.ts"
+  ]
+}

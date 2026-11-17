@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { GENERATED_STAMP, ROLE_NAMES, expectedRole, paths, pluginRoleProblems, readText, routerHome, templateHash } from '@do-it-all-claude-code/core';
 import { keyStatus, noProxyCovers, shownProxyUrl, splitNoProxy, upstreamProxy, type VaultErrorCode } from '@do-it-all-claude-code/proxy';
-import { HINT_HEADERS_ENV, claudeCodeProxy, isRouterHelper, proxyBaseUrl, uncoveredNoProxy } from './apimode.ts';
+import { HINT_HEADERS_ENV, claudeCodeProxy, isRouterHelper, proxyBaseUrl, staleHelpers, uncoveredNoProxy } from './apimode.ts';
 import { SettingsParseError, backupCredentials, backupFile, defaultClaudeSettings, promptStorageSummary, readConfig, readJsonFile, type CliConfig } from './setup.ts';
 import { daemonIdentity, daemonRequest, otherOnPort } from './daemonctl.ts';
 import { portOwner } from './portowner.ts';
@@ -20,7 +20,7 @@ import { updateCheckLine } from './update.ts';
 
 export interface Check { name: string; ok: boolean; detail: string; blocking: boolean }
 
-export const MIN_CLAUDE = [2, 1, 295] as const;   // per-call effort (2.1.292), hook onFailure (2.1.295)
+export const MIN_CLAUDE = [2, 1, 325] as const;   // decision 186: the team office (plugin/office, OFFICE_MIN_CLAUDE) needs 2.1.325 (earlier floors: per-call effort 2.1.292, hook onFailure 2.1.295)
 
 export function versionAtLeast(v: string, min: readonly number[]): boolean {
   const m = v.match(/(\d+)\.(\d+)\.(\d+)/);
@@ -28,6 +28,18 @@ export function versionAtLeast(v: string, min: readonly number[]): boolean {
   const n = [Number(m[1]), Number(m[2]), Number(m[3])];
   for (let i = 0; i < 3; i++) if (n[i] !== min[i]) return n[i]! > min[i]!;
   return true;
+}
+
+/**
+ * The installed Claude Code version string ("" when it is not found), so init and doctor read it the same way.
+ * On Windows an npm-installed `claude` is a .cmd shim, which execFile cannot start without a shell (review #8);
+ * the command line is fixed (no user input), so shell:true is safe here.
+ */
+export function installedClaudeVersion(): string {
+  try {
+    const o = { encoding: 'utf8' as const, timeout: 20000, windowsHide: true };
+    return (process.platform === 'win32' ? execSync('claude --version', o) : execFileSync('claude', ['--version'], o)).trim();
+  } catch { return ''; }   // not installed
 }
 
 /** Settings that silently disable the ladder or the plugin's hooks. Pure: takes env for testing. */
@@ -332,13 +344,7 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Chec
   const checks: Check[] = [];
   const node = process.versions.node;
   checks.push({ name: 'node', ok: Number(node.split('.')[0]) >= 24, blocking: true, detail: node });
-  let claude = '';
-  // On Windows an npm-installed claude is a .cmd shim, which execFile cannot start without a shell (review #8).
-  // The command line is fixed (no user input), so shell:true is safe here.
-  try {
-    const o = { encoding: 'utf8' as const, timeout: 20000, windowsHide: true };
-    claude = (process.platform === 'win32' ? execSync('claude --version', o) : execFileSync('claude', ['--version'], o)).trim();
-  } catch { /* not installed */ }
+  const claude = installedClaudeVersion();
   checks.push({ name: 'claude code', ok: versionAtLeast(claude, MIN_CLAUDE), blocking: true, detail: claude || 'not found' + ` (need >= ${MIN_CLAUDE.join('.')})` });
   const cfg = readConfig();
   checks.push({ name: 'init', ok: !!cfg && fs.existsSync(paths.token()), blocking: true, detail: cfg ? `port ${cfg.daemonPort}` : 'run do-it-all-claude-code init' });
@@ -371,16 +377,11 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Chec
   if (cfg) checks.push({ name: 'prompt text', ok: true, blocking: false, detail: promptStorageSummary(cfg.recordPrompts) });   // decision 142
   if (cfg) checks.push(updateCheckLine(cfg));   // decision 163
   if (cfg) checks.push(effectivePluginCheck(cfg));   // decision 168
+  // review L3: a packaged install copies the apiKeyHelpers into the router home; warn if a copy drifted from the
+  // installed one (a Node-version change, say). `start` refreshes them. [] in the workspace.
+  if (cfg) for (const h of staleHelpers()) checks.push({ name: `apiKeyHelper (${h})`, ok: false, blocking: false, detail: 'the router-home copy differs from the installed one: run do-it-all-claude-code start to refresh it' });
   const bearer = cfg ? bearerApiCheck(cfg) : null;   // decision 164
   if (bearer) checks.push(bearer);
-  // audit C6: the dashboard is served from its build; the router works without it (loaded here only, so other
-  // commands do not load the daemon)
-  try {
-    const { DEFAULT_DASHBOARD_DIST } = await import('@do-it-all-claude-code/daemon');
-    const built = fs.existsSync(path.join(DEFAULT_DASHBOARD_DIST, 'index.html'));
-    checks.push({ name: 'dashboard assets', ok: built, blocking: false,
-      detail: built ? 'built' : 'not built: run `npm run build:dashboard` (the dashboard serves a build page until then)' });
-  } catch { /* the daemon package is not installed next to the CLI */ }
   // decision 142: the current repository's policy counts only once accepted
   try {
     const guard = await loadGuard(cfg?.pluginDir);

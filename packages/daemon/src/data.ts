@@ -216,7 +216,7 @@ export function pruneEvents(db: DatabaseSync, days: number, nowIso: string): num
 
 // ------------------------------------------------------------------ decision 142: purge --all, the files
 
-/** The router home's folders that purge --all clears; `root` adds limits-cache/ and the dashboard launch page. */
+/** The router home's folders that purge --all clears; `root` adds limits-cache/ and a dashboard launch page left by a release before 0.5.0. */
 export interface DataHome { spoolDir: string; scopesDir: string; agentsDir: string; logsDir: string; root?: string }
 
 /** Sessions with an open request or one awaiting the user: purge and retention leave everything of them alone. */
@@ -227,7 +227,7 @@ export function liveSessions(db: DatabaseSync): Set<string> {
 /**
  * The files `purge --all` clears: the spool; the scope, agent and limits-cache files of sessions that are not
  * live (the guard reads those of running subagents); the logs (current ones truncated, since the daemon and the
- * proxy keep them open; rotated ones deleted); the dashboard launch page. A link or junction is never followed or
+ * proxy keep them open; rotated ones deleted); a dashboard launch page left by a release before 0.5.0 (it held a one-time code). A link or junction is never followed or
  * removed (audit C5): only regular files directly in these folders count. Counts per kind; with dryRun only counts.
  */
 export function purgeFiles(home: DataHome, live: ReadonlySet<string>, dryRun = false): Record<string, number> {

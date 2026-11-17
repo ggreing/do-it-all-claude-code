@@ -71,7 +71,7 @@ function readIfExists(file: string): string | undefined {
 // ------------------------------------------------------------------ entries (project file and role file)
 
 type Item = string | { kind?: SignalKind; command: string; timeoutMs?: number; ifExists?: string; ifMissing?: string; ifAnyExists?: string[] };
-const KINDS: readonly SignalKind[] = ['build', 'typecheck', 'lint', 'test', 'scope', 'review', 'error_repeat', 'max_turns', 'tool_error'];
+const KINDS: readonly SignalKind[] = ['build', 'typecheck', 'lint', 'test', 'scope', 'repro', 'review', 'error_repeat', 'max_turns', 'tool_error'];
 
 /** `{ "<role>": Item[], "*": Item[] }`; the role's own list wins over "*". Undefined when neither is present. */
 export function projectCommands(doc: unknown, role: Role): VerifyCommand[] | undefined {

@@ -2,20 +2,20 @@
 //   node scripts/e2e.ts --auth subscription            (uses the logged-in account; consumes usage limits)
 //   node scripts/e2e.ts --auth api-key --api-key-helper "<keychain cmd>"   (API key, --bare)
 //   add --scenarios E1,E2,E3 to pick rounds 1-4, --model sonnet for the lead (default sonnet)
-// Integration round 5 (acceptance, auto-release, router MCP tools, dashboard):
-//   node scripts/e2e.ts --round5 --auth subscription          (runs R1-R6 then the R7 dashboard check)
+// Integration round 5 (acceptance, auto-release, router MCP tools, the metrics routes):
+//   node scripts/e2e.ts --round5 --auth subscription          (runs R1-R6 then the R7 metrics check)
 //   node scripts/e2e.ts --round5 --only R1,R3 --auth subscription
 //   node scripts/e2e.ts --round5 --dry-run                    (prints the plan + estimated usage; no claude)
-//   --no-dashboard skips R7. Per-scenario summaries and round5-summary.json are written to the temp dir.
+//   --no-metrics skips R7. Per-scenario summaries and round5-summary.json are written to the temp dir.
 // Everything runs in a temp DO_IT_ALL_CLAUDE_CODE_HOME and temp repositories; the user's ~/.claude is
 // never modified (init writes the status line into a temp settings file).
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { sealedCall } from '../packages/core/src/seal.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce<string[][]>((a, x, i, arr) => (x.startsWith('--') ? [...a, [x.slice(2), arr[i + 1] && !arr[i + 1]!.startsWith('--') ? arr[i + 1]! : 'true']] : a), []));
@@ -59,7 +59,7 @@ function repoFrom(fixture: string, name: string): string {
 export const ALLOW_TOOLS = [
   'Agent',                                   // the lead delegates to subagents
   'mcp__plugin_do-it-all-claude-code_router__*',    // router MCP tools: the lead MAY call them (R5 observes; never forced)
-  // build / test / typecheck — what a worker runs to verify; dashboard R7 build is `npm run build`
+  // build / test / typecheck — what a worker runs to verify
   'Bash(npm test)', 'Bash(npm run *)', 'Bash(node *)', 'Bash(npx tsc *)', 'Bash(tsc *)',
   // dependency install: the one allowed network use (the guard denies --registry and index-url redirects)
   'Bash(npm ci)', 'Bash(npm install)', 'Bash(npm install *)', 'Bash(npm i *)', 'Bash(npm ls)', 'Bash(npm pkg get *)',
@@ -125,7 +125,7 @@ log(`e2e home ${HOME} | auth ${AUTH || '(dry-run)'} | lead model ${MODEL}`);
 
 // ================================================================= integration round 5
 // What was built since round 4: user acceptance (137), auto-release holdout (138), the router MCP tools
-// (127-129, deferred loading) and the dashboard metrics API (132). Control runs claude; this harness
+// (127-129, deferred loading) and the metrics API (132). Control runs claude; this harness
 // drives it and reads the ledger. `--round5` runs these; `--only R1,R3` picks some; `--dry-run` prints
 // the plan and estimated subscription usage without calling claude.
 type R5Kind = 'single' | 'reask' | 'revert' | 'commit' | 'protected';
@@ -141,23 +141,8 @@ const R5S: R5[] = [
 ];
 const ONLY = (args.only ?? '').split(',').filter(Boolean);
 const selected = ONLY.length ? R5S.filter(s => ONLY.includes(s.id)) : R5S;
-const wantDash = args['no-dashboard'] !== 'true';
+const wantMetrics = args['no-metrics'] !== 'true' && args['no-dashboard'] !== 'true';   // the old flag name is still read
 const promptOf = (s: R5) => s.prompt ?? task(s.taskId!).prompt as string;
-
-function httpJson(port: number, method: string, pathname: string, opts: { cookie?: string; body?: unknown } = {}): Promise<{ status: number; headers: any; text: string }> {
-  return new Promise((resolve, reject) => {
-    const data = opts.body !== undefined ? JSON.stringify(opts.body) : undefined;
-    const headers: any = { host: `127.0.0.1:${port}` };
-    if (data !== undefined) { headers['content-type'] = 'application/json'; headers['content-length'] = Buffer.byteLength(data); }
-    if (opts.cookie) headers['cookie'] = opts.cookie;
-    const req = http.request({ host: '127.0.0.1', port, path: pathname, method, headers }, res => {
-      let t = ''; res.setEncoding('utf8'); res.on('data', d => { t += d; }); res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, text: t }));
-    });
-    req.on('error', reject);
-    if (data !== undefined) req.write(data);
-    req.end();
-  });
-}
 
 async function summarize(s: R5, repo: string, r1: any, r2: any): Promise<any> {
   const sids = [r1?.out?.session_id, r2?.out?.session_id].filter(Boolean) as string[];
@@ -226,21 +211,18 @@ async function summarize(s: R5, repo: string, r1: any, r2: any): Promise<any> {
   };
 }
 
-async function dashboardCheck(port: number, token: string, summaries: any[]): Promise<any> {
+/** R7: the metrics routes (sealed, as the team office reads them) show the runs and none of their prompt text. */
+async function metricsCheck(port: number, token: string, summaries: any[]): Promise<any> {
   try {
-    const out = cli('dashboard', '--no-open');
-    const m = out.match(/#code=([A-Za-z0-9_-]+)/);
-    if (!m) return { ok: false, step: 'register-code', detail: out.trim().slice(0, 200) };
-    const auth = await httpJson(port, 'POST', '/dashboard/auth', { body: { code: m[1] } });
-    const cookie = (Array.isArray(auth.headers['set-cookie']) ? auth.headers['set-cookie'][0] : auth.headers['set-cookie'] ?? '').split(';')[0];
-    if (auth.status !== 200 || !cookie) return { ok: false, step: 'auth', status: auth.status };
-    const summary = await httpJson(port, 'GET', '/dashboard/metrics/summary', { cookie });
-    const requests = await httpJson(port, 'GET', '/dashboard/metrics/requests?limit=50', { cookie });
-    const total = (() => { try { return Number(JSON.parse(summary.text).total ?? 0); } catch { return 0; } })();
-    const rows = (() => { try { return (JSON.parse(requests.text).rows ?? []).length; } catch { return 0; } })();
-    const haystack = `${summary.text}\n${requests.text}`;
+    const get = (p: string) => sealedCall({ port, secret: token, method: 'GET', path: p, timeoutMs: 10_000 });
+    const summary = await get('/router/v1/metrics/summary');
+    const requests = await get('/router/v1/metrics/requests?limit=50');
+    if (summary.status !== 200 || requests.status !== 200) return { ok: false, step: 'metrics', summaryStatus: summary.status, requestsStatus: requests.status };
+    const total = (() => { try { return Number(JSON.parse(summary.body).total ?? 0); } catch { return 0; } })();
+    const rows = (() => { try { return (JSON.parse(requests.body).rows ?? []).length; } catch { return 0; } })();
+    const haystack = `${summary.body}\n${requests.body}`;
     const leaked = summaries.map(s => s.promptHead).filter((p: string) => p && p.length >= 12 && haystack.includes(p));
-    return { ok: total > 0 && rows > 0 && leaked.length === 0, authStatus: auth.status, summaryTotal: total, requestRows: rows, promptLeak: leaked.length ? leaked : 'none' };
+    return { ok: total > 0 && rows > 0 && leaked.length === 0, summaryTotal: total, requestRows: rows, promptLeak: leaked.length ? leaked : 'none' };
   } catch (e: any) { return { ok: false, step: 'exception', detail: String(e?.message ?? e).slice(0, 200) }; }
 }
 
@@ -256,7 +238,7 @@ if (DRY) {
     else if (s.follow) console.log(`   follow-up (--resume same session): ${s.follow}`);
     console.log(`   expect: ${s.expect}`);
   }
-  console.log(`\nR7 dashboard check (no claude): ${wantDash ? 'register a code via `do-it-all-claude-code dashboard --no-open`, exchange it for a cookie, GET summary + requests, assert the runs appear and no prompt text leaks' : 'skipped (--no-dashboard)'}`);
+  console.log(`\nR7 metrics check (no claude): ${wantMetrics ? 'sealed GET /router/v1/metrics/summary and /requests, assert the runs appear and no prompt text leaks' : 'skipped (--no-metrics)'}`);
   printAllowPolicy(console.log);
   console.log(`\nestimated subscription usage: ${callTotal} claude -p calls, roughly ${turnLo}-${turnHi} agent turns total (lead + subagents; depends on how the lead delegates). Each run caps at --max-budget-usd 3.`);
   console.log('no claude was run (dry run).');
@@ -289,12 +271,12 @@ if (ROUND5) {
     fs.writeFileSync(path.join(TMP, `${s.id}-summary.json`), JSON.stringify(sum, null, 2));
     log(`\n== ${s.id} ${s.title}: level=${sum.level} outcome=${sum.outcome} lead_class=${sum.leadClass ?? '?'} holdout=${sum.holdout ?? '-'} acceptance=${sum.acceptance} tools=[${sum.routerToolsSeen.join(', ') || 'none'}] reviewSignals=${sum.reviewSignals} cost=$${sum.costUsd.toFixed(4)} turns=${sum.turns}${sum.notes.length ? ' | ' + sum.notes.join('; ') : ''}${sum.unexpected.length ? ' !! ' + sum.unexpected.join('; ') : ''}`);
   }
-  let dash: any = { skipped: true };
-  if (wantDash) { dash = await dashboardCheck(port, token, summaries); log(`\n== R7 dashboard: ${dash.ok ? 'OK' : 'ISSUE'} ${JSON.stringify(dash).slice(0, 300)}`); }
+  let metrics: any = { skipped: true };
+  if (wantMetrics) { metrics = await metricsCheck(port, token, summaries); log(`\n== R7 metrics: ${metrics.ok ? 'OK' : 'ISSUE'} ${JSON.stringify(metrics).slice(0, 300)}`); }
   log('\n== round 5 table');
   log('id   | level | lead_class      | holdout    | outcome      | acceptance    | router tools seen                 | cost     | turns');
   for (const s of summaries) log(`${s.id.padEnd(4)} | ${String(s.level).padEnd(5)} | ${String(s.leadClass ?? '?').padEnd(15)} | ${String(s.holdout ?? '-').padEnd(10)} | ${String(s.outcome).padEnd(12)} | ${String(s.acceptance).padEnd(13)} | ${(s.routerToolsSeen.join(',') || '-').padEnd(33)} | $${s.costUsd.toFixed(4).padStart(7)} | ${s.turns}`);
-  fs.writeFileSync(path.join(TMP, 'round5-summary.json'), JSON.stringify({ model: MODEL, auth: AUTH, scenarios: summaries, dashboard: dash }, null, 2));
+  fs.writeFileSync(path.join(TMP, 'round5-summary.json'), JSON.stringify({ model: MODEL, auth: AUTH, scenarios: summaries, metrics }, null, 2));
   log('\n' + cli('stop').trim());
   fs.writeFileSync(path.join(TMP, 'e2e-report.txt'), report.join('\n'));
   console.log(`\nreport: ${path.join(TMP, 'e2e-report.txt')}\nsummaries: ${TMP}`);
