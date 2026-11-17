@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getProjectWorktree, projectKey, projectStateFile, readProjectState, setProjectWorktree, workTreeRoot, writeProjectState } from '../src/project-state.ts';
+import { getProjectWorktree, projectHasWorktreeBaseRef, projectKey, projectStateFile, readProjectState, setProjectWorktree, workTreeRoot, writeProjectState } from '../src/project-state.ts';
 
 function tmp(): string { return fs.mkdtempSync(path.join(os.tmpdir(), 'diacc-ps-')); }
 
@@ -96,4 +96,22 @@ test('setProjectWorktree: enable writes files+state, disable removes them, dryRu
     assert.doesNotMatch(fs.readFileSync(gi, 'utf8'), /\.claude\/worktrees\//);
     assert.equal(getProjectWorktree(home, repo), 'off');
   } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('projectHasWorktreeBaseRef: true when the project settings set worktree.baseRef (local or shared)', () => {
+  const repo = tmp();
+  try {
+    assert.equal(projectHasWorktreeBaseRef(repo), false, 'no settings');
+    const claude = path.join(repo, '.claude');
+    fs.mkdirSync(claude, { recursive: true });
+    fs.writeFileSync(path.join(claude, 'settings.local.json'), JSON.stringify({ worktree: { baseRef: 'head' } }));
+    assert.equal(projectHasWorktreeBaseRef(repo), true, 'settings.local.json');
+    fs.rmSync(path.join(claude, 'settings.local.json'));
+    fs.writeFileSync(path.join(claude, 'settings.json'), JSON.stringify({ worktree: { baseRef: 'main' } }));
+    assert.equal(projectHasWorktreeBaseRef(repo), true, 'settings.json');
+    fs.writeFileSync(path.join(claude, 'settings.json'), JSON.stringify({ worktree: {} }));
+    assert.equal(projectHasWorktreeBaseRef(repo), false, 'worktree without baseRef');
+    fs.writeFileSync(path.join(claude, 'settings.json'), 'not json');
+    assert.equal(projectHasWorktreeBaseRef(repo), false, 'unparseable is ignored');
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });

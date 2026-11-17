@@ -4,11 +4,14 @@
 //
 //   node scripts/measure107.ts --api-key-helper "<keychain cmd>" [--tasks id,id] [--arrangements direct,team-L2,team-L3,auto]
 //        [--lead opus] [--effort high] [--budget 50] [--cap-scale 1] [--out dir] [--work dir] [--dry-run] [--setup-only] [--only-plan]
+//        [--reproduce-first on|observe|off]
 //
 // - direct   : plain Claude Code, no plugin (the lead does the work alone) = router OFF
 // - team-L2/3: plugin + daemon with config.forceLevel = L2 / L3 (decision 107 harness switch)
 // - auto     : plugin + daemon as a user runs it (Phase-3 KPI): automatic triage, the lead's own choice of roles,
 //              the default budgets and step rules, no forced level; holdoutRate 0 so no request is held out.
+// --reproduce-first sets the router's reproduceFirst in every router arrangement (the quality baseline, decisions
+// 175 and 177); left out, the router's default.
 // --dry-run prints the plan and a cost and time estimate from the earlier measurements of the same lead
 // (bench/results/measure107-sonnet for Sonnet, decision 123; measure107 for Opus, decision 107) and exits:
 // no workspace, no daemon, no API call. --setup-only prepares the workspaces and starts the daemons, no API call.
@@ -54,6 +57,8 @@ const BUDGET = Number(arg('budget', '50'));
 const HELPER = arg('api-key-helper');
 // --cap-scale shrinks the per-run caps (and so the budget-stop threshold) for a cheaper lead model
 const CAP_SCALE = Number(arg('cap-scale', '1'));
+const REPRO = arg('reproduce-first');
+if (REPRO !== undefined && !['on', 'observe', 'off'].includes(REPRO)) { console.error(`--reproduce-first must be on, observe or off, not ${REPRO}`); process.exit(2); }
 const CAP: Record<string, number> = Object.fromEntries(Object.entries({ L1: 2, L2: 5, L3: 10 }).map(([k, v]) => [k, v * CAP_SCALE]));
 type Arrangement = 'direct' | 'team-L2' | 'team-L3' | 'auto';
 const KNOWN: Arrangement[] = ['direct', 'team-L2', 'team-L3', 'auto'];
@@ -230,6 +235,7 @@ for (const [task, a] of order) {
       cfg.forceLevel = a === 'team-L2' ? 'L2' : 'L3';
       cfg.budgetsUsd = { L0: cap, L1: cap, L2: cap, L3: cap };
     }
+    if (REPRO) cfg.reproduceFirst = REPRO;
     fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
     fs.mkdirSync(path.join(ws.repo, '.claude'), { recursive: true });
     fs.writeFileSync(path.join(ws.repo, '.claude', 'settings.local.json'), JSON.stringify({ worktree: { baseRef: 'head' } }, null, 2));

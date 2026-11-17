@@ -23,6 +23,8 @@ export interface ProjectState {
   /** When the user was first asked (ISO), and when they answered. */
   askedAt?: string;
   decidedAt?: string;
+  /** How it was decided: by the user (tool/CLI) or inferred from the project's existing settings (decision 192). */
+  source?: 'user' | 'project-settings';
 }
 
 /**
@@ -38,6 +40,21 @@ export function workTreeRoot(dir: string): string | undefined {
     if (up === d) return undefined;
     d = up;
   }
+}
+
+/**
+ * Whether the project already has git-worktree isolation set up in its Claude Code settings — worktree.baseRef in
+ * .claude/settings.local.json or .claude/settings.json (written by an earlier `init`, or by hand). When it does,
+ * the router does not ask again (decision 192); it records the choice as already decided.
+ */
+export function projectHasWorktreeBaseRef(root: string): boolean {
+  for (const name of ['settings.local.json', 'settings.json']) {
+    try {
+      const s = JSON.parse(fs.readFileSync(path.join(root, '.claude', name), 'utf8').replace(/^﻿/, '')) as { worktree?: { baseRef?: unknown } };
+      if (s?.worktree && typeof s.worktree.baseRef === 'string' && s.worktree.baseRef) return true;
+    } catch { /* missing or unparseable: look at the next file */ }
+  }
+  return false;
 }
 
 export const projectsDir = (home: string = routerHome()): string => path.join(home, 'projects');

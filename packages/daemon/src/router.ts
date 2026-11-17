@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ACCEPTANCE_RULE_VERSION, ACCEPT_WINDOW_PROMPTS, MAX_STEP_UPS, PRICING_PER_MTOK, ROUTER_TOOL_PREFIX, RouterToolCall, dissatisfactionRule, holdoutDraw, isReask, promptSimilarity, afterEasyPass, afterOtherResult, afterRaise, atDispatch, costUsd, decideEscalation, formatTriageContext, isRouterToolName, l3SignalRoles, ladderStep,
-  effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, normalizeLeadTriage, oneFileDirect, parseRoleFile, profileOf, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
+  effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, normalizeLeadTriage, oneFileDirect, parseRoleFile, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
   type LeadModelClass, type Level, type ProjectIsolationInput, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
   type RouterEvent, type RouterToolErrorCode, type RouterToolName, type RouterToolResult, type Step, type TeamPreset, type TriageResult, type Usage,
   type UpdateNotice, type VerifySignal,
@@ -413,6 +413,13 @@ export class Router {
     if (!root) return '';
     const home = this.#home.root;
     if (readProjectState(root, home)) return '';   // already asked or decided
+    // A project already set up for isolation (an earlier `init`, or worktree.baseRef set by hand) is not asked:
+    // record it as decided on, from the project settings, so the office shows it on and the measurement harness
+    // (which writes baseRef and runs claude -p) is never stopped by a [router:awaiting-user] prompt.
+    if (projectHasWorktreeBaseRef(root)) {
+      try { writeProjectState({ path: root, worktree: 'on', decidedAt: this.#at(), source: 'project-settings' }, home); } catch { /* ignore */ }
+      return '';
+    }
     try { writeProjectState({ path: root, askedAt: this.#at() }, home); } catch { return ''; }
     return PROJECT_SETUP_BRIEF;
   }

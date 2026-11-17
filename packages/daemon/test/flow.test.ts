@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_PRESETS, PROTECTED_WRITE_PATHS, costUsd, formatTriageContext, scopeKey, triage, writeProjectState, type Usage } from '@do-it-all-claude-code/core';
+import { DEFAULT_PRESETS, PROTECTED_WRITE_PATHS, costUsd, formatTriageContext, getProjectWorktree, scopeKey, triage, writeProjectState, type Usage } from '@do-it-all-claude-code/core';
 import { AWAITING_USER_MARKER } from '../src/continuation.ts';
 import type { StatusView } from '../src/router.ts';
 import {
@@ -54,6 +54,14 @@ test('decision 192: a fresh project gets the one-time project-setup note on the 
   // a non-git cwd (no work-tree root) never gets the note
   const outside = (await out(d, { hook_event_name: 'UserPromptSubmit', session_id: 'ps-c', cwd: tmpDir('nongit'), prompt: 'add a new feature' })).hookSpecificOutput?.additionalContext ?? '';
   assert.doesNotMatch(outside, /Project setup \(first delegation here\)/);
+}, { config: { forceLevel: 'L2' } }));
+
+test('decision 192: a project already set up (worktree.baseRef) is NOT asked; the state is recorded on', () => withDaemon(async d => {
+  const repo = makeRepo({ 'README.md': 'r\n' });
+  write(repo, path.join('.claude', 'settings.local.json'), JSON.stringify({ worktree: { baseRef: 'head' } }));
+  const ctx = (await out(d, { hook_event_name: 'UserPromptSubmit', session_id: 'ps-pre', cwd: repo, prompt: 'add a new feature to src/x.ts' })).hookSpecificOutput?.additionalContext ?? '';
+  assert.doesNotMatch(ctx, /Project setup \(first delegation here\)/, 'an already-set-up project is not asked');
+  assert.equal(getProjectWorktree(d.home, repo), 'on', 'recorded as decided on (the office shows isolation on)');
 }, { config: { forceLevel: 'L2' } }));
 
 test('decision 192: a replayed (spooled) prompt does not consume the one-time project-setup ask', () => withDaemon(async d => {
