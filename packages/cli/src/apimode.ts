@@ -11,7 +11,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { redact, resolveLayout, routerHome } from '@do-it-all-claude-code/core';
+import { appLayout, redact, resolveLayout, routerHome } from '@do-it-all-claude-code/core';
 import { NO_PROXY_VARS, PROXY_VARS, noProxyCovers, shownProxyUrl, splitNoProxy } from '@do-it-all-claude-code/proxy';
 import type { TlsChoice } from './localtls.ts';
 import { backupNote, readConfig, readJsonFile, writeBackup, writeConfig, writeJsonAtomic, type CliConfig, type PlannedChange } from './setup.ts';
@@ -23,7 +23,7 @@ const CREDENTIAL_ENV = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'];
 
 /** The proxy's runnable entry for this layout (packages/proxy/src|dist/main in the workspace, dist/proxy.js
  *  when packaged). */
-export const proxyEntry = (): string => resolveLayout(import.meta.url).proxyEntry;
+export const proxyEntry = (): string => appLayout(import.meta.url, routerHome()).proxyEntry;   // decision 192: the stable home copy when present
 export const proxyBaseUrl = (port: number, tls = false) => `${tls ? 'https' : 'http'}://127.0.0.1:${port}`;
 
 const layoutHere = () => resolveLayout(import.meta.url);

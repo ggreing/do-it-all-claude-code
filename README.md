@@ -41,19 +41,33 @@ router workers: they can only write while the daemon is up, so they never edit o
 
 ## Getting started
 
-Nothing is on npm yet. You need Node 24+, Claude Code 2.1.325 or newer, and Git Bash if you're on
-Windows.
+You need Node 24.5+, Claude Code 2.1.325 or newer, and — on Windows — Git Bash (Claude Code itself
+requires it). There are two ways in.
+
+**One command (npm).** Installs the plugin and a status line, starts the daemon, and routes on your Claude
+subscription by default:
 
 ```
-git clone https://github.com/ggreing/do-it-all-claude-code && cd do-it-all-claude-code
-npm ci
-node packages/cli/src/index.ts init
-node packages/cli/src/index.ts start
+npx do-it-all-claude-code setup
 ```
 
-`node packages/cli/src/index.ts` is the CLI until there's a published package; below it's written as
-`do-it-all-claude-code`. `init` registers the plugin and a status line and asks before it changes your Claude
-Code settings. `do-it-all-claude-code doctor` checks the setup if something looks off.
+(or `npm i -g do-it-all-claude-code`, then `do-it-all-claude-code setup`). Then run `claude`; `/office demo`
+previews the team office.
+
+**Inside Claude Code.** If you would rather start from a session:
+
+```
+/plugin marketplace add ggreing/do-it-all-claude-code
+/plugin install do-it-all-claude-code@do-it-all
+/do-it-all-setup
+```
+
+The first two install the plugin; `/do-it-all-setup` installs the engine into your router home and starts the
+daemon.
+
+The daemon starts itself when a Claude Code session starts (`do-it-all-claude-code config set autoStart off`
+turns that off), and `do-it-all-claude-code doctor` checks the setup if something looks off. From source
+(contributors): clone, `npm ci`, then `node packages/cli/src/index.ts setup`.
 
 Other commands you'll probably use:
 
@@ -140,28 +154,81 @@ you and at most once a day per version. Nothing updates itself.
 ## The team office
 
 Type `/office` in Claude Code and a panel opens beside the chat that shows the team at work. On a wide
-terminal it also opens by itself when a request's first worker starts. The panel only reads: it has no input
-line, and settings are changed with the CLI (`config`, `preset`, `role`).
+terminal it also opens by itself when a request's first worker starts (`config set officeAutoOpen off` stops
+that). The panel has no text input: the settings it offers change with Enter and are written only after you
+confirm; anything that needs typing is shown with the CLI command that changes it.
 
-| Tab | What it shows |
-|---|---|
-| Office | each member at a desk: role, model and effort, what it's doing now; above them the request's level, cost against budget and your rate limits |
-| History | recent requests with level, outcome, cost, duration and failed checks; open one to see its subtasks and checks |
-| Cost | the last 24 hours, 7 days or 30 days: the total, lead versus workers, cost by level, cost per accepted request |
-| Routing | how often the router's first guess about a request's size turned out right, and the comparison described in the next section |
+| Tab | Its first line answers | Below that |
+|---|---|---|
+| Office | who is on the team and what each one is doing | each member at a desk with model and effort; the picked member's session, the way Claude Code draws its own |
+| Work | what is running now, and how today went | recent requests, running ones first. Open one for its timeline (plan, workers, verify, review), the files it changed with `+`/`-` counts, the tests, step changes, time and cost |
+| Savings | what was spent, measured, and how much of your 5-hour and 7-day limits is used | spend per hour or day as bars. Then, apart and labelled as estimates: the workers' tokens priced at the lead model's rate, with its assumptions, and the holdout comparison of real requests with its sample counts. A comparison with too few requests says how many are still needed and shows no difference |
+| Team | the profile, and how the roles did | each role's pass rate as a bar, its average cost and time and its step changes, the model and effort per level and where each comes from; the latest step changes; the triage's hit rate at the bottom |
+| Settings | the profile, and how many settings are your own | each setting the panel can change, with the value in effect and where it comes from (default, profile, your own, the project's); problems one line each; the verify commands, role files and `teams.yaml`, shown with the command that edits them |
 
-Click the panel, or press ctrl+x then tab, to give it the keyboard. Tab and shift+Tab walk its buttons, Enter
-presses one, and Esc returns to the prompt. `o`, `h`, `c` and `r` switch tabs. In Office, 1–9 pick a member,
-←/→ move the highlight, Enter or a click picks, and `v` shows that member's transcript in the main view. In
-History, the buttons are the recent requests: Enter opens one below, and `b` goes back. In Cost, `t`, `w` and
-`m` show 24 hours, 7 days and 30 days.
+Click the panel, or press ctrl+x then tab, to give it the keyboard; Esc returns to the prompt. `o`, `w`, `s`, `t`
+and `c` switch tabs, ↑/↓ and Tab walk the buttons, and Enter presses one. In Office, 1–9 pick a member, ←/→ move
+the highlight, and `v` shows that member's transcript in the main view. In Work, Enter opens a request and `b`
+goes back. In Savings and Team, `p` steps the period: 24 hours, 7 days, 30 days. In Settings, Enter steps the
+value of the row you are on and the change waits, shown as old → new; `a` asks before writing (`y` writes,
+`n` not now) and `x` drops what waits. A value that takes effect only at the next start or session says so.
 
 `/office demo` shows a preview with made-up members, and `/office clear` empties the panel. The panel never
-shows prompt text. While the daemon isn't running it still shows the team from Claude Code's own events,
-without the router's numbers.
+shows prompt text. While the daemon isn't running each tab says so in one line, and Office still shows the team
+from Claude Code's own events, without the router's numbers. In the classic Windows console the office is a
+list, drawn with marks that console shows one cell wide.
+
+If the panel doesn't behave:
+
+- **Keys land in the prompt after you narrow the window.** When the terminal gets too narrow for the panel beside
+  the chat (under 110 columns), Claude Code moves the panel above the prompt and gives the keyboard back to the
+  prompt. Press ctrl+x then tab to give it to the panel again.
+- **The panel above the prompt is only a few rows high.** Claude Code keeps the height you last gave a plugin's
+  panel, for every plugin's panel, and it wins over the height the panel asks for. Press ctrl+x then tab, then
+  ctrl+x ↑ to make it taller.
 
 `do-it-all-claude-code config set office off` turns the panel off for sessions started after that. It needs
 Claude Code 2.1.325 or newer. Versions before 0.5.0 had a browser dashboard instead; it's gone.
+
+## Settings and profiles
+
+A profile moves several settings at once. There are three, and `balanced` is what you get unless you pick
+another:
+
+| | save | balanced | quality |
+|---|---|---|---|
+| Delegation starts at | as balanced | L1 for an Opus or Sonnet lead, L2 for a Haiku lead | L2: the lead does L1 work itself |
+| L2 team | two coders and a tester; the lead reviews | architect, two coders, reviewer, tester | the same team, each one rung higher |
+| L3 team | coders start on Sonnet | coders start on Opus | coders on Opus; the architect and reviewer at its highest effort |
+| After "easy" verdicts | a worker moves back down | a worker moves back down | it stays where it is |
+| Budget of one request | 0.6 of the default | the default | 1.5 of the default |
+
+Only `balanced` has been measured: the 33% at the top of this page is that profile. `save` and `quality` move
+the same settings one way or the other and have not been measured yet, so we don't know what they do to cost
+or to the pass rate.
+
+To change it, open the team office's Settings tab, move to a value and press Enter to step through its
+choices; `a` then `y` applies what you changed, and `x` drops it. Or use the CLI:
+
+```
+do-it-all-claude-code config set profile quality
+```
+
+A value you set yourself stays above the profile: a budget (`budgetsUsd`), where delegation starts
+(`delegateFrom`), `stepDown`, or teams in a `teams.yaml`. The Settings tab shows each value with where it
+comes from (the default, the profile, your own setting, or the project's file), and
+`do-it-all-claude-code config set <key> default` takes your own value away again. Both ways are checked the
+same and land in the same history (`do-it-all-claude-code config history`).
+
+Two settings are new in 0.5.0:
+
+| Key | What it does | Default |
+|---|---|---|
+| `officeAutoOpen` | the team office opens by itself when a request's first worker starts | on |
+| `autoStart` | the daemon starts when a Claude Code session starts, if it isn't running | on |
+
+Role files, the full `teams.yaml` and a project's verify commands need an editor, so the panel shows them
+with the command that opens them (`role edit`, `preset edit`).
 
 ## Checking that delegation still pays off
 
@@ -176,7 +243,7 @@ The checks after a worker finishes are the project's own tests, so a fix that's 
 don't cover will still pass. When that happens the lead can send the work back up a rung, but it has to
 notice first.
 
-"Accepted" in the History and Cost tabs means nobody reverted the change, asked for it again, or complained within
+"Accepted" in the Savings tab's comparisons means nobody reverted the change, asked for it again, or complained within
 the next couple of prompts. That's a ceiling on how often the work was good, not a measurement of it.
 
 The automatic switch-off is meant to catch delegation that has become clearly more expensive, not to

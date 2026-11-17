@@ -3,7 +3,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { GENERATED_STAMP, ROLE_NAMES, expectedRole, paths, pluginRoleProblems, readText, routerHome, templateHash } from '@do-it-all-claude-code/core';
+import { GENERATED_STAMP, ROLE_NAMES, expectedRole, paths, pluginRoleProblems, readText, resolveHomeApp, resolveLayout, routerHome, templateHash, type LayoutMode } from '@do-it-all-claude-code/core';
 import { keyStatus, noProxyCovers, shownProxyUrl, splitNoProxy, upstreamProxy, type VaultErrorCode } from '@do-it-all-claude-code/proxy';
 import { HINT_HEADERS_ENV, claudeCodeProxy, isRouterHelper, proxyBaseUrl, staleHelpers, uncoveredNoProxy } from './apimode.ts';
 import { SettingsParseError, backupCredentials, backupFile, defaultClaudeSettings, promptStorageSummary, readConfig, readJsonFile, type CliConfig } from './setup.ts';
@@ -373,6 +373,18 @@ export function bearerApiCheck(cfg: CliConfig): Check | null {
     detail: 'on: the daemon accepts the token as a Bearer header. This is deprecated and will be removed; every client of this release uses sealed calls, so take bearerApi out of config.json (or set it to "off") and restart the daemon' } : null;
 }
 
+/**
+ * decision 192: the one-command install copies the bundled app into <home>/app so the daemon/proxy (and
+ * auto-start) spawn from a stable path. Packaged only — in the workspace the checkout runs in place. Non-blocking:
+ * a daemon already running is unaffected; this points a packaged install that skipped `setup` at it.
+ */
+export function homeAppCheck(mode: LayoutMode, present: boolean): Check | null {
+  if (mode !== 'packaged') return null;
+  return { name: 'installed app (home copy)', ok: present, blocking: false,
+    detail: present ? 'the bundled app is in the router home (daemon and auto-start run from it)'
+      : 'not copied yet: run `do-it-all-claude-code setup` so the daemon and auto-start run from a stable copy (an evicted npx cache / a switched Node cannot then break them)' };
+}
+
 export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Check[]> {
   const checks: Check[] = [];
   const node = process.versions.node;
@@ -381,6 +393,8 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Chec
   checks.push({ name: 'claude code', ok: versionAtLeast(claude, MIN_CLAUDE), blocking: true, detail: claude || 'not found' + ` (need >= ${MIN_CLAUDE.join('.')})` });
   const cfg = readConfig();
   checks.push({ name: 'init', ok: !!cfg && fs.existsSync(paths.token()), blocking: true, detail: cfg ? `port ${cfg.daemonPort}` : 'run do-it-all-claude-code init' });
+  const homeApp = homeAppCheck(resolveLayout(import.meta.url).mode, !!resolveHomeApp(routerHome()));   // decision 192
+  if (homeApp) checks.push(homeApp);
   const previous = legacyHomeCheck(env);   // decision 161
   if (previous) checks.push(previous);
   if (cfg) {

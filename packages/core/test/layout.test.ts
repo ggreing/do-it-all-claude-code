@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { resolveLayout } from '../src/layout.ts';
+import { appLayout, homeAppDir, resolveHomeApp, resolveLayout } from '../src/layout.ts';
 
 const WS = path.resolve('diacc-ws-root');      // absolute on the current OS
 const PK = path.resolve('diacc-pkg-root');
@@ -66,4 +66,49 @@ test('L4: a packages/<pkg>/src path is NOT taken for the workspace when <root>/p
   // e.g. a user whose home happens to contain ~/packages/foo/src — packages/cli is not there, so: packaged.
   const r = resolveLayout(urlOf(WS, 'packages', 'foo', 'src', 'thing.js'), () => false);
   assert.equal(r.mode, 'packaged');
+});
+
+// ------------------------------------------------------------------ the stable home copy (decision 192)
+const HOME = path.resolve('diacc-home');
+const appDist = path.join(HOME, 'app', 'dist');
+
+test('resolveHomeApp: null until setup has copied the app in', () => {
+  assert.equal(resolveHomeApp(HOME, () => false), null);
+  assert.equal(homeAppDir(HOME), path.join(HOME, 'app'));
+});
+
+test('resolveHomeApp: a packaged layout rooted at <home>/app once dist/cli.js is there', () => {
+  const only = (p: string) => p === path.join(appDist, 'cli.js');
+  const r = resolveHomeApp(HOME, only);
+  assert.ok(r);
+  assert.equal(r!.mode, 'packaged');
+  assert.equal(r!.root, path.join(HOME, 'app'));
+  assert.equal(r!.cliEntry, path.join(appDist, 'cli.js'));
+  assert.equal(r!.daemonEntry, path.join(appDist, 'daemon.js'));
+  assert.equal(r!.proxyEntry, path.join(appDist, 'proxy.js'));
+  assert.equal(r!.pluginTemplateDir, path.join(HOME, 'app', 'plugin'));
+  assert.equal(r!.localTokenHelper, path.join(appDist, 'local-token.mjs'));
+});
+
+test('appLayout: the workspace checkout always wins, so dev edits are never shadowed by a stale home copy', () => {
+  // even when a home copy exists, a developer running from packages/cli/src spawns the checkout.
+  const r = appLayout(urlOf(WS, 'packages', 'cli', 'src', 'index.ts'), HOME, () => true);
+  assert.equal(r.mode, 'workspace');
+  assert.equal(r.daemonEntry, path.join(WS, 'packages', 'daemon', 'src', 'main.ts'));
+});
+
+test('appLayout: an installed CLI prefers the stable home copy over its own (evicted) location', () => {
+  // running module is a packaged install (e.g. an npx cache dir); the home copy exists, so it wins.
+  const exists = (p: string) => p === path.join(appDist, 'cli.js');   // only the home app's entry is on disk
+  const r = appLayout(urlOf(PK, 'dist', 'cli.js'), HOME, exists);
+  assert.equal(r.mode, 'packaged');
+  assert.equal(r.root, path.join(HOME, 'app'));
+  assert.equal(r.daemonEntry, path.join(appDist, 'daemon.js'));
+});
+
+test('appLayout: an installed CLI falls back to its own layout when no home copy is there yet', () => {
+  const r = appLayout(urlOf(PK, 'dist', 'cli.js'), HOME, () => false);
+  assert.equal(r.mode, 'packaged');
+  assert.equal(r.root, PK);
+  assert.equal(r.daemonEntry, path.join(PK, 'dist', 'daemon.js'));
 });

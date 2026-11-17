@@ -27,7 +27,7 @@ export const EXPORT_VERSION = 1;
 export const SESSION_TABLES = ['sessions', 'clients', 'pending_levels'] as const;
 
 /** Every ledger table with a request_id column, children first (subtasks references requests). */
-export const REQUEST_TABLES = ['confirmations', 'slots', 'signals', 'costs', 'proxy_rows', 'events', 'agents', 'subtasks', 'request_records', 'requests'] as const;
+export const REQUEST_TABLES = ['confirmations', 'slots', 'step_changes', 'signals', 'costs', 'proxy_rows', 'events', 'agents', 'subtasks', 'request_records', 'requests'] as const;
 
 /** An ISO time from a date or a date-time; undefined when it does not parse. */
 export function isoTime(v: unknown): string | undefined {

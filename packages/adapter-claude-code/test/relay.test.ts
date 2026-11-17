@@ -205,6 +205,99 @@ test('D5: cleanSpool deletes >24h files and trims to the size cap (oldest first)
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+// ---------------------------------------------------------------- auto-start (decision 192)
+async function freePort(): Promise<number> {
+  const s = http.createServer();
+  await new Promise<void>(r => s.listen(0, '127.0.0.1', r));
+  const p = (s.address() as import('node:net').AddressInfo).port;
+  await new Promise<void>(r => s.close(() => r()));
+  return p;   // nothing listens here now
+}
+
+test('auto-start: SessionStart with the daemon down spawns start once, spools, and passes', async () => {
+  const home = tmpHome();
+  try {
+    const port = await freePort();
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ daemonPort: port, fableOptIn: false }));
+    fs.writeFileSync(path.join(home, 'token'), 'tok');
+    const starts: string[] = [];
+    const out: string[] = [];
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }),
+      { home, write: s => out.push(s), autoStart: h => { starts.push(h); return true; } });
+    assert.deepEqual(out, ['{}'], 'session is not blocked');
+    assert.deepEqual(starts, [home], 'auto-start was asked once, for this home');
+    assert.equal(spoolFiles(home).length, 1, 'the event is still spooled for replay');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('auto-start: a non-SessionStart event with the daemon down does NOT auto-start', async () => {
+  const home = tmpHome();
+  try {
+    const port = await freePort();
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ daemonPort: port, fableOptIn: false }));
+    fs.writeFileSync(path.join(home, 'token'), 'tok');
+    const starts: string[] = [];
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'hi' }),
+      { home, write: () => {}, autoStart: h => { starts.push(h); return true; } });
+    assert.deepEqual(starts, [], 'only SessionStart auto-starts');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('auto-start: config autoStart=off suppresses it', async () => {
+  const home = tmpHome();
+  try {
+    const port = await freePort();
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ daemonPort: port, fableOptIn: false, autoStart: 'off' }));
+    fs.writeFileSync(path.join(home, 'token'), 'tok');
+    const starts: string[] = [];
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }),
+      { home, write: () => {}, autoStart: h => { starts.push(h); return true; } });
+    assert.deepEqual(starts, [], 'autoStart off => no spawn');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('auto-start: a reachable daemon at SessionStart does NOT auto-start', async () => {
+  const home = tmpHome();
+  const server = http.createServer(sealedFake('tok', () => ({ body: '{}' })));
+  try {
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as import('node:net').AddressInfo).port;
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ daemonPort: port, fableOptIn: false }));
+    fs.writeFileSync(path.join(home, 'token'), 'tok');
+    const starts: string[] = [];
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }),
+      { home, write: () => {}, autoStart: h => { starts.push(h); return true; } });
+    assert.deepEqual(starts, [], 'daemon up => nothing to start');
+  } finally { server.close(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('setup hint: SessionStart with no config points at setup once (then "{}")', async () => {
+  const home = tmpHome();
+  try {
+    const out: string[] = [];
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }), { home, write: s => out.push(s) });
+    const ctx = JSON.parse(out[0]!).hookSpecificOutput.additionalContext as string;
+    assert.match(ctx, /do-it-all-setup|setup/);
+    const out2: string[] = [];
+    await relayMod.relay(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }), { home, write: s => out2.push(s) });
+    assert.deepEqual(out2, ['{}'], 'shown once');
+    assert.equal(spoolFiles(home).length, 0, 'no config => nothing to spool');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('minimalSpawnEnv keeps ordinary vars but drops credentials, secret names and NODE_OPTIONS', () => {
+  const env = relayMod.minimalSpawnEnv('/the/home', {
+    PATH: '/usr/bin', FOO: 'bar',
+    ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: 'http://x', CLAUDE_CODE_OAUTH_TOKEN: 't',
+    MY_SECRET: 's', GH_TOKEN: 'y', NODE_OPTIONS: '--max-old-space-size=8', ABSENT: undefined,
+  });
+  assert.equal(env.PATH, '/usr/bin');
+  assert.equal(env.FOO, 'bar');
+  assert.equal(env.DO_IT_ALL_CLAUDE_CODE_HOME, '/the/home');
+  for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN', 'MY_SECRET', 'GH_TOKEN', 'NODE_OPTIONS', 'ABSENT'])
+    assert.equal(k in env, false, `${k} dropped`);
+});
+
 test('a daemon error spools a MASKED copy of the event', async () => {
   const home = tmpHome();
   const server = http.createServer((_req, res) => { res.writeHead(500); res.end('x'); });

@@ -16,9 +16,13 @@ Steps to cut a public release. Replace `X.Y.Z` with the version (for example `0.
   (`plugin/.claude-plugin/plugin.json`), and any hard-coded VERSION constant (e.g. `PROXY_VERSION` in
   `packages/proxy/src/server.ts`). The daemon version is read from `package.json`.
 - Regenerate the lockfile: `npm install --package-lock-only`.
+- Set the `/do-it-all-setup` command's pinned engine version in `plugin/commands/do-it-all-setup.md`
+  (`npx -y do-it-all-claude-code@X.Y.Z setup`) to the release version, so the marketplace door installs a known
+  engine. It must match `plugin/.claude-plugin/plugin.json`'s `version`.
 - Set `.claude-plugin/marketplace.json` `plugins[0].source.ref` to `vX.Y.Z` and its `sha` to the release
   commit's full SHA, so the plugin's second door installs the tagged release and not `main`.
-- Confirm that pin is set before publishing: `DIACC_RELEASE_CHECK=1 node --test packages/cli/test/marketplace-release.test.ts`.
+- Confirm both pins are set before publishing: `DIACC_RELEASE_CHECK=1 node --test packages/cli/test/marketplace-release.test.ts`
+  (the marketplace ref/sha, and the `/do-it-all-setup` pin matching `plugin.json`).
 - Verify green: `npm test`, `npx tsc -b`.
 
 ## 3. CHANGELOG and release notes

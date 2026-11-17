@@ -17,7 +17,7 @@ import type { ReproRecord } from './repro.ts';
 import { scrubProse, scrubStoredPrompts } from './data.ts';
 import { storedPromptKind } from './payload.ts';
 
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 export type RequestStatus = 'open' | 'awaiting_user' | 'closed';
 
@@ -119,8 +119,35 @@ export interface SubtaskRow extends SubtaskRecord {
   protectedGranted: string[];
   /** Decision 175: whether this subtask must show a failing test first, and what was seen; null when the feature is off. */
   repro: ReproRecord | null;
+  /** Decision 193: the files the subtask changed, with their line counts, as seen when verify ran at its stop; null when not recorded. */
+  changes: SubtaskChanges | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** What a subtask changed (decision 193). Paths are relative to the repository; no content is kept. */
+export interface SubtaskFile { path: string; added: number; removed: number; state: 'new' | 'changed' | 'deleted'; binary?: true }
+export interface SubtaskChanges {
+  files: SubtaskFile[];
+  /** Every changed file, also when `files` was cut. */
+  total: number;
+  truncated: boolean;
+  /** A file already differed from the start commit when the subtask began: its lines include the earlier ones. */
+  approximate: boolean;
+}
+
+/** One step change of a role slot (decision 193): a raise after a miss, a reject or an escalation, or a step-down after easy results. */
+export interface StepChangeRow {
+  requestId: string;
+  subtaskId: string | null;
+  role: Role;
+  slot: number;
+  from: Step;
+  to: Step;
+  reason: 'miss' | 'rejected' | 'escalation' | 'easy';
+  /** The escalation's reason word, when there is one. */
+  detail: string | null;
+  at: string;
 }
 
 export interface AgentRow {
@@ -256,6 +283,7 @@ CREATE TABLE IF NOT EXISTS subtasks (
   review      TEXT,
   protected_granted TEXT,
   repro       TEXT,
+  changes     TEXT,
   PRIMARY KEY (request_id, id)
 );
 CREATE INDEX IF NOT EXISTS subtasks_pending ON subtasks(status, agent_type, dispatch_seq);
@@ -426,6 +454,22 @@ CREATE TABLE IF NOT EXISTS slots (
   PRIMARY KEY (request_id, role, slot)
 );
 
+-- decision 193: every step change of a slot, with its reason (the slot row keeps only where it stands)
+CREATE TABLE IF NOT EXISTS step_changes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL,
+  subtask_id TEXT,
+  role       TEXT NOT NULL,
+  slot       INTEGER NOT NULL,
+  from_step  TEXT NOT NULL,
+  to_step    TEXT NOT NULL,
+  reason     TEXT NOT NULL,
+  detail     TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS step_changes_by_request ON step_changes (request_id);
+CREATE INDEX IF NOT EXISTS step_changes_by_time ON step_changes (created_at);
+
 -- decisions 128, 129: a raise or a protected-path grant the lead asked for that needs a user turn first
 CREATE TABLE IF NOT EXISTS confirmations (
   request_id     TEXT NOT NULL,
@@ -494,6 +538,7 @@ function toSubtask(r: Row): SubtaskRow {
     review: r.review === null || r.review === undefined ? null : json<SubtaskReview>(r.review),
     protectedGranted: r.protected_granted === null || r.protected_granted === undefined ? [] : json<string[]>(r.protected_granted),
     repro: r.repro === null || r.repro === undefined ? null : json<ReproRecord>(r.repro),
+    changes: r.changes === null || r.changes === undefined ? null : json<SubtaskChanges>(r.changes),
   };
 }
 
@@ -597,7 +642,7 @@ export interface RecordRow {
   acceptSignals?: unknown;
 }
 
-export type SubtaskPatch = Partial<Pick<SubtaskRow, 'status' | 'verdict' | 'agentId' | 'upCount' | 'writeScope' | 'review' | 'protectedGranted' | 'repro'>>;
+export type SubtaskPatch = Partial<Pick<SubtaskRow, 'status' | 'verdict' | 'agentId' | 'upCount' | 'writeScope' | 'review' | 'protectedGranted' | 'repro' | 'changes'>>;
 
 export interface SlotRow {
   role: Role; slot: number; step: Step; upCount: number; failStreak: number; leadRaises: number;
@@ -670,6 +715,8 @@ export class Ledger {
     if (!reqCols.includes('stop_blocks')) this.db.exec('ALTER TABLE requests ADD COLUMN stop_blocks INTEGER NOT NULL DEFAULT 0');
     // v16 -> v17 (decision 175): what a subtask's reproduction test showed
     if (!subCols.includes('repro')) this.db.exec('ALTER TABLE subtasks ADD COLUMN repro TEXT');
+    // v17 -> v18 (decision 193): the files a subtask changed; step_changes is created by SCHEMA
+    if (!subCols.includes('changes')) this.db.exec('ALTER TABLE subtasks ADD COLUMN changes TEXT');
     this.#keepOutput = opts.keepPrompts === true;
     if (!this.#keepOutput) {
       const n = Number(this.db.prepare("UPDATE signals SET detail = substr(detail, 1, instr(detail, char(10)) - 1) WHERE instr(detail, char(10)) > 0").run().changes);
@@ -1154,6 +1201,7 @@ export class Ledger {
     if (p.review !== undefined) { sets.push('review = ?'); vals.push(p.review === null ? null : JSON.stringify(p.review)); }
     if (p.protectedGranted !== undefined) { sets.push('protected_granted = ?'); vals.push(JSON.stringify(p.protectedGranted)); }
     if (p.repro !== undefined) { sets.push('repro = ?'); vals.push(p.repro === null ? null : JSON.stringify(p.repro)); }
+    if (p.changes !== undefined) { sets.push('changes = ?'); vals.push(p.changes === null ? null : JSON.stringify(p.changes)); }
     if (!sets.length) return;
     sets.push('updated_at = ?');
     vals.push(at, requestId, id);
@@ -1367,6 +1415,24 @@ export class Ledger {
   unknownCostAgents(requestId: string): string[] {
     return (this.db.prepare(`SELECT DISTINCT agent_id AS a FROM costs WHERE request_id = ? AND source = 'transcript' AND usd IS NULL`)
       .all(requestId) as Row[]).map(r => s(r.a));
+  }
+
+  // ---- step changes (decision 193)
+
+  addStepChange(c: StepChangeRow): void {
+    this.db.prepare(`INSERT INTO step_changes (request_id, subtask_id, role, slot, from_step, to_step, reason, detail, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.requestId, c.subtaskId, c.role, c.slot, c.from, c.to, c.reason, c.detail, c.at);
+  }
+
+  /** A request's step changes, oldest first; or, without a request, the latest of a period, newest first. */
+  listStepChanges(q: { requestId: string } | { since?: string; limit?: number }): StepChangeRow[] {
+    const rows = ('requestId' in q
+      ? this.db.prepare('SELECT * FROM step_changes WHERE request_id = ? ORDER BY id').all(q.requestId)
+      : this.db.prepare('SELECT * FROM step_changes WHERE created_at >= ? ORDER BY id DESC LIMIT ?').all(q.since ?? '', Math.max(1, Math.min(1000, q.limit ?? 20)))) as Row[];
+    return rows.map(r => ({
+      requestId: s(r.request_id), subtaskId: sn(r.subtask_id), role: s(r.role) as Role, slot: n(r.slot), from: s(r.from_step) as Step, to: s(r.to_step) as Step,
+      reason: s(r.reason) as StepChangeRow['reason'], detail: sn(r.detail), at: s(r.created_at),
+    }));
   }
 
   /** Whether the request's usedUsd contains estimates, or leaves some subagent costs out (unknown). */

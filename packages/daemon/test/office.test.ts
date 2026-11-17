@@ -7,13 +7,13 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BACKOFF_MS, LINE_VERSION, parentAlive, parseArgs, run } from '../../../plugin/office/bridge.mjs';
+import { BACKOFF_MS, LINE_VERSION, applyBody, parentAlive, parseArgs, run, runApply, withoutPrompt } from '../../../plugin/office/bridge.mjs';
 import { call as sealedApi, makeRepo, postHook, request, rmrf, startTestDaemon, tmpDir, write, type HookInput, type TestDaemon } from './helpers.ts';
 
 const L2_PROMPT = 'Refactor the validation module across multiple files and add an audit log';
 const BRIDGE = fileURLToPath(new URL('../../../plugin/office/bridge.mjs', import.meta.url));
 const TOKEN_FILE = (home: string) => fs.readFileSync(path.join(home, 'token'), 'utf8').trim();
-type Line = { v: number; type: string; reach?: string; view?: any; data?: any; error?: string; period?: string };
+type Line = { v: number; type: string; reach?: string; view?: any; data?: any; error?: string; period?: string; id?: string; status?: number };
 
 /** A daemon with one L2 request whose coder A passed verify with 3 tests; config.json holds the daemon's port. */
 async function withTeam(fn: (d: TestDaemon, sid: string) => Promise<void>): Promise<void> {
@@ -93,18 +93,44 @@ test('decision 186 helper: a line only when something changed', () => withTeam(a
   assert.equal(out.filter(x => x.type === 'office').length, 1, 'a quiet team writes one line');
 }));
 
-test('decision 186 helper: the tabs: History, Cost, Routing; a request detail never carries the prompt', () => withTeam(async (d, sid) => {
-  for (const tab of ['history', 'cost', 'routing'] as const) {
-    const out = await lines(parseArgs(['--session', sid, '--tab', tab, '--interval', '200']), d.home, l => l.some(x => x.type === tab));
+test('decisions 193, 194 helper: the tabs Work, Savings, Team, Settings; a request detail never carries the prompt', () => withTeam(async (d, sid) => {
+  for (const tab of ['work', 'savings', 'team', 'settings'] as const) {
+    const out = await lines(parseArgs(['--session', sid, '--tab', tab, '--period', '24h', '--interval', '200']), d.home, l => l.some(x => x.type === tab));
     const line = out.find(x => x.type === tab)!;
     assert.ok(line, `${tab}: ${JSON.stringify(out)}`);
-    // data, or (before the metrics routes are in) the daemon's answer as an error line
+    // data, or (where a route is not in yet) the daemon's answer as an error line
     assert.ok(line.data !== undefined && (line.data !== null || typeof line.error === 'string'), JSON.stringify(line));
-    if (tab === 'cost') assert.equal(line.period, '7d');
+    if (tab === 'savings' || tab === 'team') assert.equal(line.period, '24h');
   }
-  const det = await lines(parseArgs(['--session', sid, '--tab', 'history', '--detail', 'r-nope', '--interval', '200']), d.home, l => l.some(x => x.type === 'detail'));
-  const dl = det.find(x => x.type === 'detail')!;
-  assert.ok(dl && !('prompt' in (dl.data ?? {})), JSON.stringify(dl));
+  const det = await lines(parseArgs(['--session', sid, '--tab', 'work', '--detail', 'r-nope', '--interval', '200']), d.home, l => l.some(x => x.type === 'work-detail'));
+  const dl = det.find(x => x.type === 'work-detail')!;
+  assert.ok(dl && dl.id === 'r-nope' && !('prompt' in (dl.data ?? {})), JSON.stringify(dl));
+  assert.doesNotMatch(JSON.stringify(det), new RegExp(TOKEN_FILE(d.home)));
+  // the prompt is dropped from a detail, and only its being there is said
+  assert.deepEqual(withoutPrompt({ requestId: 'r', prompt: 'secret words', hasPrompt: true }), { requestId: 'r', hasPrompt: true });
+  assert.deepEqual(withoutPrompt({ requestId: 'r', prompt: null, hasPrompt: false }), { requestId: 'r', hasPrompt: false });
+}));
+
+test('decision 194 helper: a settings change is one sealed POST and one line; a change of another shape is not sent', () => withTeam(async (d, sid) => {
+  const out: Line[] = [];
+  await runApply(parseArgs(['--session', sid, '--apply']), JSON.stringify({ revision: { config: 'r' }, set: { profile: 'quality' } }), { home: d.home, write: (l: string) => { out.push(JSON.parse(l)); return true; } });
+  assert.equal(out.length, 1, JSON.stringify(out));
+  assert.equal(out[0]!.type, 'applied');
+  // the daemon's answer as it came (the route's own tests say what it writes)
+  assert.equal(typeof out[0]!.status, 'number', JSON.stringify(out));
+  assert.doesNotMatch(JSON.stringify(out), new RegExp(TOKEN_FILE(d.home)));
+  const refused: Line[] = [];
+  for (const bad of ['not json', '{"set":{}}', '{"set":{"a b":1}}', '{"set":{"x":{"y":1}}}', '{"set":{"__proto__":1}}', JSON.stringify({ set: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`k${i}`, 1])) })]) {
+    assert.equal(applyBody(bad), null, bad);
+    await runApply(parseArgs(['--apply']), bad, { home: d.home, write: (l: string) => { refused.push(JSON.parse(l)); return true; } });
+  }
+  assert.ok(refused.every(x => x.type === 'applied' && typeof x.error === 'string' && x.status === undefined), JSON.stringify(refused));
+  assert.deepEqual(applyBody(JSON.stringify({ revision: { config: 'a', presets: 'b', other: 'c' }, set: { 'budgetsUsd.L2': 3, 'team.L2.coder.count': 2, office: null } })),
+    { revision: { config: 'a', presets: 'b' }, set: { 'budgetsUsd.L2': 3, 'team.L2.coder.count': 2, office: null } });
+  // no router home: said so, nothing sent
+  const none: Line[] = [];
+  await runApply(parseArgs(['--apply']), '{"set":{"profile":"save"}}', { home: null, write: (l: string) => { none.push(JSON.parse(l)); return true; } });
+  assert.match(String(none[0]?.error), /not set up/);
 }));
 
 test('decision 186 helper: no router home, no session: a setup line; a stopped daemon: down, waiting 1 s, 5 s, 30 s', async () => {
@@ -126,8 +152,8 @@ test('decision 186 helper: no router home, no session: a setup line; a stopped d
 });
 
 test('decision 186 helper: arguments outside the allowed set fall back; a session or request id with odd characters is refused', () => {
-  assert.deepEqual(parseArgs(['--session', 'a b', '--tab', 'x', '--period', '1y', '--detail', '../x', '--interval', '5']),
-    { session: '', tab: 'office', period: '7d', detail: '', interval: 200 });
+  assert.deepEqual(parseArgs(['--session', 'a b', '--tab', 'history', '--period', '1y', '--detail', '../x', '--interval', '5']),
+    { session: '', tab: 'office', period: '7d', detail: '', interval: 200, apply: false });
   assert.equal(parentAlive(process.pid), true);
   assert.equal(parentAlive(0), false);
 });

@@ -27,6 +27,11 @@ export class SettingsService {
     this.#now = o.now ?? (() => new Date());
   }
 
+  /** The router home this service writes to. */
+  get home(): HomeLayout {
+    return this.#home;
+  }
+
   #config(warnings: string[] = []): ConfigFile {
     try { return readConfig(this.#home.config, warnings); } catch (e) { warnings.push(errorText(e)); return {}; }
   }

@@ -69,7 +69,15 @@ export interface VerifyOutcome {
   noShell?: string;
   /** Decision 122: commands that failed because a tool is missing here (not the subagent's failure). */
   envMissing?: string[];
+  /**
+   * Decision 192: other writers of the request were still changing the same shared work tree, so only the scope
+   * was checked (the subtask ids). The commands run when the last of them stops.
+   */
+  sharedBusy?: string[];
 }
+
+/** What the scope signal of a subtask says when its verify waited for the writers named after it. */
+export const SHARED_BUSY_MARK = 'verify not run on its own: still changing files in this work tree: ';
 
 export interface VerifyPlan {
   cwd: string;

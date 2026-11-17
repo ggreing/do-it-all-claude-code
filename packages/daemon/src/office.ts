@@ -48,11 +48,18 @@ export interface OfficeView {
   routing: StatusView['routing'];
   stepAdjust: StatusView['stepAdjust'];
   limits: SessionLimits | null;
+  /**
+   * Decision 192: the session's repository (its folder name only) and whether parallel writers get a work tree each
+   * there; `worktree` null: not asked yet. Null when the session's folder is not known or is not a repository.
+   */
+  project: ProjectView | null;
 }
+export interface ProjectView { name: string; worktree: 'on' | 'off' | null }
 
 export interface OfficeContext {
   status(sessionId?: string): StatusView;
   ledger?: Ledger | undefined;
+  project?: (sessionId: string) => ProjectView | null;
 }
 
 /** Signals that are not a verify check: a review score, a repeated error, a tool error, a scope note. */
@@ -65,6 +72,7 @@ export function officeView(ctx: OfficeContext, sessionId: string): OfficeView {
     request: st.request, roles: st.roles, costUsd: st.costUsd, costEstimated: st.costEstimated, costUnknown: st.costUnknown,
     sessionCostUsd: st.sessionCostUsd, routing: st.routing, stepAdjust: st.stepAdjust,
     limits: ctx.ledger ? latestLimits(ctx.ledger.db, sessionId) : null,
+    project: ctx.project?.(sessionId) ?? null,
   };
   const ledger = ctx.ledger;
   if (!st.request || !ledger) return { ...base, subtasks: [] };

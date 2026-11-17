@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileFingerprint, filterOverrides, git, headRef, repoRoot } from './git.ts';
 import { normalizeEol, sameContent } from './tree.ts';
 import { ABSENT, MAX_END_STATE_FILES, fileSignals, type FileEnd, type FileNow, type FileSignals } from '@do-it-all-claude-code/core';
+import type { SubtaskChanges, SubtaskFile } from './ledger.ts';
 
 export const MAX_SNAPSHOT_FILES = 5000;
 const MAX_COUNT_BYTES = 8 * 1024 * 1024;
@@ -91,8 +92,14 @@ export async function takeRequestSnapshot(cwd: string): Promise<RequestSnapshot 
   return { root, ...(head ? { head } : {}), files, ...(truncated ? { truncated } : {}) };
 }
 
-/** What changed in the work tree during the request (see the header). */
-export async function requestChanges(snap: RequestSnapshot): Promise<ChangeStats> {
+/** How many of a request's changed files its record lists by name (decision 193: the Work tab's list line). */
+export const MAX_RECORD_FILES = 20;
+
+/**
+ * What changed in the work tree during the request (see the header). With `list`, the changed files are pushed
+ * to it with their lines, for the record's file list.
+ */
+export async function requestChanges(snap: RequestSnapshot, list?: SubtaskFile[]): Promise<ChangeStats> {
   const { stats: end, status, truncated } = await diffStats(snap.root, snap.head);
   const out: ChangeStats = { changedFiles: 0, changedDirs: 0, linesAdded: 0, linesRemoved: 0, newFiles: 0, deletedFiles: 0, binaryFiles: 0, approximate: false };
   const dirs = new Set<string>();
@@ -106,15 +113,42 @@ export async function requestChanges(snap: RequestSnapshot): Promise<ChangeStats
     if (e.binary || s?.binary) out.binaryFiles++;
     const a0 = s?.added ?? 0;
     const r0 = s?.removed ?? 0;
-    out.linesAdded += Math.max(0, e.added - a0) + Math.max(0, r0 - e.removed);
-    out.linesRemoved += Math.max(0, e.removed - r0) + Math.max(0, a0 - e.added);
+    const added = Math.max(0, e.added - a0) + Math.max(0, r0 - e.removed);
+    const removed = Math.max(0, e.removed - r0) + Math.max(0, a0 - e.added);
+    out.linesAdded += added;
+    out.linesRemoved += removed;
     if (s) out.approximate = true;
+    const isNew = now !== '-' && ((s && s.fp === '-') || (!s && status[f] === 'A'));
     if (now === '-') out.deletedFiles++;
-    else if ((s && s.fp === '-') || (!s && status[f] === 'A')) out.newFiles++;
+    else if (isNew) out.newFiles++;
+    list?.push({ path: f, added, removed, state: now === '-' ? 'deleted' : isNew ? 'new' : 'changed' });
   }
   out.changedDirs = dirs.size;
   if (truncated || snap.truncated) out.truncated = true;
   return out;
+}
+
+// ------------------------------------------------------------------ a subtask's files (decision 193)
+
+export const MAX_SUBTASK_FILES = 200;
+
+/**
+ * The files a subtask changed (`changed`, from the scope check) with their added and removed lines against the
+ * subtask's start commit. A file that already differed from that commit when the subtask began (`dirtyAtStart`)
+ * carries the earlier lines too, so the result is marked approximate. Paths only, no content.
+ */
+export async function subtaskFileChanges(root: string, base: string | undefined, changed: readonly string[], dirtyAtStart: ReadonlySet<string>): Promise<SubtaskChanges> {
+  const { stats, status } = await diffStats(root, base);
+  let approximate = false;
+  const files: SubtaskFile[] = [];
+  for (const f of [...new Set(changed.map(x => x.replace(/\\/g, '/')))]) {
+    const st = stats[f] ?? { added: 0, removed: 0 };
+    if (dirtyAtStart.has(f)) approximate = true;
+    const state = fileFingerprint(root, f) === ABSENT ? 'deleted' : status[f] === 'A' ? 'new' : 'changed';
+    files.push({ path: f, added: st.added, removed: st.removed, state, ...(st.binary ? { binary: true as const } : {}) });
+  }
+  files.sort((a, b) => (b.added + b.removed) - (a.added + a.removed) || a.path.localeCompare(b.path));
+  return { files: files.slice(0, MAX_SUBTASK_FILES), total: files.length, truncated: files.length > MAX_SUBTASK_FILES, approximate };
 }
 
 // ------------------------------------------------------------------ acceptance (decision 137)
@@ -129,6 +163,8 @@ export interface RequestEndState {
   root: string; head?: string; files: EndFile[]; truncated?: boolean;
   /** What the request had changed when this state was taken (the end of a turn), for its record. */
   changes?: ChangeStats | null;
+  /** The changed files with the most changed lines (decision 193), for the record's file list. */
+  list?: SubtaskFile[];
   takenAt?: string;
 }
 export const CLEAN = 'clean';

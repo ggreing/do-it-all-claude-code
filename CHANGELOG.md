@@ -5,7 +5,45 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Profiles.** `do-it-all-claude-code config set profile save|balanced|quality` (or the team office's Settings
+  tab) moves a set of values at once: where delegation starts, each level's team and its start steps, whether
+  a slot steps down after easy results, and the per-request budgets (save 0.6 of the default, quality 1.5).
+  `balanced` is the defaults as they were, so nothing changes until you pick another. A value you set yourself
+  (`budgetsUsd`, `delegateFrom`, `stepDown`, a `teams.yaml`) stays above the profile. Only `balanced` has a
+  measurement behind it; `save` and `quality` are not measured yet, and reproduce first is in no profile.
+- **What the team office's tabs read.** The daemon now records what each subtask changed (the files, with
+  added and removed lines) and every step change of a slot with its reason, and serves them, sealed like the
+  rest of its API, for the Work, Savings, Team and Settings tabs. Savings keeps what was spent apart from two
+  estimates: the workers' tokens at the lead model's list price (with its assumptions spelled out), and the
+  comparison with requests the lead handled alone (with how many there are and how many are needed). A
+  request's prompt is never in a panel answer; `data export` has it when `recordPrompts` is on. The ledger
+  schema is now version 18.
+- **Settings from the panel.** The Settings tab writes through the same validation and into the same settings
+  history as the CLI (`config history` shows the source `office`). Keys that `init` and `mode` own are refused
+  there too. New keys: `profile`, `officeAutoOpen`, `autoStart`; `reproduceFirst` can now be set with
+  `config set`.
+- **One-command install and auto-start.** `npx do-it-all-claude-code setup` (or `npm i -g do-it-all-claude-code`
+  then `do-it-all-claude-code setup`) installs the plugin and a status line, copies the engine into your router
+  home, and starts the daemon on your Claude subscription. Or, from inside Claude Code, add the marketplace,
+  `/plugin install do-it-all-claude-code@do-it-all`, then run `/do-it-all-setup`. After setup the daemon starts
+  itself when a Claude Code session starts (`autoStart`, on by default; `config set autoStart off` turns it
+  off), launched detached with a minimal environment that does not inherit your credentials. `uninstall` undoes
+  it, including the engine copy and auto-start.
+- **Project worktree isolation, asked when first used.** Whether a project runs subagents in parallel git
+  worktrees is asked the first time the team is used there — the lead asks you once — instead of at install.
+  `do-it-all-claude-code project enable|disable|status` sets or shows it; the choice is kept in the router home
+  and nothing is written to the project until you enable. Declining keeps the team and coordinates edits on the
+  shared checkout.
+
 ### Changed
+
+- **Writers that share your checkout are verified together.** When two writers with separate scopes work in
+  the same work tree and one finishes first, the router checks only its scope and holds the build and tests
+  until the last of them stops: a test run in between would judge the other's half-made changes. A pass of
+  that last verify covers the held writers; when it fails, the lead is told whose changes it also saw. A
+  writer in a work tree of its own is verified as before.
 
 - **Small requests stay with the lead.** When the router cannot tell a request's size from its wording, it asks
   the lead to check first whether the change is in one file and about 15 changed lines or fewer. If so, the
@@ -25,7 +63,8 @@ All notable changes to this project are documented here. This project adheres to
 
 - **The browser dashboard.** `do-it-all-claude-code dashboard` and the page the daemon served at `/dashboard`
   are gone, with the one-time code, the session cookie and the settings pages that belonged to them. What the
-  page showed is in the team office inside Claude Code (`/office`: Office, History, Cost and Routing tabs).
+  page showed is in the team office inside Claude Code (`/office`: Office, Work, Savings, Team and Settings
+  tabs).
   Settings are changed with the CLI (`config`, `preset`, `role`), as before.
   - For this release the command prints one line that names `/office`, and `/dashboard` on the daemon's port
     answers 410 with a line that says the same, so an old bookmark says what happened.

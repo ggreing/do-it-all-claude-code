@@ -14,11 +14,15 @@ clock and the pointer. That interface is early access ("this surface may change 
 notice", says its declaration file). Every choice below follows from that: a change in Claude Code may cost the
 panel, never the router.
 
-## The look (fixed, decision 182)
+## The look (decision 182; the click as decision 200 changed it)
 
-- Each member is drawn in one fixed shape. Only three things move: the eyes, the sign above the head (z while
-  waiting, sparkles when done, a drop when failed) and the monitor.
-- A click presses the member down for a moment and picks it. There are no speech bubbles and no jumping.
+- At rest each member is drawn in one fixed shape. Only three things move: the eyes, the sign above the head (z
+  while waiting, sparkles when done, a drop when failed) and the monitor.
+- A click picks the member, and the member reacts (decision 200, `reactions.ts`): a reaction chosen at random from
+  those for its status (a nod while working, a hop when done, a startle while waiting, a sulk when failed). Clicks
+  less than 1.6 s apart make the reaction bigger. While it lasts the body stretches, squashes, jumps or shakes, each
+  reaction at its own pace, and it always ends in the shape the member had. A jump stays inside the desk: the small
+  desk has one row over the head, so it jumps lower there. There are no speech bubbles.
 - The office is at the top; the picked member's session is in the space below, drawn the way Claude Code draws
   its own rows (a dot for a tool call, `⎿` for its result).
 - Under each desk are three lines: the name, the model and effort (`Haiku · low`), and the status with the
@@ -151,8 +155,9 @@ signals, and it is a tool call bound to an instance. So:
 - Add one sealed read endpoint, `GET /router/v1/office?session_id=<id>`. It returns the status view, plus per
   subtask the fields above with `checks: [{ kind, result, testsPassed, testsFailed }]` and `repro`, plus the
   latest limits. It carries no prompt text, tool arguments or output tails.
-- The History and Cost tabs use the read functions the dashboard uses today (`daemon/src/metrics.ts`), moved from
-  the cookie routes to sealed `GET /router/v1/metrics/{summary,requests,requests/:id}` (section 6).
+- The tabs beside the Office read section 8's sealed routes (`/router/v1/metrics/{work,savings,team}` and
+  `/router/v1/office/settings`). The dashboard's reads, moved from the cookie routes to sealed
+  `GET /router/v1/metrics/{summary,requests,requests/:id,triage-report}` (section 6), stay for one release.
 - These routes live in `daemon/src/server.ts`.
 
 **Transport.** Every call is sealed (decision 156), as the relay's, the status line's and the CLI's are.
@@ -217,7 +222,7 @@ B is used only if A is refused in practice. *To verify:*
 - The office's top line shows one dim line, in the status line's words: "router daemon not reachable — run
   do-it-all-claude-code start".
 - Polling backs off from 1 s to 5 s to 30 s, and returns to 1 s after a success.
-- The History and Cost tabs say they need the router daemon.
+- Each tab beside the Office says in one line that it needs the router daemon.
 - There are no toasts and nothing is spooled: the relay spools hook events, but the office has nothing to replay.
 
 **Matching members to subtasks.** The office keys members by Claude Code's agent id: the `agentId` that
@@ -238,33 +243,53 @@ lowers effort to the organization's cap, the `maxEffortLevel` setting or the mod
 - The desk itself gets no extra mark, because the desk stays fixed.
 - The lead has no step. Its header shows the request's level, the level's source and the budget.
 
-## 4. Tabs, and what moves from the dashboard
+## 4. Tabs (0.5.0, decision 193; as built)
 
-The pane has three tabs: Office, History (recent requests) and Cost. The terminal has no tab element, so they are a
-row of `Button`s at the top. Their hotkeys are letters, because the scene uses the digits 1 to 9 to pick members.
+Five tabs, a row of `Button`s at the top (the terminal has no tab element): Office, Work, Savings, Team and Settings.
+Each one's first line answers one question; the detail follows. The data is section 8's; `tabs.tsx` draws the four
+beside the Office, from what `register.tsx` reads, and every tab keeps within the frames' width (the body's less two
+columns).
 
-| Dashboard tab | What happens to it |
-|---|---|
-| Now (live request, roles, cost against budget, limits) | **Office tab**, already covered: the top line has level, cost against budget and limits; each desk is a role |
-| Requests (recent list, detail) | **History tab.** Rows: when, level (and the final level when it changed), outcome, accepted, cost, duration, verify failures. Enter opens a request in the space below: its subtasks with role, step and verdict, each check with tests passed and failed, the reproduction outcome, and the prompt only when `recordPrompts` is on. Dropped: the raw record JSON (`data export` has it) |
-| Overview (summary, cost by level, flags, limits) | **Cost tab**: today / 7 days / 30 days; total, lead and workers, cost by level, cost per accepted request, accepted out of all; estimated, unknown and over-budget flags; the 5-hour and 7-day limits. Dropped from the panel: team fit, start-step fit, up rate, cache hit rate |
-| Learning (triage report) | **Out of the panel.** A CLI command prints it as text (open point 7) |
-| Routing (arms per class and level) | **Out of the panel.** The same CLI command prints it |
-| Settings (config, presets, roles, history) | **CLI only**: `config`, `preset`, `role` and `reload` exist. Added: settings history and resetting a role to its template (section 6) |
+| Tab | Its first line | Below it |
+|---|---|---|
+| Office | the team's level, cost against budget and limits | the desks, or the list (section "The room and the terminal") |
+| Work | what runs now, how today went (`1 running · today 4 done, 1 failed · $3.01`) | running requests first, then the recent ones: a line each with its mark, time, the level it ran at (`L1→L2`), the kind of work, the file it changed most and how many more, its time and cost. Enter opens one: the level and how it was judged, a timeline of plan, workers, verify and review on one time axis, each worker's step against what ran, its tries, step changes and checks, the files with git's stat bar, the tests, the time per phase, the cost |
+| Savings | what was spent, measured, and the limits used | the 5-hour and 7-day limits as bars; spend per hour or day as columns; then, under "Estimated (not measured)", the lead-priced comparison with its assumptions shown as the daemon words them, and the holdout rows with their counts. A holdout row with too few requests says how many more it needs and shows no difference. No figure says "saved" |
+| Team | the profile, the roles, the share of subtasks passed, step changes | each role's pass rate as a bar, its average cost and time, and its model and effort per level with where each comes from; the latest step changes; the triage's hit rate and the rules it flags at the bottom |
+| Settings | the profile, how many settings are the person's own, how many problems | the problems, a line each; the change bar; every setting the daemon offers, grouped (profile, team, budget, quality, office, privacy, advanced), with the value in effect and where it comes from (`default`, `profile`, `own`, `project`, or the daemon's own note such as `profile x 0.6`); the profile's summary and whether a measurement backs it ("not measured yet" for save and quality); what needs typing, with the command that changes it; the keys init and mode own |
 
-**Keys:**
+**Keys.** A Button's hotkey is one digit or one lowercase letter, and the tabs' must not meet the tabs' own:
 
-- `/office` opens the pane. It also opens itself at a request's first worker; the engine places an unasked pane
-  only from 144 columns, so a narrow terminal is not covered.
-- To focus the pane, click it or press ctrl+x then tab (the engine's keys). Esc returns to the prompt, and Tab and
-  shift+Tab walk the buttons.
-- `o`, `h` and `c` switch to Office, History and Cost.
-- In Office: 1 to 9 pick a member, ← and → move the highlight, Enter picks, and `v` shows the picked agent's
-  transcript in the main view (`$.ui.view`, which the engine allows only on the person's own key or click). The
-  same member again clears the space below.
-- In History: ↑ and ↓ move, Enter opens a request below, and Esc or Backspace goes back to the list. `l` cycles a
-  level filter.
-- In Cost: ← and → change the period.
+- `o`, `w`, `s`, `t`, `c` switch to Office, Work, Savings, Team, Settings (`c` as the CLI's `config`). In a dock
+  narrower than the five full labels the row says `Save` and `Config`.
+- Office: 1 to 9 pick a member, `v` shows the picked agent's transcript in the main view. Work: `b` back. Savings
+  and Team: `p` steps the period, 24 hours, 7 days, 30 days, all three shown with the current one marked.
+  Settings: `a` asks, then `y` writes or `n` waits; `x` drops what waits.
+- The engine's focus ring walks the buttons with ↑/↓ and Tab, and Enter presses the one under it. It starts on
+  nothing, so a tab switch puts it on the tab's first request, period or setting (`$.ui.focus`, once that element
+  is drawn), and a press on a tab takes the keys (granted only while the prompt holds no text).
+- The ring is held at a position among the buttons, not on a key: buttons that appear above it would carry it to
+  another row. The settings' change bar therefore always holds two buttons, and after a refresh the ring is put
+  back on the key it was on (recorded from `ui.focus`).
+- Not used: ←/→ in the pane (they never reach its buttons, and ← on an empty prompt hands the session to Claude
+  Code's background sessions), the engine's `Select` (a drop-down whose ↑/↓ stay inside its list) and text input
+  (decision 185).
+
+**Settings writes.** Enter on a row puts its next value in the pending changes (an enum's options, off/on, a
+number's `choices` or min to max by step); a value back at the one in effect is no change, and one back at what the
+profile or the default gives is sent as `null`, taking the own value away. The rows show old → new until written.
+`a` shows what will change and when it takes effect (now, next request, next session, next start), and `y` sends it:
+one run of the helper with `--apply` and the change on stdin, which makes the one sealed POST (section 8.5) and
+writes one line back. A refused change keeps waiting, with each problem on its own line; a 409 reads the settings
+again. The module never sees the token; the helper checks the change's shape before sending it.
+
+**Every tab, one line for a fault.** While the daemon is down, refuses the call or is not set up, each tab says so
+in one line at its top, and the Office still draws from Claude Code's own events. A tab that throws while drawing is
+replaced by a line of its own under the tab row, which stays.
+
+**Classic console.** The tabs use the same one-cell marks as the list (`*`, `v`, `-`, `x`, `->`), bars of `#` and
+`.`, and the words "2 up, 1 down" for step counts. The marks and characters the tabs add were measured in that
+console: the block elements, `·` and `…` are one cell, `●` two.
 
 ## 5. Privacy
 
@@ -288,9 +313,10 @@ can hook `session.append` and `tool.call` itself. Still:
 - At most 200 rows per member and 40 members are kept.
 - Everything is cleared at `session.end`, which `/clear` also raises.
 
-**`recordPrompts`.** It governs what the daemon stores. The panel sends nothing to the daemon (its calls only
-read), so the rows never reach the ledger, whatever `recordPrompts` says. The History tab shows a request's
-prompt only when `recordPrompts` is on: the daemon returns it only then, as it did for the dashboard.
+**`recordPrompts`.** It governs what the daemon stores. The panel's calls read, but for the one settings write
+(section 8.5), which holds settings and nothing of a session, so the rows never reach the ledger, whatever
+`recordPrompts` says. The panel never shows a prompt (the user's choice for 0.5.0): the request detail carries
+none, only whether one is kept, and the helper drops one should it come.
 
 **The scene module.** The `Client` receives the scene's props (names, roles, model and effort, status, the last
 tool call) and nothing more.
@@ -383,9 +409,9 @@ The per-field role form is dropped; a whole-file edit covers it.
 **Upgrading (0.4.0 to 0.5.0):**
 
 - `do-it-all-claude-code dashboard` is gone. In its place:
-  - in Claude Code, `/office` with its History and Cost tabs;
-  - for settings, `config`, `preset` and `role`;
-  - for the learning and routing views, the CLI command of open point 7.
+  - in Claude Code, `/office` with its Work, Savings, Team and Settings tabs (section 4);
+  - for settings, the Settings tab, and `config`, `preset` and `role` for what needs typing;
+  - the learning and routing views are in the Team and Savings tabs.
 - `/dashboard` on the daemon's port answers 410 with one line naming `/office`, for one release, so a bookmark
   says what happened.
 - `init` regenerates the effective plugin, which now holds the office. Start a new Claude Code session or run
@@ -405,14 +431,26 @@ The per-field role form is dropped; a whole-file edit covers it.
   - the backoff, the masking and the row caps.
 - Daemon tests for `/router/v1/office` and `/router/v1/metrics/*`: the shape, sealed only, and a prompt only with
   `recordPrompts`.
+- The helper's tests against a test daemon: a line for each tab, a request's detail without its prompt, the one
+  settings write (`--apply`) and the changes it refuses to send.
+- `office-model.test.ts`: the tab keys and labels, the bars and columns in both sets of marks, git's stat bar, the
+  Work line's parts and the timeline's cells, Savings' measured line and the holdout row, Settings' stepping,
+  the `null` for an inherited value, the question and the answers' lines.
 - The CLI's `config history` and `role reset`.
 
 **`claude plugin test plugin/`** (the engine's kit):
 
 - It starts from the prototype's tests (the demo seats the team, a press shows that member below, an empty office
   says how to fill it) and adds:
-  - the tabs and their keys, each tab drawn once (History once threw on a local that hid the JSX factory `h`;
-    `office-model.test.ts` now refuses such a local in the office's `.tsx`);
+  - the five tabs and their keys, each drawn with the daemon down (a tab once threw on a local that hid the JSX
+    factory `h`; `office-model.test.ts` refuses such a local in the office's `.tsx`);
+  - each new tab from data in section 8's shapes: Work's list and a request's timeline, files and tests; Savings'
+    measured first line, the estimates apart with their assumptions, a holdout row short of requests; Team's
+    bars, levels and triage; Settings' rows, a change shown old → new, the question, one write through the
+    helper with the change and the revision, a refused write with each problem, a dropped change;
+  - the short labels in a narrow dock and the classic console's marks in the tabs;
+  - a click's reaction (decision 200): it changes that member's drawing alone and ends in the shape it had, also
+    after clicks in a row;
   - the room's layouts (desks, small desks in a narrow dock, the list, lines only) and the classic console's list;
   - the daemon-off line;
   - a mocked `http.fetch` answering sealed responses;
@@ -456,6 +494,294 @@ declaration file of our own, `typecheck/office/claude-code.d.ts` (open point 4).
 - **The desktop surface.** A plugin installed at user scope also draws in the desktop app's local sessions, which
   is why the tests run on both surfaces.
 
+## 8. 0.5.0 tab data (decisions 193, 194)
+
+The tabs become Office, Work, Savings, Team and Settings (decision 193), and Settings carries a profile
+(decision 194). This section is the contract between the daemon and the panel: the routes, their JSON, and
+what the panel may write. **Status: built** (`daemon/src/tabs.ts`, `daemon/src/office-settings.ts`,
+`core/src/profiles.ts`; tests in `daemon/test/office-tabs.test.ts`). Where it differs from sections 3 and 4,
+this section holds.
+
+Common rules:
+
+- Every route is sealed (decision 156) and reached through the helper, as today. Reads are `GET`; the one
+  write is `POST`.
+- Money is USD as a number, times are ISO strings, durations are milliseconds. A value the daemon does not
+  know is `null`, never 0.
+- A period is `24h`, `7d` or `30d`. The daemon computes `since` itself and returns it.
+- No route returns the token, a machine path outside the repository, tool output or prompt text. File paths
+  are relative to the repository. A stored prompt (`recordPrompts`) leaves the daemon through `data export`
+  only; a request's detail says whether one is kept.
+- `/router/v1/office` (the Office tab) stays as it is, with one field more: `project: { name, worktree:
+  'on' | 'off' | null } | null`, the session's repository and whether parallel writers get a work tree each
+  there (decision 192; the same field is in the settings view). The reads of section 6
+  (`/router/v1/metrics/{summary,requests,requests/<id>,triage-report}`) stay for one release; the new tabs do
+  not use them.
+
+### 8.1 Work: `GET /router/v1/metrics/work`
+
+Query: `session_id` (optional: marks this session's requests), `limit` (1–50, default 12), `before` (the
+cursor a previous answer gave).
+
+```ts
+{
+  open: WorkRow[],            // requests not closed yet, newest first; at most 10, none older than a day
+  rows: WorkRow[],            // closed requests, newest first
+  nextCursor: string | null,
+  today: { done: number, failed: number, usd: number },   // closed since the daemon's local midnight
+}
+WorkRow = {
+  requestId: string,
+  state: 'open' | 'awaiting_user' | 'closed',
+  mine: boolean,                               // of the session in the query
+  createdAt: string, closedAt: string | null,
+  kind: string | null,                         // the triage's kind of work
+  level: Level, finalLevel: Level,             // judged, and what it ran at
+  outcome: 'direct' | 'delegated' | 'no_delegation' | 'lead_takeover' | null,
+  passed: boolean | null,                      // null while open
+  acceptance: 'accepted' | 'not_accepted' | 'unobserved' | 'n/a' | null,
+  subtasks: number, verifyFailures: number, stepUps: number,
+  changedFiles: number | null, linesAdded: number | null, linesRemoved: number | null,
+  files: Array<{ path: string, added: number, removed: number }>,   // the three with most changed lines
+  durationMs: number | null, activeMs: number | null,
+  totalUsd: number, estimated: boolean, unknown: boolean, budgetExceeded: boolean,
+}
+```
+
+### 8.2 One request: `GET /router/v1/metrics/work/<requestId>`
+
+It answers for an open request too (from the live tables) and 404 for an unknown id.
+
+```ts
+{
+  requestId: string, state: WorkRow['state'], createdAt: string, closedAt: string | null,
+  kind: string | null, taskType: string | null,
+  level: {
+    judged: Level,
+    source: 'rule' | 'judge' | 'lead' | 'manual' | 'forced',
+    rule: string | null, confidence: number | null,
+    final: Level,
+    changes: Array<{ from: Level, to: Level, why: 'manual' | 'forced' | 'replanned' }>,
+  },
+  plan: { preset: string, leadDirect: boolean, leadModel: string | null, leadClass: string | null,
+          budgetUsd: number, holdout: 'direct' | 'probe' | 'released' | null },
+  outcome: WorkRow['outcome'], passed: boolean | null, acceptance: WorkRow['acceptance'],
+  subtasks: Array<{
+    id: string, role: Role, slot: number, attempts: number,
+    step: Step, model: string, effort: string,          // as planned for the last dispatch
+    ranModel: string | null,                            // the model Claude Code resolved, when it said
+    status: string, verdict: string | null,
+    stepChanges: StepChange[],                          // the ones this subtask caused, oldest first
+    scope: string[], unscoped: boolean,
+    files: {                                            // what the subtask changed, recorded at its stop
+      list: Array<{ path: string, added: number, removed: number,
+                    state: 'new' | 'changed' | 'deleted', binary?: true }>,
+      total: number, truncated: boolean,                // list holds at most 200
+      approximate: boolean,                             // a file already differed from the start commit
+    } | null,                                           // null: not recorded (older rows, no git, still running)
+    checks: Array<{ kind: string, attempt: number, result: 'ok' | 'failed' | 'skipped',
+                    testsPassed?: number, testsFailed?: number, durationMs?: number }>,
+    repro: { required: boolean, state: string, reason?: string, files?: string[] } | null,
+    review: { verdict: 'accept' | 'reject', by: 'lead' | 'reviewer' | 'tester', bySubtaskId?: string,
+              margin?: 'easy' | 'normal' } | null,
+    time: { startedAt: string | null, stoppedAt: string | null, runMs: number | null, verifyMs: number | null },
+    cost: { usd: number | null, state: 'actual' | 'estimate' | 'unknown' | 'none',
+            inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens: number },
+  }>,
+  changes: { changedFiles: number, linesAdded: number, linesRemoved: number, newFiles: number,
+             deletedFiles: number, approximate: boolean } | null,          // the whole request; null while open
+  files: Array<{ path: string, added: number, removed: number, state: 'new' | 'changed' | 'deleted' }>,
+  tests: { passed: number, failed: number } | null,      // the test checks of each subtask's last attempt
+  stepChanges: StepChange[],                             // every slot's, oldest first
+  time: { durationMs: number | null, activeMs: number | null, awaitingMs: number,
+          phases: Array<{ phase: 'lead' | 'workers' | 'verify' | 'awaiting_user', ms: number }> },
+  timeline: Array<{ kind: 'plan' | 'worker' | 'verify' | 'awaiting_user', role: Role | null,
+                    subtaskId: string | null, startedAt: string, endedAt: string | null, ok: boolean | null }>,
+  cost: { totalUsd: number, leadUsd: number | null, workerUsd: number, budgetUsd: number,
+          estimated: boolean, unknown: boolean, budgetExceeded: boolean, basis: 'proxy' | 'transcript' },
+  hasPrompt: boolean,          // a prompt is kept for it (recordPrompts); its text is not in this answer
+}
+StepChange = { at: string, requestId: string, subtaskId: string | null, role: Role, slot: number,
+               from: Step, to: Step, direction: 'up' | 'down',
+               reason: 'miss' | 'rejected' | 'escalation' | 'easy',
+               detail: string | null }   // the escalation's reason word (wrong_result, review_reject, …)
+```
+
+- `checks` are verify's own runs (build, typecheck, lint, test, scope, and whatever a project's list names),
+  every attempt, with the time each took.
+- `phases` are computed from stored times: `workers` is the union of the subtasks' run spans, `verify` the sum
+  of the checks' durations, `awaiting_user` the time the request waited for the user, `lead` the rest. They
+  add up to `durationMs`.
+- Two things are not stored today and are added (ledger schema v18): a subtask's changed files with their
+  line counts, taken from the work tree when verify runs at its stop, and a row per step change with its
+  reason. Requests from before the change have `files: null` and no `stepChanges`.
+
+### 8.3 Savings: `GET /router/v1/metrics/savings?period=`
+
+Measured and estimated values are separate objects, and every estimate carries its assumptions as text.
+
+```ts
+{
+  period: '24h' | '7d' | '30d', since: string, until: string,
+  measured: {
+    cost: {
+      label: 'billed' | 'api-equivalent' | 'mixed',   // billed: counted by the API-mode proxy; api-equivalent:
+                                              // tokens from transcripts at list prices (a subscription is not
+                                              // billed so); mixed: the period holds requests of both kinds
+      totalUsd: number, leadUsd: number, workerUsd: number,
+      requests: number, passed: number, costPerPassedUsd: number | null,
+      bySource: { proxy: number, transcript: number },      // requests by where their cost came from
+      flags: { estimated: number, unknown: number, budgetExceeded: number },
+    },
+    limits: SessionLimits | null,             // as the status line last reported them; the object
+                                              // /router/v1/office gives (fiveHour, sevenDay: usedPercentage and
+                                              // resetsAt in epoch seconds; updatedAt)
+  },
+  estimated: {
+    leadPriced: {                             // "the workers' tokens at the lead model's list price"
+      workerUsd: number, atLeadPriceUsd: number, differenceUsd: number,   // both sides at standard list prices
+      requests: number,                       // delegated requests it covers
+      leftOut: { noLeadModel: number, noPrice: number, noTokens: number },
+      assumptions: string[],
+    },
+    holdout: Array<{                          // real requests the lead handled alone, against the teams
+      leadClass: string, level: Level,
+      team: { n: number, accepted: number, costPerAcceptedUsd: number | null },
+      direct: { n: number, accepted: number, costPerAcceptedUsd: number | null },
+      need: { team: number, direct: number },
+      enough: boolean,                        // false: say "not enough requests yet", show no difference
+      differencePct: number | null,           // team against direct, per accepted request; null unless enough
+    }>,
+    holdoutRate: number, holdoutMode: 'on' | 'observe' | 'off',
+  },
+  series: {
+    unit: 'hour' | 'day',                     // hour for 24h, day otherwise; in the daemon's local time
+    utcOffsetMinutes: number,
+    points: Array<{ start: string, requests: number, passed: number,
+                    totalUsd: number, leadUsd: number, workerUsd: number,
+                    leadPricedDifferenceUsd: number | null }>,   // the estimate's share of this bar; null: none
+  },
+}
+```
+
+- `leadPriced` is a counterfactual, not a measurement. Its `assumptions` say so in words the panel shows as
+  they are: the lead would have used the same tokens as the workers did; list prices; the lead's own cost is
+  the same in both cases; briefing and coordination cost is not taken out. A request whose lead model or
+  price is not known is left out and counted.
+- `holdout` is the only comparison made of real requests. It is small by design (the holdout share is 10%),
+  so `enough` is usually false for a new install; the panel then says how many are still needed.
+- The panel shows no percentage "saved" without one of the two labels.
+
+### 8.4 Team: `GET /router/v1/metrics/team?period=&session_id=`
+
+```ts
+{
+  period, since, until,
+  profile: { value: 'save' | 'balanced' | 'quality', source: 'default' | 'own' },
+  leadClass: string | null,                   // of the session, when known: it decides where delegation starts
+  delegateFrom: { value: Level, source: Source } | null,
+  roles: Array<{
+    role: Role,
+    levels: Array<{ level: Level, count: number, step: Step, model: string, effort: string, source: Source }>,
+    stats: { subtasks: number, passed: number, failed: number, passRate: number | null,
+             avgCostUsd: number | null, avgRunMs: number | null, stepUps: number, stepDowns: number },
+  }>,
+  stepChanges: StepChange[],                  // the latest 20 of the period, newest first
+  triage: TriageReport,                       // as /router/v1/metrics/triage-report gives it today
+  routing: RoutingView,                       // the auto-release view the Routing tab showed
+}
+Source = 'default' | 'profile' | 'own' | 'project'
+```
+
+`own` is the user's `config.json` or `teams.yaml`; `project` is the repository's
+`.do-it-all-claude-code/teams.yaml`, known only when the session's folder is.
+
+### 8.5 Settings: `GET` and `POST /router/v1/office/settings`
+
+`GET ?session_id=`:
+
+```ts
+{
+  revision: { config: string, presets: string },
+  profile: {
+    value: 'save' | 'balanced' | 'quality', source: 'default' | 'own',
+    options: Array<{ id: string, title: string, summary: string,
+                     sets: Array<{ path: string, value: unknown }>,      // what the profile gives
+                     measured: string | null }>,                         // the measurement it rests on, or null
+  },
+  items: Array<{
+    path: string,                              // what POST takes: a config key, or team.<level>.<role>.<field>
+    group: 'profile' | 'team' | 'budget' | 'quality' | 'office' | 'privacy' | 'advanced',
+    title: string, description: string,
+    type: 'enum' | 'boolean' | 'number' | 'integer',
+    options?: string[], min?: number, max?: number, step?: number,       // enough to draw buttons: no text input
+    optionLabels?: Record<string, string>,                               // a step's model and effort ("haiku low")
+    choices?: number[],                                                  // the values a number is stepped through
+    value: unknown, source: Source,
+    sourceNote?: string,                                                 // how, when not plain: "profile x 0.6"
+    default: unknown, profileValue?: unknown,                            // what it would be without the own value
+    appliesAt: 'now' | 'next request' | 'next start' | 'next session',
+    editable: boolean, why?: string,                                     // why not, when it is not
+  }>,
+  team: Array<{ level: Level, leadDirect: boolean, budgetUsd: number,
+                roles: Array<{ role: Role, count: number, step: Step, model: string, effort: string,
+                               source: Source }> }>,
+  text: Array<{ key: string, title: string, value: string, command: string }>,   // no buttons for these: the
+                             // verify commands in effect, each role file, the whole teams.yaml, with the CLI
+                             // line that edits each
+  project: { name: string, worktree: 'on' | 'off' | null } | null,       // the session's repository: whether
+                             // parallel writers get a work tree each (decision 192); null: not asked yet
+  problems: Array<{ path: string, message: string }>,                    // a file or value that is being ignored
+  managed: Array<{ key: string, reason: string }>,                       // init's and mode's keys: never editable
+}
+```
+
+`POST` body: `{ revision: { config?: string, presets?: string }, set: Record<string, unknown> }`. A value of
+`null` removes the own value, so the profile's or the default applies again. Paths:
+
+- a config key as the CLI takes it: `profile`, `reproduceFirst`, `office`, `officeAutoOpen`, `autoStart`,
+  `updateCheck`, `recordPrompts`, `eventRetentionDays`, `stepDown`, `budgetsUsd.L2`, `delegateFrom.sonnet`, and
+  the advanced `holdoutRate`, `autoRelease`, `forceLevel`, `fableOptIn`;
+- `team.<L1|L2|L3>.<role>.start` (a step) and `team.<level>.<role>.count` (0–4), written to the user's
+  `teams.yaml`.
+
+Answers, in the shape the CLI's routes use:
+
+- 200 `{ ok: true, changed: string[], nextStart: string[], notes: string[], revision: { config, presets } }`
+- 400 `{ ok: false, errors: [{ path, message }] }`: every problem, nothing written
+- 409 `{ ok: false, errors: [{ path: 'revision', message }] }`: the file changed since it was read
+
+A key that `init` or `mode` owns is refused with its reason, as in the CLI. The write goes through the same
+core as the CLI's, so it is validated the same way and lands in the same settings history, with source
+`office`. (The history's old `dashboard` source stays readable; nothing writes it.)
+
+**The profile.** `profile` is one config key (`do-it-all-claude-code config set profile quality` does the
+same as the panel). It gives a set of values that sit between the defaults and the user's own settings: a
+value the user set stays, and its `source` says `own`.
+
+| | save | balanced | quality |
+|---|---|---|---|
+| Delegation starts at | as balanced | L1 for Opus, Sonnet and unknown leads, L2 for a Haiku lead | L2 for every lead: the lead does L1 itself |
+| L1 team | coder ×1 s1 | coder ×1 s1 | none |
+| L2 team | coder ×2 s1, tester s1 (the lead reviews) | architect s3, coder ×2 s1, reviewer s3, tester s1 | architect s4, coder ×2 s2, reviewer s4, tester s2 |
+| L3 team | architect s4, ui-designer s3, coder ×2 s3, reviewer s3, tester s1 | architect s5, ui-designer s3, coder ×2 s5, reviewer s5, tester s1 | architect s6, ui-designer s4, coder ×2 s5, reviewer s6, tester s3 |
+| Step down after easy results | on | on | off |
+| Budget of one request | default × 0.6 | default | default × 1.5 |
+
+- `balanced` is the defaults as they were, so an install without the key behaves as before.
+- Only `balanced` has a measurement behind it (a passed task cost 33% less than plain Claude Code in the phase
+  3 check). `save` and `quality` say "not measured yet".
+- Reproduce first is in no profile until its own measurement is in: it stays off unless the user turns it on.
+- A budget the user set (`budgetsUsd`, or `budget_usd` in a teams.yaml) wins over the profile's; the view
+  shows the value in effect and how it came about (`profile x 0.6`).
+- The lowest budgets (`save`: $0.30, $1.20, $3, $9 for L0 to L3) stay well above what the measured requests
+  cost: the dearest L1, L2 and L3 requests of the decision 107 run cost $0.47, $1.29 and $3.07 in total, lead
+  included, and the budget bounds the workers' part only.
+
+**Verify commands.** The project's `.do-it-all-claude-code/verify.json` is read from the start commit, so an
+edit takes effect only once it is committed, and its lines run as the user. The panel shows the commands in
+effect and where they come from (an entry of `text`); editing stays in the repository.
+
 ## Decisions (185, 186)
 
 The open points of this note were decided as follows. Where a decision differs from the text above, the decision
@@ -472,7 +798,8 @@ holds.
    - reads the router home itself (config, endpoint file, token) and makes sealed calls with `hooks/seal.mjs`
      (node:crypto), so the module never handles the token and decision 156 holds: no unsealed route;
    - writes one JSON object per line on stdout, only when it changed: the office view every 1.2 s, and the open
-     tab's data (History, a request's detail, Cost for a period, Routing) every 10 s;
+     tab's data (Work and a request's detail every 3 s; Savings and Team for a period, and Settings, every 10 s);
+     with `--apply`, the one settings write, and then it ends;
    - writes no token and no prompt text (a request detail's prompt is dropped; the line says only that one exists);
    - backs off 1 s, 5 s, 30 s while the daemon does not answer;
    - ends when its parent process is gone (checked every 2 s), when stdout is closed (a short `alive` line every
@@ -493,7 +820,8 @@ holds.
 5. **Language:** English only. The prototype's Korean labels are translated.
 6. **Default:** on. `office: off` in `config.json` turns it off.
 7. **Learning and routing:** a fourth tab, not a CLI command (this replaces section 4's "out of the panel"). The
-   tabs are Office, History, Cost and Routing.
+   tabs are Office, History, Cost and Routing. (0.5.0: decision 193 replaced them with Work, Savings, Team and
+   Settings; section 4.)
 8. **`claude plugin test`:** in the release checklist only.
 9. **Opening by itself:** at a request's first worker, on wide terminals only.
 10. **`/dashboard` after removal:** during 0.5.0 it answers with a line naming `/office`.

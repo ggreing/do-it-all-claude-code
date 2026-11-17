@@ -17,6 +17,9 @@ node scripts/office-screen/run.mjs --home <router home> --cwd <repository> --col
 - **Your settings stay as they are.** Claude Code keeps the size a person gives a plugin pane (`ctrl+x` and an arrow,
   or a drag on its edge) in your settings, for every plugin's pane. The tool refuses `ctrl+x` followed by an arrow,
   and a click presses and lets go on one cell.
+- **The session ends with the run.** Left on an empty prompt moves a session into Claude Code's background service,
+  where it would outlive the run: the tool never sends left, and if that view shows anyway it goes back, ends the
+  session and stops.
 - **The router home and repository** are yours to give: a test home with its daemon running (`DO_IT_ALL_CLAUDE_CODE_HOME`
   is set to it) and a repository Claude Code may open. `--plugin` defaults to `<home>/plugin`, the copy the home runs.
 
@@ -25,7 +28,7 @@ The steps and options are listed at the top of `run.mjs`.
 ## What it checks
 
 Each `shot` writes `NN-<name>.txt` (the screen, numbered rows, `↵` on a row the terminal wrapped onto, `|` on a row
-that reaches the last column) and `NN-<name>.buffer.txt` (the scrollback too), and prints what it found:
+that reaches the last column, `»` on a row holding inverse text: a focus ring) and `NN-<name>.buffer.txt` (the scrollback too), and prints what it found:
 
 | kind | meaning |
 |---|---|

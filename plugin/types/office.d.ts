@@ -20,13 +20,25 @@ export type OfficeMember = {
 
 export type OfficeLine = { kind: 'text' | 'tool' | 'result' | 'error'; text: string }
 
-export type OfficeTab = 'office' | 'history' | 'cost' | 'routing'
+export type OfficeTab = 'office' | 'work' | 'savings' | 'team' | 'settings'
+export type OfficePeriod = '24h' | '7d' | '30d'
 
 /** What the daemon said last: `ok` with its view, or why there is none. */
 export type OfficeDaemonState = { reach: 'ok' | 'down' | 'setup' | 'refused'; view: unknown }
 
-/** A tab's data from the router's helper, as it came (`at`), or the reason there is none; History keeps the open request. */
+/** A tab's data from the router's helper, as it came (`at`), or the reason there is none; Work keeps the open request. */
 export type OfficeTabData = { at: number; data: unknown; error?: string; detail?: unknown; detailId?: string; period?: string }
+
+/**
+ * The Settings tab: the daemon's view (as OfficeTabData), the person's changes not yet applied (path to value;
+ * null takes the own value away), whether the confirmation is up, and what the last apply answered.
+ */
+export type OfficeSettingsState = OfficeTabData & {
+  pending: Record<string, string | number | boolean | null>
+  confirm: boolean
+  busy: boolean
+  result: null | { ok: boolean; lines: string[] }
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -36,10 +48,12 @@ declare module 'claude-code' {
       selected: Shaped<string>
       tick: Shaped<number>
       tab: Shaped<OfficeTab>
+      period: Shaped<OfficePeriod>
       daemon: Shaped<OfficeDaemonState>
-      history: Shaped<OfficeTabData>
-      cost: Shaped<OfficeTabData>
-      routing: Shaped<OfficeTabData>
+      work: Shaped<OfficeTabData>
+      savings: Shaped<OfficeTabData>
+      team: Shaped<OfficeTabData>
+      settings: Shaped<OfficeSettingsState>
     }
   }
 }

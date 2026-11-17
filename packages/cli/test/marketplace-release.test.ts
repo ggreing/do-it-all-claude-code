@@ -19,3 +19,20 @@ test('the repo marketplace pins the plugin to a tag ref and its full sha', { ski
   assert.match(String(source.ref ?? ''), /^v\d+\.\d+\.\d+$/, 'source.ref must be a vX.Y.Z tag');
   assert.match(String(source.sha ?? ''), /^[0-9a-f]{40}$/, 'source.sha must be the tag commit\'s full 40-char sha');
 });
+
+// decision 192: `/do-it-all-setup` runs `npx -y do-it-all-claude-code@<pinned> setup`. The pin must be a fixed
+// version (not a tag or a floating range), so the marketplace-installed plugin fetches a known engine.
+const SETUP_CMD = path.join(REPO, 'plugin', 'commands', 'do-it-all-setup.md');
+function setupPin(): string | null {
+  const m = fs.readFileSync(SETUP_CMD, 'utf8').match(/do-it-all-claude-code@(\d+\.\d+\.\d+)\s+setup/);
+  return m ? m[1]! : null;
+}
+
+test('the /do-it-all-setup command pins the engine to a fixed X.Y.Z version', () => {
+  assert.match(String(setupPin()), /^\d+\.\d+\.\d+$/, 'the command must run `npx -y do-it-all-claude-code@X.Y.Z setup`');
+});
+
+test('the /do-it-all-setup pin matches the plugin version at release time', { skip }, () => {
+  const plugin = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', '.claude-plugin', 'plugin.json'), 'utf8')) as { version?: string };
+  assert.equal(setupPin(), plugin.version, 'the setup command pin and plugin.json version must be bumped together (release-checklist §2)');
+});

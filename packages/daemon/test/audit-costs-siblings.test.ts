@@ -103,8 +103,11 @@ test('E2 / #6: in a shared tree, only a scoped, writing sibling running at the s
     write(repo, 'lib/z.ts', 'changed by B\n');
     out = await post(stop('a1', { stop_hook_active: true }));
     assert.deepEqual(out, {});
-    assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'passed', verdict: 'meet' }]);
+    // decision 192: the scope is fine, and while B still writes in the same tree A's verify waits for B's
+    assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'hitl', verdict: 'held' }]);
+    assert.deepEqual(rows(d, "SELECT ok FROM signals WHERE subtask_id = 'A' AND kind = 'scope' ORDER BY id DESC LIMIT 1"), [{ ok: 1 }]);
     await post(stop('b1'));
+    assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'passed', verdict: 'meet' }]);
 
     // ... but not once B has finished before A started
     clock.advance(60_000);

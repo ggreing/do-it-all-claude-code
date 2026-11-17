@@ -80,6 +80,8 @@ declare module 'claude-code' {
     plain?: true
     dimColor?: boolean
     variant?: 'primary' | 'secondary'
+    /** The site's focus ring starts here when the site takes the keyboard. */
+    autoFocus?: true
     onPress: (e: unknown) => void
   }
   export type ClientProps = {
@@ -164,6 +166,8 @@ declare module 'claude-code' {
       open: (pane: PaneOpenArgs) => Promise<UiOpenResult>
       resolve: <E extends ResolveInput>(e: E) => Elements[E['surface']]
       view: (view: { agentId?: string }) => Promise<{ deny?: string }>
+      /** Moves the focus ring of a site holding the keys onto an element drawn there, by its key. */
+      focus: (args: { requestId: string; key: string }) => Promise<{ deny?: string }>
     }
   }
 
@@ -196,6 +200,8 @@ declare module 'claude-code' {
     'turn.start': { args: { text: string; turnId: string; agentId?: string }; result: { turnId: string } }
     'turn.complete': { args: { answer: string; durationMs: number; isAborted: boolean; turnId: string; agentId?: string }; result: { text: string } }
     'ui.close': { args: { id: string; origin: { kind: 'plugin' | 'person' | 'unload' } }; result: void }
+    /** Before a site's focus ring moves: `element` the key taking it (absent on one of the engine's own stops). */
+    'ui.focus': { args: { component: string; requestId: string; plugin?: string; element?: string; origin: { kind: string } }; result: { deny?: string } }
     'ui.message': { args: { surface: RenderSurface; component: string; requestId: string; element: string; module: string; data: unknown }; result: { props?: unknown } }
     'ui.render': { args: { surface: RenderSurface; component: string; requestId: string; props: unknown }; result: RenderElement }
   }

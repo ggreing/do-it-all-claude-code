@@ -8,7 +8,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { legacyRouterHome, paths, resolveLayout, routerHome, sealedCall } from '@do-it-all-claude-code/core';
+import { appLayout, legacyRouterHome, paths, resolveHomeApp, resolveLayout, routerHome, sealedCall } from '@do-it-all-claude-code/core';
 import { portOwner } from './portowner.ts';
 import { isFree, readConfig } from './setup.ts';
 import { proxyHealth, readSuperviseStatus, superviseFiles } from './supervise.ts';
@@ -29,8 +29,12 @@ const normPath = (s: string): string => s.replace(/\\/g, '/').toLowerCase();
 export function isOurChildCmd(cmd: string): boolean {
   if (!cmd) return false;
   const c = normPath(cmd);
-  const l = resolveLayout(import.meta.url);
-  return c.includes(normPath(l.daemonEntry)) || c.includes(normPath(l.proxyEntry));
+  // Match this install's own entries AND the stable home copy's (decision 192): a child may have been spawned
+  // from either (e.g. started before `setup` copied the app, or after). Both are "ours".
+  const own = resolveLayout(import.meta.url);
+  const home = resolveHomeApp(routerHome());
+  const entries = [own.daemonEntry, own.proxyEntry, ...(home ? [home.daemonEntry, home.proxyEntry] : [])];
+  return entries.some(e => c.includes(normPath(e)));
 }
 
 /**
@@ -91,7 +95,9 @@ export async function health(port: number, timeoutMs = 800): Promise<{ ok: boole
 /** The daemon's runnable entry for this layout (packages/daemon/src|dist/main in the workspace, dist/daemon.js
  *  when packaged). */
 export function daemonEntry(): string {
-  const main = resolveLayout(import.meta.url).daemonEntry;
+  // decision 192: spawn from the stable <home>/app copy when it is there (survives an evicted npx cache / a
+  // switched Node), otherwise from this install's own layout. In the workspace the checkout always wins.
+  const main = appLayout(import.meta.url, routerHome()).daemonEntry;
   if (!fs.existsSync(main)) throw new Error(`daemon entry not found: ${main}`);
   return main;
 }
@@ -178,7 +184,7 @@ export function daemonProcessAlive(): boolean {
 /** This CLI's entry for this layout: what `start` runs as `<entry> supervise` (packages/cli/src|dist/index in
  *  the workspace, dist/cli.js when packaged). */
 export function cliEntry(): string {
-  return resolveLayout(import.meta.url).cliEntry;
+  return appLayout(import.meta.url, routerHome()).cliEntry;   // decision 192: the stable home copy when present
 }
 
 /** The running supervisor's pid, only when that pid really runs `<cli entry> supervise`. */

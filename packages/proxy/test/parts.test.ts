@@ -102,7 +102,9 @@ test('usage rows go to the spool while the daemon has no route (404) or is down,
     assert.ok(wire.length >= 3);
     for (const w of wire) {
       assert.equal(w.headers.authorization, undefined);
-      assert.ok(!JSON.stringify(w).includes('daemon-token') && !w.body.includes('m-1'), 'sealed');
+      // the marker has a quote, which the envelope's base64url text cannot hold: a three-letter marker such as an id
+      // turns up in random ciphertext about once in 260 000 positions, which failed this test now and then
+      assert.ok(!JSON.stringify(w).includes('daemon-token') && !w.body.includes('"messageId"') && !w.body.includes('"rows"'), 'sealed');
     }
   } finally { await t.close(); await up.close(); daemon.close(); }
 });

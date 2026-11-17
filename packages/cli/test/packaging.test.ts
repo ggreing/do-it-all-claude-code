@@ -16,6 +16,8 @@ import {
 } from '../src/marketplace.ts';
 import { copyHelpersToHome, keyHelper, localTokenHelper, proxyEntry } from '../src/apimode.ts';
 import { cliEntry, daemonEntry, isOurChildCmd } from '../src/daemonctl.ts';
+import { homeAppCheck } from '../src/doctor.ts';
+import { copyTreeIfChanged } from '../src/appcopy.ts';
 import { CLI_VERSION } from '../src/update.ts';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -119,4 +121,34 @@ test('the removed `dashboard` command prints a one-line /office pointer and exit
   const out = execFileSync(process.execPath, [index, 'dashboard'], { encoding: 'utf8', env: { ...process.env, DO_IT_ALL_CLAUDE_CODE_HOME: h } });
   fs.rmSync(h, { recursive: true, force: true });
   assert.match(out, /\/office/);
+});
+
+// ------------------------------------------------------------------ decision 192: the home app copy
+test('homeAppCheck: no check in the workspace; packaged warns only when the home copy is missing', () => {
+  assert.equal(homeAppCheck('workspace', false), null, 'the workspace runs the checkout in place');
+  const ok = homeAppCheck('packaged', true);
+  assert.equal(ok?.ok, true);
+  assert.equal(ok?.blocking, false);
+  const missing = homeAppCheck('packaged', false);
+  assert.equal(missing?.ok, false);
+  assert.match(missing?.detail ?? '', /setup/);
+});
+
+test('copyTreeIfChanged copies only changed files and never follows a symlink at the destination', () => {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'diacc-src-'));
+  const dst = fs.mkdtempSync(path.join(os.tmpdir(), 'diacc-dst-'));
+  try {
+    fs.mkdirSync(path.join(src, 'dist'));
+    fs.writeFileSync(path.join(src, 'dist', 'cli.js'), 'one');
+    fs.writeFileSync(path.join(src, 'top.txt'), 'top');
+    const first = copyTreeIfChanged(src, dst);
+    assert.equal(first.length, 2, 'both files written on the first copy');
+    assert.equal(fs.readFileSync(path.join(dst, 'dist', 'cli.js'), 'utf8'), 'one');
+    // a second copy with nothing changed writes nothing
+    assert.deepEqual(copyTreeIfChanged(src, dst), []);
+    // a changed file is rewritten
+    fs.writeFileSync(path.join(src, 'top.txt'), 'changed');
+    assert.deepEqual(copyTreeIfChanged(src, dst).map(p => path.basename(p)), ['top.txt']);
+    assert.equal(fs.readFileSync(path.join(dst, 'top.txt'), 'utf8'), 'changed');
+  } finally { fs.rmSync(src, { recursive: true, force: true }); fs.rmSync(dst, { recursive: true, force: true }); }
 });

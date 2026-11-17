@@ -2,34 +2,41 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
 import {
-  CLASSIC_GLYPHS, DAEMON_DOWN, GLYPHS, LEAD, OFFICE_MIN_CLAUDE, ROLE_NAME, SLACK, callRow, checksLine, compileSecrets, elapsed, fit,
-  fromAgentStatus, homeCandidates, joinPath, labelFor, modelName, officeLayout, officeSwitch, oneLine, parseHelperLine, requestLine,
-  resultRow, roleOf, statusWord, stepLine, subtaskOf, tagOf, takeLines, textRow, unicodeTerminal, usd, versionAtLeast, wantedRoom, withRow,
-  type DaemonOffice, type Glyphs, type OfficeAgent, type OfficeRole, type OfficeRow, type OfficeStatus,
+  CLASSIC_GLYPHS, DAEMON_DOWN, GLYPHS, LEAD, OFFICE_MIN_CLAUDE, ROLE_NAME, SLACK, TABS, callRow, checksLine, compileSecrets, elapsed, fit,
+  fromAgentStatus, homeCandidates, isTab, joinPath, nextPeriod, labelFor, modelName, officeLayout, officeSwitch, oneLine, parseHelperLine,
+  requestLine, resultRow, roleOf, statusWord, stepLine, subtaskOf, tabLabelsFit, tagOf, takeLines, textRow, unicodeTerminal, versionAtLeast,
+  wantedRoom, withRow,
+  type DaemonOffice, type Glyphs, type OfficeAgent, type OfficeRole, type OfficeRow, type OfficeSettings, type OfficeStatus, type SettingValue,
 } from './model'
-import type { OfficeDaemonState, OfficeTab, OfficeTabData } from '../types/office'
+import { afterApply, savingsTab, settingsTab, teamTab, withCycled, workTab, type Room, type TabContext } from './tabs'
+import type { OfficeDaemonState, OfficeSettingsState, OfficeTab, OfficeTabData } from '../types/office'
 
 // The team office (decision 186, docs/design/team-office.md): the request's team drawn as members at desks across
 // the top of a pane, and below them the session of the one you pick, line by line, the way Claude Code draws its
-// own. Tabs: Office, History, Cost, Routing. No input line (decision 185).
+// own. Tabs: Office, Work, Savings, Team, Settings (decision 193, tabs.tsx). No input line (decision 185): Settings
+// changes a value with Enter and writes it only after a confirmation, through the helper.
 //
 // What only the router knows (level, steps, verify results, cost) comes from a helper process, office/bridge.mjs,
 // started while the pane is open: it makes the sealed calls to the daemon itself (it reads the token; this module
 // never does) and writes JSON lines, which the module reads into $.state. Without it the office still draws from
-// Claude Code's own events.
+// Claude Code's own events. A settings change is one more run of the helper (--apply), given the change on stdin.
 
 const PANE = 'office'
 const TITLE = 'Team office'
 
+// a shape name changes with the value's shape: a value an earlier version stored is then dropped for the initial one
 const agents = atom({ plugin: 'do-it-all-claude-code', key: 'agents' } as const, [], { shape: 'agents-1' })
 const rows = atom({ plugin: 'do-it-all-claude-code', key: 'rows' } as const, {}, { shape: 'rows-1' })
 const selected = atom({ plugin: 'do-it-all-claude-code', key: 'selected' } as const, '', { shape: 'selected-1' })
 const tick = atom({ plugin: 'do-it-all-claude-code', key: 'tick' } as const, 0, { shape: 'tick-1' })
-const tab = atom({ plugin: 'do-it-all-claude-code', key: 'tab' } as const, 'office', { shape: 'tab-1' })
+const tab = atom({ plugin: 'do-it-all-claude-code', key: 'tab' } as const, 'office', { shape: 'tab-2' })
+const period = atom({ plugin: 'do-it-all-claude-code', key: 'period' } as const, '7d', { shape: 'period-1' })
 const daemon = atom({ plugin: 'do-it-all-claude-code', key: 'daemon' } as const, { reach: 'down', view: null }, { shape: 'daemon-1' })
-const history = atom({ plugin: 'do-it-all-claude-code', key: 'history' } as const, { at: 0, data: null }, { shape: 'history-1' })
-const cost = atom({ plugin: 'do-it-all-claude-code', key: 'cost' } as const, { at: 0, data: null, period: '7d' }, { shape: 'cost-1' })
-const routing = atom({ plugin: 'do-it-all-claude-code', key: 'routing' } as const, { at: 0, data: null }, { shape: 'routing-1' })
+const work = atom({ plugin: 'do-it-all-claude-code', key: 'work' } as const, { at: 0, data: null }, { shape: 'work-1' })
+const savings = atom({ plugin: 'do-it-all-claude-code', key: 'savings' } as const, { at: 0, data: null }, { shape: 'savings-1' })
+const team = atom({ plugin: 'do-it-all-claude-code', key: 'team' } as const, { at: 0, data: null }, { shape: 'team-1' })
+const settings = atom({ plugin: 'do-it-all-claude-code', key: 'settings' } as const,
+  { at: 0, data: null, pending: {}, confirm: false, busy: false, result: null }, { shape: 'settings-1' })
 
 type Engine = EngineInterface
 
@@ -52,6 +59,15 @@ let sessionId = ''
 let paneOpen = false
 /** The person closed the pane: it does not open itself again until the next prompt. */
 let closedByPerson = false
+/**
+ * The key the pane's focus ring is on (ui.focus). The engine keeps the ring at a position, so rows that move under
+ * it (a new request at the top of Work) would carry it to another row: a refresh puts it back on this key.
+ */
+let ringKey = ''
+/** A tab just switched to whose first element is not drawn yet: the ring goes there when its data comes. */
+let wantFocus: OfficeTab | null = null
+/** config.json's officeAutoOpen: off keeps the pane from opening by itself at a request's first worker. */
+let autoOpen = true
 let lastDaemon = ''
 let demoAt = -1
 let helper: { key: string; stop(): void } | null = null
@@ -87,6 +103,7 @@ function start($: Engine): Promise<void> {
     for (const home of homeCandidates({ pluginRoot: root, envHome, userHome })) {
       let text: string | undefined
       try { text = String(await $.fs.read(joinPath(home, 'config.json'))) } catch { continue }
+      autoOpen = officeSwitch(text, 'officeAutoOpen') === 'on'
       if (officeSwitch(text) === 'off') {
         enabled = false
         offReason = 'The team office is off (config.json has office: off). Turn it on: do-it-all-claude-code config set office on, then start a new session.'
@@ -125,20 +142,26 @@ async function onLine($: Engine, text: string): Promise<void> {
     const { error: _old, ...rest } = prev
     return { ...rest, at: now, data: m.data ?? prev.data, ...(m.error ? { error: m.error } : {}) }
   }
-  if (m.type === 'history') await update($, history, fresh)
-  else if (m.type === 'detail') await update($, history, cur => ({ ...cur, detail: m.data ?? { error: m.error ?? 'no such request' } }))
-  else if (m.type === 'cost') await update($, cost, c => ({ ...fresh(c), period: m.period ?? c.period ?? '7d' }))
-  else if (m.type === 'routing') await update($, routing, fresh)
+  // the data of a tab just switched to: its first element is drawn now, so the ring can go there
+  const focusLater = (which: OfficeTab) => {
+    if (wantFocus === which) void focusFirst($, which).catch(() => undefined)
+    else if (paneOpen && /^(req|set)-/.test(ringKey)) void $.ui.focus({ requestId: PANE, key: ringKey }).catch(() => undefined)
+  }
+  if (m.type === 'work') { await update($, work, fresh); focusLater('work') }
+  else if (m.type === 'work-detail') await update($, work, cur => (cur.detailId && cur.detailId === m.id ? { ...cur, detail: m.data ?? { error: m.error ?? 'no such request' } } : cur))
+  else if (m.type === 'savings') { await update($, savings, fresh); focusLater('savings') }
+  else if (m.type === 'team') { await update($, team, fresh); focusLater('team') }
+  else if (m.type === 'settings') { await update($, settings, cur => ({ ...cur, ...fresh(cur) })); focusLater('settings') }
 }
 
 /** Runs the helper for these arguments, replacing one that runs for others; it ends with the pane, the session or the module. */
-function ensureHelper($: Engine, which: OfficeTab, period: string, detail: string): void {
-  const key = `${which}|${period}|${detail}`
+function ensureHelper($: Engine, which: OfficeTab, span: string, detail: string): void {
+  const key = `${which}|${span}|${detail}`
   if (helper?.key === key) return
   stopHelper()
   if (!enabled || !root) return
   // without a session id the helper says the office is not set up, and the office draws from Claude Code alone
-  const argv = ['node', joinPath(joinPath(root, 'office'), 'bridge.mjs'), ...(sessionId ? ['--session', sessionId] : []), '--tab', which, '--period', period, ...(detail ? ['--detail', detail] : [])]
+  const argv = ['node', joinPath(joinPath(root, 'office'), 'bridge.mjs'), ...(sessionId ? ['--session', sessionId] : []), '--tab', which, '--period', span, ...(detail ? ['--detail', detail] : [])]
   const stream = $.process.spawn({ argv })
   let stopped = false
   const mine = { key, stop: () => { stopped = true; void stream.return(undefined as never).catch(() => undefined) } }
@@ -162,9 +185,62 @@ function ensureHelper($: Engine, which: OfficeTab, period: string, detail: strin
 async function steerHelper($: Engine): Promise<void> {
   if (!enabled || !paneOpen) { stopHelper(); return }
   const which = await read($, tab)
-  const c = await read($, cost)
-  const hist = await read($, history) as HistoryState
-  ensureHelper($, which, c.period ?? '7d', which === 'history' ? hist.detailId ?? '' : '')
+  const span = await read($, period)
+  const w = await read($, work) as OfficeTabData
+  ensureHelper($, which, span, which === 'work' ? w.detailId ?? '' : '')
+}
+
+/**
+ * Puts the focus ring on the first thing a tab offers (its first request, the period, its first setting), so the
+ * arrows start there rather than on the tab buttons. Only while the pane holds the keys; otherwise nothing moves.
+ */
+async function focusFirst($: Engine, which: OfficeTab): Promise<void> {
+  // a press on a tab takes the keys (the engine grants them only while the prompt holds no text), so the arrows go on
+  wantFocus = which
+  if (!paneOpen || which === 'office') { wantFocus = null; return }
+  let key = ''
+  if (which === 'work') {
+    const w = await read($, work) as OfficeTabData
+    const list = w.data as { open?: Array<{ requestId: string }>; rows?: Array<{ requestId: string }> } | null
+    const first = list?.open?.[0] ?? list?.rows?.[0]
+    key = w.detailId ? 'back' : first ? `req-${first.requestId}` : ''
+  } else if (which === 'settings') {
+    const st = await read($, settings) as OfficeSettingsState
+    const first = (st.data as OfficeSettings | null)?.items.find(i => i.editable)
+    key = first ? `set-${first.path}` : ''
+  } else key = 'period'
+  if (!key) return
+  const moved = await $.ui.focus({ requestId: PANE, key }).catch(() => ({ deny: 'failed' }))
+  if (!moved.deny && wantFocus === which) wantFocus = null
+}
+
+/**
+ * Writes settings changes: one run of the helper with `--apply` and the change on stdin, which makes the sealed
+ * POST and answers one line. Then the Settings helper starts again, so the tab reads what was written.
+ */
+async function applySettings($: Engine, set: Record<string, SettingValue>, revision: OfficeSettings['revision']): Promise<void> {
+  let answered = false
+  const done = async (status: number | undefined, body: unknown, error?: string) => {
+    answered = true
+    await update($, settings, x => afterApply(x, status, body, error))
+    stopHelper()
+    await steerHelper($)
+  }
+  if (!enabled || !root) { await done(undefined, null, 'the office could not reach its helper'); return }
+  try {
+    const stream = $.process.spawn({ argv: ['node', joinPath(joinPath(root, 'office'), 'bridge.mjs'), ...(sessionId ? ['--session', sessionId] : []), '--apply'], input: JSON.stringify({ revision, set }) })
+    let rest = ''
+    for await (const piece of stream) {
+      if (piece.stream !== 'stdout') continue
+      const taken = takeLines(rest, piece.text)
+      rest = taken.rest
+      for (const line of taken.lines) {
+        const m = parseHelperLine(line)
+        if (m?.type === 'applied' && !answered) await done(m.status, m.data, m.error)
+      }
+    }
+  } catch { /* below */ }
+  if (!answered) await done(undefined, null, 'the change could not be sent: the helper did not answer (is node on the PATH?)')
 }
 
 // ------------------------------------------------------------------ state changes
@@ -359,7 +435,7 @@ export const register: Register = on => {
         // a request's first worker opens the office; the engine places a pane it was not asked for only on a wide terminal
         await start($)
         ensureTicker($)
-        if (!paneOpen && !closedByPerson) void openPane($).catch(() => undefined)
+        if (!paneOpen && !closedByPerson && autoOpen) void openPane($).catch(() => undefined)
       }
     } catch { /* the office never stands in an agent's way */ }
     return spawned
@@ -412,20 +488,25 @@ export const register: Register = on => {
     return next(e)
   })
 
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    ringKey = e.element ?? ''
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('ui.message', async ($, e, next) => {
     const d = e.data as { type?: unknown; id?: unknown } | null
     if (d && d.type === 'select' && typeof d.id === 'string') {
       const id = d.id
       await update($, selected, cur => (cur === id ? '' : id))
     }
-    // a click on the scene gives it the keyboard, so the scene passes the tab keys on (o, h, c, r)
-    if (d && d.type === 'tab' && (d.id === 'office' || d.id === 'history' || d.id === 'cost' || d.id === 'routing')) {
+    // a click on the scene gives it the keyboard, so the scene passes the tab keys on (o, w, s, t, c)
+    if (d && d.type === 'tab' && isTab(d.id)) {
       const id = d.id
       await update($, tab, () => id)
       await steerHelper($)
       // the scene had the keys and leaves with the Office tab: the pane asks for them, so the next tab key is not
       // typed into the prompt (granted only while the prompt holds no text)
-      if (id !== 'office' && paneOpen) await openPane($, true).catch(() => undefined)
+      if (id !== 'office' && paneOpen) { await openPane($, true).catch(() => undefined); await focusFirst($, id) }
     }
     return next(e)
   })
@@ -436,19 +517,44 @@ export const register: Register = on => {
     const pane = e.props as { bodyColumns?: number; scroll?: { bodyRows?: number } } | undefined
     const room: Room = { columns: pane?.bodyColumns ?? 100, rows: pane?.scroll?.bodyRows ?? 40 }
 
+    // the full labels where they fit across, else the short ones (the narrowest dock is about 47 across)
+    const full = tabLabelsFit(room.columns - SLACK)
     const tabs = (
       <Box key="tabs" flexDirection="row">
-        {([['office', 'Office', 'o'], ['history', 'History', 'h'], ['cost', 'Cost', 'c'], ['routing', 'Routing', 'r']] as const).map(([id, label, key]) => (
-          <Button key={`tab-${id}`} hotkey={key} variant={which === id ? 'primary' : 'secondary'} onPress={() => { void (async () => { await update($, tab, () => id); await steerHelper($) })().catch(() => undefined) }}>{label}</Button>
+        {TABS.map(t => (
+          <Button key={`tab-${t.id}`} hotkey={t.key} variant={which === t.id ? 'primary' : 'secondary'} onPress={() => { void (async () => { await update($, tab, () => t.id); await steerHelper($); if (paneOpen) await openPane($, true); await focusFirst($, t.id) })().catch(() => undefined) }}>{full ? t.label : t.short}</Button>
         ))}
       </Box>
     )
     let body: RenderElement
     try {
-      body = which === 'history' ? await historyTab($, e, room)
-        : which === 'cost' ? await costTab($, e, room)
-        : which === 'routing' ? await routingTab($, e, room)
-        : await officeTab($, e, room)
+      if (which === 'office') body = await officeTab($, e, room)
+      else {
+        const quiet = (p: Promise<unknown>) => { void p.catch(() => undefined) }
+        const ctx: TabContext = {
+          g: glyphs(), room: { columns: room.columns, rows: Math.max(1, room.rows - 1) }, dstate: await read($, daemon), now: await $.clock.now(),
+          period: await read($, period),
+          act: {
+            open: id => quiet((async () => { await update($, work, x => ({ ...x, detailId: id, detail: undefined })); await $.ui.focus({ requestId: PANE, key: 'back' }) })()),
+            back: () => quiet((async () => {
+              const was = (await read($, work) as OfficeTabData).detailId
+              await update($, work, x => { const { detail: _d, detailId: _i, ...rest } = x; return rest })
+              if (was) await $.ui.focus({ requestId: PANE, key: `req-${was}` })
+            })()),
+            nextPeriod: () => quiet(update($, period, x => nextPeriod(x))),
+            cycle: item => quiet(update($, settings, x => withCycled(x, item))),
+            ask: () => quiet(update($, settings, x => ({ ...x, confirm: true, result: null }))),
+            cancel: () => quiet(update($, settings, x => ({ ...x, confirm: false }))),
+            discard: () => quiet(update($, settings, x => ({ ...x, pending: {}, confirm: false, result: null }))),
+            apply: (set, revision) => quiet((async () => { await update($, settings, x => ({ ...x, confirm: false, busy: true })); await applySettings($, set, revision) })()),
+          },
+        }
+        const els = { Box, Text, Button }
+        body = which === 'work' ? workTab(els, await read($, work), ctx)
+          : which === 'savings' ? savingsTab(els, await read($, savings), ctx)
+          : which === 'team' ? teamTab(els, await read($, team), ctx)
+          : settingsTab(els, await read($, settings) as OfficeSettingsState, ctx)
+      }
     } catch (err) {
       // a tab that cannot draw says so below the tabs, which stay, so the person can still leave it
       const first = String(err instanceof Error ? err.message : err).split('\n')[0] ?? ''
@@ -460,8 +566,6 @@ export const register: Register = on => {
 
 // ------------------------------------------------------------------ the office tab
 
-/** The pane's body as the engine gave it: `bodyColumns` across, `scroll.bodyRows` the most rows it may take. */
-type Room = { columns: number; rows: number }
 type RenderEvent = Parameters<Engine['ui']['resolve']>[0]
 
 async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderElement> {
@@ -529,6 +633,7 @@ async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderE
     compact: !layout.wall,
     perRow: layout.perRow,
     small: layout.small,
+    narrow: layout.narrow,
   }
   const office = layout.mode === 'desks' && Client
     ? <Client key="office-scene" module="./scene.tsx" props={scene} width={layout.inner} />
@@ -546,8 +651,8 @@ async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderE
   const detail = !target ? '' : target.id === LEAD ? requestLine(view)
     : sub ? [sub.checks.length ? checksLine(sub.checks) : '', sub.repro?.required ? `repro ${sub.repro.state}` : ''].filter(Boolean).join(' · ') : ''
   const hint = layout.mode === 'desks'
-    ? `Click a member to follow its session here · then 1${g.range}9 picks, o h c r switch tabs`
-    : `1${g.range}9 or a click picks a member to follow here (ctrl+x tab gives the office the keys) · o h c r switch tabs`
+    ? `Click a member to follow its session here · then 1${g.range}9 picks, o w s t c switch tabs`
+    : `1${g.range}9 or a click picks a member to follow here (ctrl+x tab gives the office the keys) · o w s t c switch tabs`
 
   // a room too low for frames: Claude Code keeps the height a person once gave an inline pane, for every plugin's
   if (layout.mode === 'tiny') {
@@ -585,124 +690,6 @@ async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderE
             </Box>
           )}
       </Box>
-    </Box>
-  )
-}
-
-// ------------------------------------------------------------------ the other tabs
-
-type HistoryRowView = { requestId: string; closedAt: string; level: string; finalLevel: string; outcome: string | null; acceptance: string | null; totalUsd: number; durationMs: number | null; verifyFailures: number; success: boolean }
-type HistoryState = OfficeTabData & { detailId?: string }
-
-const when = (iso: string): string => {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso.slice(0, 16) : `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-const secs = (ms: number | null) => (typeof ms === 'number' ? `${Math.round(ms / 1000)}s` : '—')
-
-// Each tab draws within the frames' width (the body's less SLACK) and with the marks the terminal draws one cell
-// wide. No local takes the JSX factory's names (h, Fragment): the JSX in its scope would call it instead.
-
-async function historyTab($: Engine, e: RenderEvent, room: Room): Promise<RenderElement> {
-  const { Box, Text, Button } = $.ui.resolve(e)
-  const g = glyphs()
-  const width = Math.max(20, room.columns - SLACK)
-  const hist = await read($, history) as HistoryState
-  const list = ((hist.data as { rows?: HistoryRowView[] } | null)?.rows ?? [])
-  const detail = hist.detailId ? hist.detail as null | undefined | { error?: string; requestId?: string; record?: Record<string, unknown>; signals?: Array<{ subtaskId: string | null; kind: string; ok: boolean }>; hasPrompt?: boolean } : null
-  if (hist.detailId) {
-    const rec = detail?.record ?? {}
-    const subs = (Array.isArray(rec.subtasks) ? rec.subtasks : []) as Array<{ id?: string; role?: string; step?: string; status?: string; verdict?: string | null }>
-    return (
-      <Box flexDirection="column" width={width}>
-        <Button key="back" hotkey="b" onPress={() => { void update($, history, x => { const { detail: _d, detailId: _i, ...rest } = x as HistoryState; return rest }) }}>Back</Button>
-        {!detail ? <Text dimColor>Loading…</Text> : null}
-        {detail?.error ? <Text color="error" wrap="truncate-end">{detail.error}</Text> : null}
-        <Text bold wrap="truncate-end">{hist.detailId}</Text>
-        {detail && !detail.error && subs.length === 0 ? <Text dimColor wrap="truncate-end">No subtasks: the lead did this request itself.</Text> : null}
-        {subs.map((s, i) => {
-          const sig = (detail?.signals ?? []).filter(x => x.subtaskId === s.id && x.kind !== 'review')
-          return <Text key={`sub-${i}`} wrap="truncate-end">{`${s.id ?? '?'} ${s.role ?? ''} ${s.step ?? ''} ${s.status ?? ''}${s.verdict ? ` (${s.verdict})` : ''}`}<Text dimColor>{sig.length ? ` · ${sig.map(x => `${x.kind} ${x.ok ? 'ok' : 'failed'}`).join(', ')}` : ''}</Text></Text>
-        })}
-        {detail?.hasPrompt ? <Text dimColor wrap="truncate-end">The prompt is kept in the request record (recordPrompts); the office does not show it.</Text> : null}
-      </Box>
-    )
-  }
-  return (
-    <Box flexDirection="column" width={width}>
-      {hist.error ? <Text color="error" wrap="truncate-end">{hist.error}</Text> : null}
-      {list.length === 0 && !hist.error ? <Text dimColor>{hist.at ? 'No closed requests yet.' : 'Loading…'}</Text> : null}
-      {list.map(row => {
-        const main = `${when(row.closedAt)}  ${row.level}${row.finalLevel !== row.level ? `${g.arrow}${row.finalLevel}` : ''}  ${(row.outcome ?? '—').padEnd(10)} ${row.success ? g.status.done : g.status.failed} ${usd(row.totalUsd).padStart(7)}`
-        const more = `  ${secs(row.durationMs)}${row.verifyFailures ? ` · ${row.verifyFailures} verify failure${row.verifyFailures === 1 ? '' : 's'}` : ''}${row.acceptance && row.acceptance !== 'n/a' ? ` · ${row.acceptance}` : ''}`
-        return (
-          <Button key={`req-${row.requestId}`} plain onPress={() => { void update($, history, x => ({ ...x, detailId: row.requestId, detail: undefined })) }}>
-            {fit(main, width)}
-            <Text dimColor>{fit(more, Math.max(0, width - [...main].length))}</Text>
-          </Button>
-        )
-      })}
-    </Box>
-  )
-}
-
-async function costTab($: Engine, e: RenderEvent, room: Room): Promise<RenderElement> {
-  const { Box, Text, Button } = $.ui.resolve(e)
-  const width = Math.max(20, room.columns - SLACK)
-  const c = await read($, cost) as OfficeTabData
-  const s = c.data as null | {
-    total: number; successRate: number | null; costPerAcceptedTaskUsd: number | null
-    cost: { totalUsd: number; leadUsd: number; subtaskUsd: number }
-    flags: { estimated: number; unknown: number; budgetExceeded: number }
-    byLevel: Array<{ level: string; count: number; totalUsd: number; successRate: number | null }>
-    acceptance?: { accepted: number }
-    limits?: null | { fiveHour: { usedPercentage: number } | null; sevenDay: { usedPercentage: number } | null }
-  }
-  const pct = (v: number | null | undefined) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : '—')
-  return (
-    <Box flexDirection="column" width={width}>
-      <Box key="periods" flexDirection="row">
-        {([['24h', '24 hours', 't'], ['7d', '7 days', 'w'], ['30d', '30 days', 'm']] as const).map(([id, label, key]) => (
-          <Button key={`period-${id}`} hotkey={key} variant={(c.period ?? '7d') === id ? 'primary' : 'secondary'} onPress={() => { void update($, cost, x => ({ ...x, period: id, data: null })) }}>{label}</Button>
-        ))}
-      </Box>
-      {c.error ? <Text color="error" wrap="truncate-end">{c.error}</Text> : null}
-      {!s ? <Text dimColor>{c.error ? '' : 'Loading…'}</Text> : (
-        <Box flexDirection="column">
-          <Text wrap="truncate-end">{`${s.total} request${s.total === 1 ? '' : 's'} · ${usd(s.cost.totalUsd)} (lead ${usd(s.cost.leadUsd)}, workers ${usd(s.cost.subtaskUsd)}) · ${usd(s.costPerAcceptedTaskUsd)} per accepted · ${s.acceptance ? `${s.acceptance.accepted} of ${s.total} accepted` : `success ${pct(s.successRate)}`}`}</Text>
-          {s.byLevel.map(l => <Text key={`lvl-${l.level}`} wrap="truncate-end">{`  ${l.level}  ${String(l.count).padStart(4)}  ${usd(l.totalUsd).padStart(8)}  success ${pct(l.successRate)}`}</Text>)}
-          {s.flags.estimated || s.flags.unknown || s.flags.budgetExceeded
-            ? <Text color="warning" wrap="truncate-end">{[s.flags.estimated ? `${s.flags.estimated} estimated` : '', s.flags.unknown ? `${s.flags.unknown} with unknown costs` : '', s.flags.budgetExceeded ? `${s.flags.budgetExceeded} over budget` : ''].filter(Boolean).join(' · ')}</Text>
-            : null}
-          {s.limits && (s.limits.fiveHour || s.limits.sevenDay)
-            ? <Text dimColor wrap="truncate-end">{[s.limits.fiveHour ? `5-hour limit ${Math.round(s.limits.fiveHour.usedPercentage)}% used` : '', s.limits.sevenDay ? `7-day limit ${Math.round(s.limits.sevenDay.usedPercentage)}% used` : ''].filter(Boolean).join(' · ')}</Text>
-            : null}
-        </Box>
-      )}
-    </Box>
-  )
-}
-
-async function routingTab($: Engine, e: RenderEvent, room: Room): Promise<RenderElement> {
-  const { Box, Text } = $.ui.resolve(e)
-  const g = glyphs()
-  const width = Math.max(20, room.columns - SLACK)
-  const rt = await read($, routing) as OfficeTabData
-  const dstate = await read($, daemon)
-  const view = (dstate.reach === 'ok' ? dstate.view : null) as (DaemonOffice & { routing?: { mode: string; holdoutRate: number; classes: Array<{ leadClass: string; levels: Array<{ level: string; released: boolean; delegated: { n: number; costPerAcceptedUsd: number | null }; direct: { n: number; costPerAcceptedUsd: number | null }; decision: { action: string; reason: string } }> }> } }) | null
-  const report = rt.data as null | { overall: { total: number; levelHeld: number; teamFit: number; startStepFit: number }; byRule: Array<{ rule: string; count: number; suggestLevelUp: boolean; suggestStepUp: boolean }>; byLevel: Array<{ planned: string; final: string; count: number }> }
-  const pct = (n: number, of: number) => (of ? `${Math.round((n / of) * 100)}%` : '—')
-  const r = view?.routing
-  return (
-    <Box flexDirection="column" width={width}>
-      {rt.error ? <Text color="error" wrap="truncate-end">{rt.error}</Text> : null}
-      {r ? <Text bold wrap="truncate-end">{`auto-release ${r.mode} · holdout ${Math.round(r.holdoutRate * 100)}%`}</Text> : <Text dimColor wrap="truncate-end">{dstate.reach === 'ok' ? 'No routing data yet.' : DAEMON_DOWN}</Text>}
-      {(r?.classes ?? []).flatMap(c => c.levels.filter(l => l.delegated.n || l.direct.n).map(l => (
-        <Text key={`arm-${c.leadClass}-${l.level}`} wrap="truncate-end">{`  ${c.leadClass} ${l.level}${l.released ? ' (lead-direct now)' : ''}  team n=${l.delegated.n} ${usd(l.delegated.costPerAcceptedUsd)}/accepted · lead n=${l.direct.n} ${usd(l.direct.costPerAcceptedUsd)}/accepted ${g.arrow} ${l.decision.action}`}<Text dimColor>{` (${l.decision.reason.replace(/_/g, ' ')})`}</Text></Text>
-      )))}
-      {report ? <Text wrap="truncate-end">{`triage: ${report.overall.total} requests · level held ${pct(report.overall.levelHeld, report.overall.total)} · team fit ${pct(report.overall.teamFit, report.overall.total)} · start step fit ${pct(report.overall.startStepFit, report.overall.total)}`}</Text> : null}
-      {(report?.byLevel ?? []).filter(l => l.planned !== l.final).map(l => <Text key={`pl-${l.planned}-${l.final}`} dimColor wrap="truncate-end">{`  planned ${l.planned}, ended ${l.final}: ${l.count}`}</Text>)}
-      {(report?.byRule ?? []).filter(x => x.suggestLevelUp || x.suggestStepUp).map(x => <Text key={`rule-${x.rule}`} color="warning" wrap="truncate-end">{`  rule ${x.rule}: ${x.suggestLevelUp ? 'its level may be too low' : 'its start step may be too low'} (${x.count} requests)`}</Text>)}
     </Box>
   )
 }

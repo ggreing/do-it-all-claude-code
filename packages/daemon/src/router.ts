@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ACCEPTANCE_RULE_VERSION, ACCEPT_WINDOW_PROMPTS, MAX_STEP_UPS, PRICING_PER_MTOK, ROUTER_TOOL_PREFIX, RouterToolCall, dissatisfactionRule, holdoutDraw, isReask, promptSimilarity, afterEasyPass, afterOtherResult, afterRaise, atDispatch, costUsd, decideEscalation, formatTriageContext, isRouterToolName, l3SignalRoles, ladderStep,
-  effectiveRoleText, isRoleName, leadModelClass, normalizeLeadTriage, oneFileDirect, parseRoleFile, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, stepIndex, stepUp, triage,
+  effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, normalizeLeadTriage, oneFileDirect, parseRoleFile, profileOf, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
   type LeadModelClass, type Level, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
   type RouterEvent, type RouterToolErrorCode, type RouterToolName, type RouterToolResult, type Step, type TeamPreset, type TriageResult, type Usage,
   type UpdateNotice, type VerifySignal,
@@ -15,14 +15,14 @@ import type { ConfigFile } from './config.ts';
 import { AWAITING_USER_MARKER, awaitsUser, classifyPrompt } from './continuation.ts';
 import { changedFiles, fileFingerprint, takeSnapshot } from './git.ts';
 import { writeJsonAtomic, type HomeLayout } from './home.ts';
-import type { AcceptState, AgentRow, ClientRow, Holdout, Ledger, RequestRow, SlotRow, SubtaskReview, SubtaskRow } from './ledger.ts';
+import type { AcceptState, AgentRow, ClientRow, Holdout, Ledger, RequestRow, SlotRow, SubtaskChanges, SubtaskFile, SubtaskReview, SubtaskRow } from './ledger.ts';
 import { errorText, nullLogger, type Logger } from './log.ts';
 import { cleanVerifyEnv, verifyEnv, withoutEnvValues } from './env.ts';
 import { eventPayload, minimalPayload, storedPromptKind, tailText } from './payload.ts';
 import { matchesScope } from './glob.ts';
 import { PresetResolver } from './presets.ts';
 import { crossCheck, type CrossCheck } from './proxyusage.ts';
-import { checkEndState, requestChanges, requestEndState, takeRequestSnapshot, type ChangeStats, type RequestEndState, type RequestSnapshot } from './record.ts';
+import { MAX_RECORD_FILES, checkEndState, requestChanges, requestEndState, subtaskFileChanges, takeRequestSnapshot, type ChangeStats, type RequestEndState, type RequestSnapshot } from './record.ts';
 import { parseReportVerdict, reportAsksForScope, type ReportVerdict } from './review.ts';
 import { PromptMemory, acceptanceBlob, addSignal, newAcceptState, storedAcceptance } from './accept.ts';
 import { LEAD_CLASSES, RELEASE_LEVELS, applyRelease, releaseChange, routingHoldoutRate, routingMode, routingView, type RoutingView } from './routing.ts';
@@ -39,7 +39,7 @@ import {
   resolveReproTemplates, runRepro, treePath, type ReproRecord, type ReproTag, type ReproTemplate, type StopCheck,
 } from './repro.ts';
 import { resolveVerifyCommands } from './verify-source.ts';
-import { COMMAND_TIMEOUT_MS, TOTAL_TIMEOUT_MS, existsInTree, isEnvFailure, runVerify, subagentChanges, type VerifyCommand, type VerifyPlan } from './verify.ts';
+import { COMMAND_TIMEOUT_MS, SHARED_BUSY_MARK, TOTAL_TIMEOUT_MS, existsInTree, isEnvFailure, runVerify, subagentChanges, type VerifyCommand, type VerifyPlan } from './verify.ts';
 
 export interface VerifySettings {
   commandTimeoutMs: number;
@@ -144,7 +144,19 @@ export class Router {
       ...(this.#basePresets ? { base: this.#basePresets } : {}), homeRoot: this.#home.root, log: this.#log,
       ...(this.#config.budgetsUsd ? { budgets: this.#config.budgetsUsd } : {}),
       ...(this.#config.delegateFrom ? { delegateFrom: this.#config.delegateFrom } : {}),
+      profile: profileOf(this.#config),   // decision 194
     });
+  }
+
+  /** The folder a session last worked in, as its hooks reported it (memory only; the Team and Settings tabs read it). */
+  readonly #sessionCwd = new Map<string, string>();
+  sessionCwd(sessionId: string): string | undefined {
+    return this.#sessionCwd.get(sessionId);
+  }
+
+  /** The configuration the router runs on (the profile's values included). */
+  get config(): ConfigFile {
+    return this.#config;
   }
 
   /**
@@ -160,6 +172,10 @@ export class Router {
   /** Handles one event in session order and returns what the client should do. */
   async process(ev: RouterEvent): Promise<RouterDecision> {
     const key = ev.sessionId || '_';
+    if (ev.sessionId && ev.cwd && !ev.agentId) {
+      if (this.#sessionCwd.size >= 500 && !this.#sessionCwd.has(ev.sessionId)) this.#sessionCwd.clear();
+      this.#sessionCwd.set(ev.sessionId, ev.cwd);
+    }
     const out = await this.#queue.run(key, () => this.#handle(ev));
     if (!('deferred' in out)) return out;
     const work = out.deferred();
@@ -286,13 +302,34 @@ export class Router {
     ctx.requestId = req.id;
     if (!ev.spooled) this.#prompts.remember(ev.sessionId, req.id, prompt, this.#now().getTime());
     const notice = !ev.spooled && req.leadClass && routingMode(this.#config) === 'on' ? this.ledger.takeReleaseNotice(req.leadClass) : undefined;   // decision 138
-    return { context: this.#triageContext(req.triage, req.team, ev.cwd, req.leadModel), ...(notice ? { userMessage: notice } : {}) };
+    return { context: this.#triageContext(req.triage, req.team, ev.cwd, req.leadModel, { ask: !ev.spooled }), ...(notice ? { userMessage: notice } : {}) };
   }
 
   /** The brief for the lead; an uncertain triage also names the L2 team the lead would call (core). */
-  #triageContext(t: TriageResult, team: TeamPreset, cwd: string | undefined, leadModel: string | null): string {
-    const brief = formatTriageContext(t, team, this.#resolver.resolve(cwd, leadModel ?? undefined).presets);   // the L2 and L3 of teams.yaml (decision 113)
-    return reproMode(this.#config) === 'off' ? brief : `${brief}\n${REPRO_BRIEF}`;
+  #triageContext(t: TriageResult, team: TeamPreset, cwd: string | undefined, leadModel: string | null, opts: { ask?: boolean } = {}): string {
+    const parts = [formatTriageContext(t, team, this.#resolver.resolve(cwd, leadModel ?? undefined).presets)];   // the L2 and L3 of teams.yaml (decision 113)
+    if (reproMode(this.#config) !== 'off') parts.push(REPRO_BRIEF);
+    // decision 192 (Q3): the one-time project-setup note, on a LIVE delegation only. A replayed (spooled) prompt's
+    // context reaches no one, so it must not consume the one ask (opts.ask === false then). Two sessions' first
+    // prompts racing may both read "not asked" and both get the note — at most twice, which is fine.
+    if (team.leadDirect !== true && opts.ask !== false) { const ps = this.#projectSetupBrief(cwd); if (ps) parts.push(ps); }
+    return parts.join('\n');
+  }
+
+  /**
+   * decision 192 (Q3): the first time the router delegates in a project that has not been set up, add a one-time
+   * note telling the lead to ask the user whether to turn on git-worktree isolation. It is recorded as "asked"
+   * (no decided value yet) so it is added once per project even if the lead never asks; `project enable|disable`
+   * decides it. Returns '' when there is nothing to add (no cwd / not a git work tree / already asked or decided).
+   */
+  #projectSetupBrief(cwd: string | undefined): string {
+    if (!cwd) return '';
+    const root = workTreeRoot(cwd);
+    if (!root) return '';
+    const home = this.#home.root;
+    if (readProjectState(root, home)) return '';   // already asked or decided
+    try { writeProjectState({ path: root, askedAt: this.#at() }, home); } catch { return ''; }
+    return PROJECT_SETUP_BRIEF;
   }
 
   /**
@@ -393,7 +430,7 @@ export class Router {
         const settled = this.ledger.getAcceptState(requestId)?.done === true;
         const end = taken ? turnEnd! : fresh;
         if (!taken && end?.files.length && !settled) this.ledger.setEndState(requestId, end);
-        this.#writeRecord(requestId, end?.changes ?? null, lead, prompts);
+        this.#writeRecord(requestId, end?.changes ?? null, lead, prompts, end?.list);
         if (taken && !turnEnd!.files.length && !settled) this.ledger.setEndState(requestId, null);   // nothing to look at again
       });
     })());
@@ -427,7 +464,7 @@ export class Router {
     this.#log.info('subagent cost read again at request close', { requestId, agentId: a.agentId, calls: { recorded, found }, running: a.running });
   }
 
-  #writeRecord(requestId: string, changes: ChangeStats | null, lead: LeadUsage, prompts: Array<{ promptId: string | null; notification: boolean }>): void {
+  #writeRecord(requestId: string, changes: ChangeStats | null, lead: LeadUsage, prompts: Array<{ promptId: string | null; notification: boolean }>, files?: SubtaskFile[]): void {
     const at = this.#at();
     if (lead.ok) {
       this.ledger.replaceLeadCosts(requestId, lead.models.map(m => ({
@@ -478,6 +515,7 @@ export class Router {
       // decision 145: the lead's own edits after it delegated (why the outcome is lead_takeover)
       ...(r.leadEdits ? { leadEdits: { calls: r.leadEdits, files: r.leadEditFiles } } : {}),
       changes,
+      ...(files?.length ? { files } : {}),   // decision 193: the changed files with the most changed lines, by name
       time: { durationMs, activeMs: Math.max(0, durationMs - extras.awaitingMs), awaitingMs: extras.awaitingMs },
       turns: { prompts: prompts.length, notifications, continuations: Math.max(0, prompts.length - 1 - notifications) },
       subtasks: subs.map(s => ({
@@ -542,7 +580,7 @@ export class Router {
       ctx.requestId = latest.id;
       return {
         context: [
-          this.#triageContext(t, team, ev.cwd, latest.leadModel),
+          this.#triageContext(t, team, ev.cwd, latest.leadModel, { ask: !ev.spooled }),
           `[do-it-all-claude-code] level set manually to ${level} for request ${latest.id} (was ${latest.level}). Subtasks already running keep their step; new Agent calls must use the steps above.`,
         ].join('\n'),
       };
@@ -777,6 +815,7 @@ export class Router {
       return;
     }
     this.#raiseSlot(requestId, sub.role, sub.slot, next, ups + 1, at);
+    this.ledger.addStepChange({ requestId, subtaskId: sub.id, role: sub.role, slot: sub.slot, from: state?.step ?? sub.step, to: next, reason: verdict === 'rejected' ? 'rejected' : 'miss', detail: null, at });
     this.ledger.updateSubtask(requestId, sub.id, { status: 'failed', verdict, upCount: ups + 1 }, at);
     this.#log.info('slot raised after a miss', { requestId, subtaskId: sub.id, role: sub.role, slot: sub.slot, from: sub.step, to: next, verdict });
   }
@@ -848,18 +887,34 @@ export class Router {
     } else this.#scopeAsked.delete(agentId);
     if (ev.spooled && agent) this.ledger.updateAgent(agentId, { stoppedAt: this.#at() });
     if (agent && ev.agentTranscriptPath) this.ledger.updateAgent(agentId, { transcriptPath: ev.agentTranscriptPath });
+    // decision 192: from here this agent no longer edits; two writers that stop together must not wait for each other
+    if (plan) this.#stopping.add(agentId);
     return {
       deferred: async () => {
+        // decision 192: while another writer still changes the same shared tree, a build or a test would judge its
+        // half-made changes too; only the scope is checked, and the last writer's stop runs the commands
+        const busy = plan && sub && agent ? this.#writersStillRunning(agent, sub) : [];
         // verify first: by then Claude Code has written the subagent's last lines (measurement, decision 107 runs)
         // decision 175: the reproduction test runs first; when it still fails the verify commands are not run
-        const rep = plan && sub && agent ? await this.#reproAtStop(agent, sub, plan, ev.lastAssistantMessage) : undefined;
-        const signals = plan ? await this.#runPlan(plan, sub!, agent!, ev.agentTranscriptPath, rep?.check.signal?.ok === false) : undefined;
+        const rep = plan && sub && agent && !busy.length ? await this.#reproAtStop(agent, sub, plan, ev.lastAssistantMessage) : undefined;
+        const signals = plan ? await this.#runPlan(plan, sub!, agent!, ev.agentTranscriptPath, rep?.check.signal?.ok === false || busy.length > 0) : undefined;
+        if (busy.length && plan && signals) {
+          plan.outcome = { ...plan.outcome, sharedBusy: busy };
+          const scope = signals.find(x => x.kind === 'scope');
+          if (scope) scope.detail = `${scope.detail ?? ''}; ${SHARED_BUSY_MARK}${busy.join(', ')}`;
+        }
         if (rep?.check.signal && signals) signals.unshift(rep.check.signal);
+        const changes = plan && sub && agent ? await this.#subtaskChanges(agent, plan) : undefined;   // decision 193
         await waitForQuiet(ev.agentTranscriptPath);
         const usage = await readTranscriptUsage(ev.agentTranscriptPath);
         return () => {
+          this.#stopping.delete(agentId);   // a blocked stop goes on editing; a finished one has its stop time by now
           this.#recordTranscriptCost(ev, agentId, requestId, agent?.subtaskId ?? null, usage, managed);
           if (rep && sub) this.#saveReproAtStop(agentId, sub, rep);
+          if (changes && sub) {
+            try { this.ledger.updateSubtask(sub.requestId, sub.id, { changes }, this.#at()); }
+            catch (e) { this.#log.error('subtask changes not recorded', { agentId, error: errorText(e) }); }
+          }
           if (signals && plan) {
             const decision = this.#finishStop(ev, agentId, signals, plan);
             if (judge) this.#applyReportVerdict(agentId, reported);
@@ -985,9 +1040,13 @@ export class Router {
           return `${head}: the subagent ended with an error before it finished; verify did not run${tail}. Decide: dispatch a new attempt or report to the user.`;
         }
         return `${head}: verify failed again after one fix attempt (miss) — ${checks}${firstFailure ? `. First failure: ${firstFailure}` : ''}${tail}.`
-          + this.#afterFailure(sub, 'what failed');
+          + this.#sharedTreeNote(sub) + this.#afterFailure(sub, 'what failed');
       case 'hitl': {
         if (sub.verdict === 'held') {
+          const busy = signals.map(x => (x.detail ?? '').split(SHARED_BUSY_MARK)[1]).find(Boolean);
+          if (busy) {   // decision 192
+            return `${head}: scope ok, not verified on its own${tail}: subtask ${busy} was still changing files in the same work tree, so the build and tests wait for the last of them. Its result counts when that verify passes; do not re-run the checks yourself before then.`;
+          }
           if (signals.some(x => x.detail?.includes(`: held, ${BASH_NOT_FOUND}`))) {
             return `${head}: verify held: ${BASH_NOT_FOUND}; the verify commands did not run${tail}. Tell the user.`;
           }
@@ -1009,7 +1068,7 @@ export class Router {
           return `${head}: its result was reported as wrong and the slot has no raise left (${MAX_STEP_UPS} step-ups or the top step)${tail}. Ask the user how to continue (spec 3.5).`;
         }
         if (sub.verdict === 'miss') {
-          return `${head}: verify failed again at step ${sub.step} after ${MAX_STEP_UPS} step-ups — ${checks}${tail}. Ask the user how to continue (spec 3.5).`;
+          return `${head}: verify failed again at step ${sub.step} after ${MAX_STEP_UPS} step-ups — ${checks}${tail}.${this.#sharedTreeNote(sub)} Ask the user how to continue (spec 3.5).`;
         }
         return `${head}: needs the user's decision before it can continue${tail}.`;
       }
@@ -1046,6 +1105,56 @@ export class Router {
         snapshot: agent.snapshot, ...(shared.length ? { sharedAllowed: [...new Set(shared)] } : {}),
       },
     };
+  }
+
+  /**
+   * Decision 192: the other writers of the request that are still running in the same shared work tree (the user's
+   * checkout, not a work tree of their own). Empty for a reader, an isolated tree, or when nobody else writes.
+   */
+  readonly #stopping = new Set<string>();   // agents whose stop is being verified: they have stopped editing
+  #writersStillRunning(agent: AgentRow, sub: SubtaskRow): string[] {
+    const root = agent.snapshot?.root;
+    if (!root || agent.snapshot?.isolated !== false || !agent.requestId || !this.#roleWrites(sub.role)) return [];
+    const ids = this.ledger.listAgents(agent.requestId)
+      .filter(a => a.agentId !== agent.agentId && !!a.subtaskId && a.subtaskId !== sub.id && !a.stoppedAt && !this.#stopping.has(a.agentId)
+        && a.snapshot?.root === root && a.snapshot.isolated === false)
+      .filter(a => { const s = this.ledger.getSubtask(agent.requestId!, a.subtaskId!); return !!s && (s.status === 'running' || s.status === 'pending') && this.#roleWrites(s.role); })
+      .map(a => a.subtaskId!);
+    return [...new Set(ids)].sort();
+  }
+
+  /** Decision 192: the subtasks of a request whose verify waited for the other writers of a shared tree, and what they changed. */
+  #heldForSharedTree(requestId: string, except: string): SubtaskRow[] {
+    return this.ledger.listSubtasks(requestId).filter(s => s.id !== except && s.status === 'hitl' && s.verdict === 'held'
+      && this.ledger.listSignals(requestId, s.id).some(x => x.kind === 'scope' && x.detail?.includes(SHARED_BUSY_MARK)));
+  }
+
+  /** Decision 192: for a failed verify in a shared tree, the subtasks whose changes it also saw. */
+  #sharedTreeNote(sub: SubtaskRow): string {
+    const held = this.#heldForSharedTree(sub.requestId, sub.id);
+    if (!held.length) return '';
+    const list = held.map(s => {
+      const files = s.changes?.files.map(f => f.path) ?? [];
+      return `${s.id}${files.length ? ` (${files.slice(0, 5).join(', ')}${files.length > 5 ? `, and ${files.length - 5} more` : ''})` : ''}`;
+    }).join('; ');
+    return ` This verify ran on the shared work tree and also saw the changes of subtask${held.length === 1 ? '' : 's'} ${list}, which were not verified on their own: the failure may come from them.`;
+  }
+
+  /** Decision 193: the files the subtask changed, with line counts against its start commit, for the Work tab. Undefined: not known. */
+  async #subtaskChanges(agent: AgentRow, plan: VerifyPlan): Promise<SubtaskChanges | undefined> {
+    const snap = agent.snapshot;
+    if (!snap?.root || !plan.scope) return undefined;
+    try {
+      const changed = await subagentChanges(plan.cwd, plan.scope);
+      if (!changed) return undefined;
+      // in a tree other writers share, a file inside one of their scopes and outside this one's is theirs
+      const { allowed, sharedAllowed = [], unscoped } = plan.scope;
+      const mine = sharedAllowed.length ? changed.filter(f => unscoped || matchesScope(f, allowed) || !matchesScope(f, sharedAllowed)) : changed;
+      return await subtaskFileChanges(snap.root, snap.head, mine, new Set(Object.keys(snap.dirty ?? {})));
+    } catch (e) {
+      this.#log.warn('subtask changes not read', { agentId: agent.agentId, error: errorText(e) });
+      return undefined;
+    }
   }
 
   async #runPlan(plan: VerifyPlan, sub: SubtaskRow, agent: AgentRow, transcript: string | undefined, scopeOnly = false): Promise<VerifySignal[]> {
@@ -1105,6 +1214,14 @@ export class Router {
         else this.#log.warn('verify held: its inputs changed during the subtask', { agentId, subtaskId: sub.id, files: outcome.held });
         return NONE;
       }
+      // Decision 192: other writers still change the same shared tree: the scope was checked, the commands wait for
+      // the last of them. Neither pass nor miss; it passes when that last verify does.
+      if (outcome.sharedBusy?.length && !scopeFailed) {
+        this.ledger.updateAgent(agentId, { stopCount: attempt, stoppedAt: at });
+        this.ledger.updateSubtask(agent.requestId, sub.id, { status: 'hitl', verdict: 'held' }, at);
+        this.#log.info('verify held: other writers still change the same work tree', { agentId, subtaskId: sub.id, running: outcome.sharedBusy });
+        return NONE;
+      }
       // Decision 122: a check that could not run here (a tool is missing) is not the subagent's failure.
       const failed = signals.filter(x => !x.ok && !isEnvFailure(x));
       if (!failed.length && signals.some(isEnvFailure)) {
@@ -1119,6 +1236,13 @@ export class Router {
         const noChanges = WRITER_ROLES.has(sub.role) && changedInScope(signals) === 0;
         this.ledger.updateSubtask(agent.requestId, sub.id, noChanges ? { status: 'hitl', verdict: 'no_changes' } : { status: 'passed', verdict: 'meet' }, at);
         if (noChanges) this.#log.info('writer subtask changed nothing in its scope', { agentId, subtaskId: sub.id, role: sub.role });
+        // decision 192: this verify ran on the whole shared tree, so it also covers the writers whose own verify waited
+        else if (agent.snapshot?.isolated === false && !this.#writersStillRunning(agent, sub).length) {
+          for (const h of this.#heldForSharedTree(agent.requestId, sub.id)) {
+            this.ledger.updateSubtask(agent.requestId, h.id, { status: 'passed', verdict: 'meet' }, at);
+            this.#log.info('held subtask passed with the last writer of its work tree', { requestId: agent.requestId, subtaskId: h.id, verifiedWith: sub.id });
+          }
+        }
         return NONE;
       }
       const fails = agent.failCount + 1;
@@ -1999,6 +2123,7 @@ export class Router {
       });
     if (d.granted) {
       this.#raiseSlot(req.id, sub.role, sub.slot, d.to, upCount + 1, at);
+      this.ledger.addStepChange({ requestId: req.id, subtaskId: sub.id, role: sub.role, slot: sub.slot, from: step, to: d.to, reason: 'escalation', detail: i.reason, at });
       if (d.leadOnly) this.ledger.setSlotCounters(req.id, sub.role, sub.slot, d.to, { leadRaises: (slot?.leadRaises ?? 0) + 1 }, at);
       this.ledger.updateSubtask(req.id, sub.id, { upCount: upCount + 1 }, at);
       this.#log.info('slot raised on request', { requestId: req.id, subtaskId: sub.id, role: sub.role, slot: sub.slot, from: step, to: d.to, reason: i.reason, leadOnly: d.leadOnly });
@@ -2147,6 +2272,7 @@ export class Router {
     this.ledger.setSlotAdjust(req.id, sub.role, sub.slot, r.state, at);
     if (!r.steppedDownTo) return undefined;
     this.ledger.setSlotCounters(req.id, sub.role, sub.slot, r.steppedDownTo, { failStreak: 0 }, at);
+    this.ledger.addStepChange({ requestId: req.id, subtaskId: sub.id, role: sub.role, slot: sub.slot, from: step, to: r.steppedDownTo, reason: 'easy', detail: null, at });
     this.#log.info('slot lowered after two easy results', { requestId: req.id, subtaskId: sub.id, role: sub.role, slot: sub.slot, from: step, to: r.steppedDownTo });
     return r.steppedDownTo;
   }
@@ -2192,11 +2318,13 @@ export class Router {
 
   /** The files a request has changed and their counts, as the work tree shows them now. */
   async #readTurnEnd(requestId: string, snap: RequestSnapshot): Promise<RequestEndState | null> {
+    const list: SubtaskFile[] = [];
     const [changes, end] = await Promise.all([
-      requestChanges(snap).catch(e => { this.#log.warn('request changes not counted', { requestId, error: errorText(e) }); return null; }),
+      requestChanges(snap, list).catch(e => { this.#log.warn('request changes not counted', { requestId, error: errorText(e) }); return null; }),
       requestEndState(snap).catch(() => null),
     ]);
-    return end ? { ...end, changes, takenAt: this.#at() } : null;
+    list.sort((a, b) => (b.added + b.removed) - (a.added + a.removed) || a.path.localeCompare(b.path));
+    return end ? { ...end, changes, ...(changes && list.length ? { list: list.slice(0, MAX_RECORD_FILES) } : {}), takenAt: this.#at() } : null;
   }
 
   /**
@@ -2458,6 +2586,14 @@ const reproNotEasy = (r: ReproRecord | null | undefined): boolean => !!r?.requir
   && (r.state !== 'reproduced' || Object.values(r.files ?? {}).some(f => f.kind !== 'body'));
 const REPRO_BRIEF = 'Reproduce first is on: a coder subtask for a bug fix or a new behavior first writes a test that fails, which the router runs. After the [scope: ...] line of such a subtask put "[repro: required]" and include the test folder in its scope; '
   + 'for work a test cannot show put "[repro: off <reason>]" with a reason of refactor, docs, config, no-tests or not-testable. Without the line the router decides.';
+
+// decision 192 (Q3): the one-time project-setup note added to the first delegation in a project not yet set up.
+const PROJECT_SETUP_BRIEF = 'Project setup (first delegation here): this project is not set up for parallel isolation yet. '
+  + 'With it ON, subagents work in parallel, each in its own git worktree. With it OFF (the default until you choose), writers whose scopes share no file '
+  + 'still work at the same time in this checkout; a writer whose scope overlaps a running one is sent after it, and the build and tests run once, when the last writer stops. '
+  + `Before you start delegating, ask the user once whether to turn it on. End that question to the user with "${AWAITING_USER_MARKER}" on its own line, `
+  + 'so the router counts the request as waiting for them. If they say yes, have them run `do-it-all-claude-code project enable` in this project (then start a new session or continue); '
+  + 'if no, nothing more is needed. You will not be asked again for this project.';
 /** Audit #14: the fallback for pricing an unknown model's tokens when the subagent's step is not known. */
 const MOST_EXPENSIVE_MODEL = Object.entries(PRICING_PER_MTOK).sort((a, b) => b[1].output - a[1].output)[0]![0];
 

@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 // decision 142: a project's verifyEnv names count only once the user accepted its policy (importing does not run the guard)
 import { acceptedVerifyEnvNames } from './guard.mjs';
@@ -29,6 +30,47 @@ const DEFAULT_TIMEOUT = 10_000;
 
 function routerHome() {
   return process.env.DO_IT_ALL_CLAUDE_CODE_HOME || path.join(os.homedir(), '.do-it-all-claude-code');
+}
+
+// ---------------------------------------------------------------- auto-start (decision 192)
+// When a Claude Code session starts and the daemon is not up, the SessionStart hook starts it. The hook spawns
+// the CLI detached and returns at once (the session is never blocked, SubagentStop's own long timeout aside), from
+// the stable <home>/app copy `setup` made — not from a package folder the hook cannot see. The spawned process
+// gets a MINIMAL environment that does NOT inherit the subscription OAuth credentials or any secret-looking name
+// (the daemon never needs them; in API-key mode the proxy reads the key from the keychain, not from env).
+const SECRET_ENV_RE = /(KEY|TOKEN|SECRET|PASSW(OR)?D|CREDENTIAL|AUTH(?!OR))/i;
+export function minimalSpawnEnv(home, base = process.env) {
+  const out = {};
+  for (const [k, v] of Object.entries(base)) {
+    if (v === undefined || SECRET_ENV_RE.test(k)) continue;
+    if (/^(ANTHROPIC_|CLAUDE_CODE_OAUTH)/i.test(k) || /^NODE_OPTIONS$/i.test(k)) continue;
+    out[k] = v;
+  }
+  out.DO_IT_ALL_CLAUDE_CODE_HOME = home;
+  return out;
+}
+/** The stable home-copy CLI entry `setup` writes; auto-start spawns this. */
+function homeAppCli(home) { return path.join(home, 'app', 'dist', 'cli.js'); }
+/** Fire-and-forget: start the daemon from the stable home copy, detached. Never throws, never waits. */
+function realAutoStart(home) {
+  try {
+    const cli = homeAppCli(home);
+    if (!fs.existsSync(cli)) return false;   // not installed via `setup`: nothing stable to spawn (manual `start` still works)
+    const child = spawn(process.execPath, [cli, 'start'], { detached: true, stdio: 'ignore', windowsHide: true, env: minimalSpawnEnv(home) });
+    child.unref();
+    return true;
+  } catch { return false; }
+}
+/** Once-per-machine SessionStart hint when the plugin is installed but `setup` has not run (no config yet). */
+function setupHintOutput(home) {
+  try {
+    const marker = path.join(home, '.setup-hint-shown');
+    if (fs.existsSync(marker)) return '{}';
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(marker, new Date().toISOString());
+  } catch { /* cannot dedupe: it is only shown while there is no config, which setup fixes */ }
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext:
+    'Do It All Claude Code is installed but not set up yet — the router is not running. Run `/do-it-all-setup` in this session, or `npx -y do-it-all-claude-code setup` in a terminal, then start a new session.' } });
 }
 
 // ---------------------------------------------------------------- masking (core/security.ts redact, redactJson)
@@ -275,13 +317,15 @@ export function fallbackOutput(event) {
   return event === 'PreCompact' ? '' : '{}';
 }
 
-export async function relay(raw, { home = routerHome(), write = s => process.stdout.write(s) } = {}) {
+export async function relay(raw, { home = routerHome(), write = s => process.stdout.write(s), autoStart = realAutoStart } = {}) {
   const receivedAt = new Date().toISOString();
   let input;
   try { input = JSON.parse(raw); } catch {
     write(fallbackOutput(EVENT));           // unparseable: pass through, nothing to spool
     return;
   }
+  // The event name for auto-start: the body is authoritative (and testable); argv EVENT is the fallback.
+  const eventName = (isRecord(input) && typeof input.hook_event_name === 'string' && input.hook_event_name) || EVENT;
   // Decision 145: an edit tool's PostToolUse is relayed for the lead only (a takeover after delegating);
   // a subagent's edit (it has an agent_id) is answered at once, without the daemon.
   // Decision 175: unless the router marked the agent's file (it then runs the test the subagent just wrote).
@@ -295,8 +339,9 @@ export async function relay(raw, { home = routerHome(), write = s => process.std
   const token = readToken(home);
   const port = cfg && typeof cfg.daemonPort === 'number' ? cfg.daemonPort : null;
   if (!port || !token) {
-    // D5 (decision 100): before `init` (no config/token) there is nothing to replay to — pass, don't spool.
-    write(fallbackOutput(EVENT));
+    // D5 (decision 100): before `init`/`setup` (no config/token) there is nothing to replay to — pass, don't
+    // spool. At SessionStart, point the user at setup once (decision 192): the plugin is in but not set up.
+    write(eventName === 'SessionStart' ? setupHintOutput(home) : fallbackOutput(EVENT));
     return;
   }
 
@@ -313,6 +358,8 @@ export async function relay(raw, { home = routerHome(), write = s => process.std
     const response = await post({ home, port, token, body, timeoutMs });
     write(response);                        // verbatim: JSON for most events, text/plain for pre_compact
   } catch {
+    // decision 192: the daemon did not answer at session start, so start it (fire-and-forget; default on).
+    if (eventName === 'SessionStart' && cfg.autoStart !== 'off') autoStart(home);
     if (!subagentEdit) spool(home, input, receivedAt, cfg.recordPrompts === true);   // daemon down / slow / error: queue for replay, then pass (a subagent's edit has nothing to replay)
     write(fallbackOutput(EVENT));
   }

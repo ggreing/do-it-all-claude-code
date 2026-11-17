@@ -105,30 +105,291 @@ test('the helper\'s lines reach the office: the level line, and the step against
   await ui.unmount()
 })
 
-test('without the router the office says so; the four tabs switch with their keys and restart the helper', async ($, on) => {
+test('without the router every tab says so in one line; the five tabs switch with their keys and restart the helper', async ($, on) => {
   const { spawned, clock } = engine(on, [JSON.stringify({ v: 1, type: 'office', reach: 'down', view: null })])
   await $.command.run({ command: 'office', args: '' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const settle = async () => { await clock.advance(1500); await ui.advance(1500) }
   await settle()
   must('daemon down', await ui.find({ type: 'Text', text: /router daemon not reachable/ }))
-  for (const key of ['tab-office', 'tab-history', 'tab-cost', 'tab-routing']) must(key, await ui.find({ key }))
-  // the History tab draws (it once threw on a local that hid the JSX factory, and the pane went blank)
-  await ui.press({ key: 'tab-history' })
-  await settle()
-  must('history drawn', await ui.find({ type: 'Text', text: /Loading…|No closed requests yet/ }))
-  must('history without a fault', !(await ui.find({ key: 'tab-error' })))
-  must('helper for the history tab', spawned.some(a => a.includes('history')))
-  await ui.press({ key: 'tab-cost' })
-  await settle()
-  must('cost periods', await ui.find({ key: 'period-7d' }))
-  must('helper for the cost tab', spawned.some(a => a.includes('cost')))
-  await ui.press({ key: 'tab-routing' })
-  await settle()
-  must('helper for the routing tab', spawned.some(a => a.includes('routing')))
+  for (const key of ['tab-office', 'tab-work', 'tab-savings', 'tab-team', 'tab-settings']) must(key, await ui.find({ key }))
+  for (const id of ['work', 'savings', 'team', 'settings']) {
+    await ui.press({ key: `tab-${id}` })
+    await settle()
+    // each tab draws (a tab that throws shows a line of its own instead), and says the router is down
+    must(`${id} without a fault`, !(await ui.find({ key: 'tab-error' })))
+    must(`${id}: router down`, await ui.find({ type: 'Text', text: /router daemon not reachable/ }))
+    must(`helper for ${id}`, spawned.some(a => a.includes('--tab') && a[a.indexOf('--tab') + 1] === id))
+  }
   await ui.press({ key: 'tab-office' })
   await settle()
   must('back in the office', await ui.find({ type: 'Text', text: /Click a member/ }))
+  await ui.unmount()
+})
+
+// ------------------------------------------------------------------ the tabs' data, in the shapes of the contract
+
+const ISO = (min: number) => new Date(1_000_000 - min * 60_000).toISOString()
+const ROW = {
+  requestId: 'r-2', state: 'closed', mine: true, createdAt: ISO(20), closedAt: ISO(18), kind: 'feature', level: 'L1', finalLevel: 'L2',
+  outcome: 'delegated', passed: true, acceptance: 'accepted', subtasks: 3, verifyFailures: 1, stepUps: 1,
+  changedFiles: 3, linesAdded: 42, linesRemoved: 7, files: [{ path: 'src/slug.ts', added: 30, removed: 4 }, { path: 'src/cli.ts', added: 10, removed: 3 }],
+  durationMs: 92_000, activeMs: 90_000, totalUsd: 0.42, estimated: false, unknown: false, budgetExceeded: false,
+}
+const WORK = {
+  open: [{ ...ROW, requestId: 'r-3', state: 'open', closedAt: null, passed: null, kind: 'bugfix', level: 'L2', finalLevel: 'L2', durationMs: null, files: [] }],
+  rows: [ROW, { ...ROW, requestId: 'r-1', passed: false, kind: 'docs', level: 'L0', finalLevel: 'L0', totalUsd: 0.05, files: [{ path: 'README.md', added: 2, removed: 1 }], changedFiles: 1 }],
+  nextCursor: null, today: { done: 4, failed: 1, usd: 1.82 },
+}
+const DETAIL = {
+  requestId: 'r-2', state: 'closed', createdAt: ISO(20), closedAt: ISO(18), kind: 'feature', taskType: null,
+  level: { judged: 'L1', source: 'rule', rule: 'multi-file', confidence: 0.82, final: 'L2', changes: [{ from: 'L1', to: 'L2', why: 'replanned' }] },
+  plan: { preset: 'L2', leadDirect: false, leadModel: 'claude-sonnet', leadClass: 'sonnet', budgetUsd: 4, holdout: null },
+  outcome: 'delegated', passed: true, acceptance: 'accepted',
+  subtasks: [
+    { id: 'A', role: 'coder', slot: 0, attempts: 2, step: 's2', model: 'haiku', effort: 'high', ranModel: 'haiku', status: 'passed', verdict: null,
+      stepChanges: [{ at: ISO(19), requestId: 'r-2', subtaskId: 'A', role: 'coder', slot: 0, from: 's1', to: 's2', direction: 'up', reason: 'miss', detail: 'wrong_result' }],
+      scope: ['src/**'], unscoped: false, files: null,
+      checks: [{ kind: 'test', attempt: 1, result: 'failed', testsPassed: 11, testsFailed: 1 }, { kind: 'test', attempt: 2, result: 'ok', testsPassed: 12, testsFailed: 0 }],
+      repro: null, review: null, time: { startedAt: ISO(20), stoppedAt: ISO(19), runMs: 41_000, verifyMs: 8000 }, cost: { usd: 0.18, state: 'actual' } },
+    { id: 'R', role: 'reviewer', slot: 0, attempts: 1, step: 's3', model: 'sonnet', effort: 'medium', ranModel: null, status: 'passed', verdict: 'accept',
+      stepChanges: [], scope: [], unscoped: false, files: null, checks: [], repro: null, review: null,
+      time: { startedAt: ISO(19), stoppedAt: ISO(18), runMs: 15_000, verifyMs: null }, cost: { usd: 0.09, state: 'actual' } },
+  ],
+  changes: { changedFiles: 3, linesAdded: 42, linesRemoved: 7, newFiles: 1, deletedFiles: 0, approximate: false },
+  files: [{ path: 'src/slug.ts', added: 30, removed: 4, state: 'changed' }, { path: 'src/cli.ts', added: 10, removed: 3, state: 'changed' }, { path: 'test/slug.test.ts', added: 2, removed: 0, state: 'new' }],
+  tests: { passed: 12, failed: 0 },
+  stepChanges: [{ at: ISO(19), requestId: 'r-2', subtaskId: 'A', role: 'coder', slot: 0, from: 's1', to: 's2', direction: 'up', reason: 'miss', detail: 'wrong_result' }],
+  time: { durationMs: 92_000, activeMs: 90_000, awaitingMs: 0, phases: [{ phase: 'lead', ms: 20_000 }, { phase: 'workers', ms: 56_000 }, { phase: 'verify', ms: 16_000 }] },
+  timeline: [
+    { kind: 'plan', role: null, subtaskId: null, startedAt: ISO(20), endedAt: ISO(19.8), ok: null },
+    { kind: 'worker', role: 'coder', subtaskId: 'A', startedAt: ISO(19.8), endedAt: ISO(19.1), ok: true },
+    { kind: 'verify', role: null, subtaskId: 'A', startedAt: ISO(19.1), endedAt: ISO(19), ok: true },
+    { kind: 'worker', role: 'reviewer', subtaskId: 'R', startedAt: ISO(19), endedAt: ISO(18.5), ok: true },
+  ],
+  cost: { totalUsd: 0.42, leadUsd: 0.15, workerUsd: 0.27, budgetUsd: 4, estimated: false, unknown: false, budgetExceeded: false, basis: 'transcript' },
+  hasPrompt: false,
+}
+const ASSUMPTIONS = [
+  'The lead would have used the same tokens as the workers did.', 'List prices.', 'The lead\'s own cost is the same either way.', 'Briefing and coordination are not taken out.',
+]
+const savingsOf = (period: string) => ({
+  period, since: ISO(60 * 24 * 7), until: ISO(0),
+  measured: {
+    cost: { label: 'api-equivalent', totalUsd: 4.12, leadUsd: 1.1, workerUsd: 3.02, requests: 38, passed: 35, costPerPassedUsd: 0.118, bySource: { proxy: 0, transcript: 38 }, flags: { estimated: 0, unknown: 1, budgetExceeded: 0 } },
+    limits: { fiveHour: { usedPercentage: 42, resetsAt: 1000 + 3600 }, sevenDay: { usedPercentage: 21, resetsAt: null }, updatedAt: 1000 },
+  },
+  estimated: {
+    leadPriced: { workerUsd: 3.02, atLeadPriceUsd: 9.8, differenceUsd: 6.78, requests: 30, leftOut: { noLeadModel: 2, noPrice: 0, noTokens: 0 }, assumptions: ASSUMPTIONS },
+    holdout: [
+      { leadClass: 'sonnet', level: 'L2', team: { n: 14, accepted: 13, costPerAcceptedUsd: 0.31 }, direct: { n: 2, accepted: 2, costPerAcceptedUsd: 0.45 }, need: { team: 10, direct: 7 }, enough: false, differencePct: null },
+    ],
+    holdoutRate: 0.1, holdoutMode: 'observe',
+  },
+  series: { unit: 'day', utcOffsetMinutes: 540, points: Array.from({ length: 7 }, (_, i) => ({ start: ISO(60 * 24 * (6 - i)), requests: 5, passed: 5, totalUsd: [0.2, 0.5, 1.2, 0.8, 0, 0.6, 0.82][i]!, leadUsd: 0.1, workerUsd: 0.3, leadPricedDifferenceUsd: 0.5 })) },
+})
+const teamOf = (period: string) => ({
+  period, since: ISO(60), until: ISO(0), profile: { value: 'balanced', source: 'default' }, leadClass: 'sonnet', delegateFrom: { value: 'L1', source: 'default' },
+  roles: [
+    { role: 'coder', levels: [{ level: 'L1', count: 1, step: 's1', model: 'haiku', effort: 'low', source: 'default' }, { level: 'L2', count: 2, step: 's1', model: 'haiku', effort: 'low', source: 'own' }],
+      stats: { subtasks: 22, passed: 20, failed: 2, passRate: 20 / 22, avgCostUsd: 0.18, avgRunMs: 42_000, stepUps: 2, stepDowns: 1 } },
+    { role: 'reviewer', levels: [{ level: 'L2', count: 1, step: 's3', model: 'sonnet', effort: 'medium', source: 'default' }],
+      stats: { subtasks: 6, passed: 6, failed: 0, passRate: 1, avgCostUsd: 0.09, avgRunMs: 15_000, stepUps: 0, stepDowns: 0 } },
+  ],
+  stepChanges: [{ at: ISO(30), requestId: 'r-2', subtaskId: 'A', role: 'coder', slot: 0, from: 's1', to: 's2', direction: 'up', reason: 'miss', detail: 'wrong_result' }],
+  triage: { overall: { total: 34, levelHeld: 28, teamFit: 26, startStepFit: 24 }, byRule: [{ rule: 'docs-small', count: 5, reinforced: 0, upStreaks: 2, suggestLevelUp: true, suggestStepUp: false }], byLevel: [] },
+  routing: { mode: 'observe', holdoutRate: 0.1, classes: [] },
+})
+const SETTINGS = {
+  revision: { config: 'c-1', presets: 'p-1' },
+  profile: { value: 'balanced', source: 'default', options: [
+    { id: 'save', title: 'Save', summary: 'smaller teams and budgets', sets: [], measured: null },
+    { id: 'balanced', title: 'Balanced', summary: 'the defaults', sets: [], measured: 'a passed task cost 33% less than plain Claude Code' },
+    { id: 'quality', title: 'Quality', summary: 'higher steps, a reviewer on every team', sets: [], measured: null },
+  ] },
+  items: [
+    { path: 'profile', group: 'profile', title: 'Profile', description: '', type: 'enum', options: ['save', 'balanced', 'quality'], value: 'balanced', source: 'default', default: 'balanced', appliesAt: 'next request', editable: true },
+    { path: 'team.L2.coder.start', group: 'team', title: 'L2 coder start', description: '', type: 'enum', options: ['s1', 's2', 's3'], optionLabels: { s1: 'haiku low', s2: 'haiku high', s3: 'sonnet medium' }, value: 's1', source: 'profile', default: 's1', profileValue: 's1', appliesAt: 'next request', editable: true },
+    { path: 'budgetsUsd.L2', group: 'budget', title: 'L2 budget', description: '', type: 'number', choices: [1, 2, 4, 6, 8], value: 4, source: 'default', default: 4, appliesAt: 'now', editable: true },
+    { path: 'stepDown', group: 'quality', title: 'Step down', description: '', type: 'enum', options: ['on', 'off'], value: 'on', source: 'own', default: 'on', appliesAt: 'now', editable: true },
+    { path: 'recordPrompts', group: 'privacy', title: 'Record prompts', description: '', type: 'boolean', value: false, source: 'default', default: false, appliesAt: 'next start', editable: true },
+    { path: 'forceLevel', group: 'advanced', title: 'Force level', description: '', type: 'enum', options: ['L0', 'L1'], value: null, source: 'default', default: null, appliesAt: 'now', editable: false, why: 'benchmarks only: set it with the CLI' },
+  ],
+  team: [{ level: 'L2', leadDirect: false, budgetUsd: 4, roles: [{ role: 'coder', count: 2, step: 's1', model: 'haiku', effort: 'low', source: 'profile' }] }],
+  text: [{ key: 'verify', title: 'Verify commands', value: 'npm test', command: 'edit .do-it-all-claude-code/verify.json in the repository and commit it' }],
+  project: { name: 'r1', worktree: null },
+  problems: [{ path: 'teams.yaml', message: 'line 4: unknown role "tester2" (being ignored)' }],
+  managed: [{ key: 'daemonPort', reason: 'set by init' }],
+}
+
+/** A helper that answers each tab with its fixture, and an apply with `applied`; the inputs the applies were given. */
+function tabsEngine(on: On, env: Record<string, string> = {}, applied: unknown = { ok: true, changed: ['profile'], nextStart: [], notes: [], revision: { config: 'c-2', presets: 'p-1' } }) {
+  const spawned: string[][] = []
+  const inputs: string[] = []
+  const clock = mock.clock(on, { now: 1_000_000 })
+  mock.env(on, env)
+  on('session.version', () => ({ value: { version: '2.1.325' } }))
+  on('session.id', () => ({ value: 'kit-session' }))
+  on('command.register', () => ({ value: { command: 'office' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('process.spawn', async function* ($, e) {
+    spawned.push([...e.argv])
+    const arg = (k: string) => (e.argv.includes(k) ? e.argv[e.argv.indexOf(k) + 1] : undefined)
+    const say = (o: object) => ({ stream: 'stdout' as const, text: `${JSON.stringify({ v: 1, ...o })}\n` })
+    if (e.argv.includes('--apply')) {
+      inputs.push(String((e as { input?: string }).input ?? ''))
+      yield say({ type: 'applied', status: 200, data: applied })
+      return { value: { code: 0, signal: null } }
+    }
+    yield say({ type: 'office', reach: 'ok', view: { request: null, subtasks: [], costUsd: 0, costEstimated: false, costUnknown: false, sessionCostUsd: 0, limits: null } })
+    const which = arg('--tab'), p = arg('--period') ?? '7d'
+    if (which === 'work') {
+      yield say({ type: 'work', data: WORK })
+      const id = arg('--detail')
+      if (id) yield say({ type: 'work-detail', id, data: DETAIL })
+    }
+    if (which === 'savings') yield say({ type: 'savings', period: p, data: savingsOf(p) })
+    if (which === 'team') yield say({ type: 'team', period: p, data: teamOf(p) })
+    if (which === 'settings') yield say({ type: 'settings', data: SETTINGS })
+    return { value: { code: 0, signal: null } }
+  })
+  return { spawned, inputs, clock }
+}
+
+async function openTab($: Parameters<Parameters<typeof test>[1]>[0], clock: ReturnType<typeof mock.clock>, id: string, props: object = {}) {
+  await $.command.run({ command: 'office', args: '' })
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, ...props }, surface: 'terminal' })
+  const settle = async () => { await clock.advance(1500); await ui.advance(1500) }
+  await ui.press({ key: `tab-${id}` })
+  await settle()
+  return { ui, settle }
+}
+
+test('Work: the first line says what runs and how today went; running requests first; a request opens its timeline, files and tests', async ($, on) => {
+  const { spawned, clock } = tabsEngine(on)
+  const { ui, settle } = await openTab($, clock, 'work')
+  must('headline', await ui.find({ type: 'Text', text: /1 running · today 4 done, 1 failed · \$1\.82/ }))
+  const rows = await ui.findAll({ type: 'Button', text: /L[0-3]/ })
+  must('running first', rows[0]?.key === 'req-r-3')
+  must('level it ran at, the file it changed', await ui.find({ key: 'req-r-2', text: /L1→L2 feature +src\/slug\.ts \+30 -4, 2 more files/ }))
+  must('a failed one', await ui.find({ key: 'req-r-1', text: /✗/ }))
+  await ui.press({ key: 'req-r-2' })
+  await settle()
+  must('the helper asks for it', spawned.some(a => a.includes('--detail') && a.includes('r-2')))
+  must('how it went', await ui.find({ type: 'Text', text: /L1→L2 feature ✓ passed · 1:32 · \$0\.420/ }))
+  must('how it was judged', await ui.find({ type: 'Text', text: /judged L1 by rule multi-file 82% · L1→L2 \(replanned\)/ }))
+  must('the timeline', await ui.find({ type: 'Text', text: /^coder A +█+ +\d+s ✓$/ }))
+  must('a worker with its step up and tests', await ui.find({ type: 'Text', text: /s1→s2 miss · 12 passed/ }))
+  must('a file with its stat bar', await ui.find({ type: 'Text', text: /\+{6,}-+ \+30 -4/ }))
+  must('tests', await ui.find({ type: 'Text', text: /12 passed/ }))
+  must('no prompt text', !(await ui.find({ type: 'Text', text: /secret/ })))
+  await ui.press({ key: 'back' })
+  await settle()
+  must('back to the list', await ui.find({ key: 'req-r-2' }))
+  await ui.unmount()
+})
+
+test('Savings: the first line is what was measured; the two estimates stand apart, with their assumptions and the holdout counts', async ($, on) => {
+  const { spawned, clock } = tabsEngine(on)
+  const { ui, settle } = await openTab($, clock, 'savings')
+  must('measured first line', await ui.find({ type: 'Text', text: /^Spent \$4\.12 at API prices · 38 requests, 35 passed · 5h limit 42% · 7d 21%$/ }))
+  must('no single saved figure up top', !/sav/i.test((await ui.find({ type: 'Text', text: /^Spent/ }))?.text ?? 'sav'))
+  must('the limit as a bar', await ui.find({ type: 'Text', text: /5-hour limit +█+[▏▎▍▌▋▊▉]?░+ +42%/ }))
+  must('the bars per day', await ui.find({ type: 'Text', text: /spent per day · most \$1\.20/ }))
+  must('four chart rows', (await ui.findAll({ type: 'Text', text: /^ {2}[ ▁▂▃▄▅▆▇█]+$/ })).length === 4)
+  must('estimates are labelled', await ui.find({ type: 'Text', text: /Estimated \(not measured\)/ }))
+  must('lead-priced estimate', await ui.find({ type: 'Text', text: /\$9\.80 instead of \$3\.02/ }))
+  for (const a of ASSUMPTIONS) must(`assumption: ${a}`, await ui.find({ type: 'Text', text: `    · ${a}` }))
+  must('holdout: not enough yet, no difference', await ui.find({ type: 'Text', text: /team 14, lead alone 2 · not enough requests yet \(5 more needed\)/ }))
+  must('no holdout difference', !/%/.test((await ui.find({ type: 'Text', text: /sonnet L2: team 14/ }))?.text ?? '%'))
+  // p steps the period, and the helper asks for it
+  await ui.press({ key: 'period' })
+  await settle()
+  must('30 days asked for', spawned.some(a => a.includes('savings') && a.includes('30d')))
+  await ui.unmount()
+})
+
+test('Team: each role with its pass rate as a bar and its models per level; step changes; the triage at the bottom', async ($, on) => {
+  const { clock } = tabsEngine(on)
+  const { ui } = await openTab($, clock, 'team')
+  must('headline', await ui.find({ type: 'Text', text: /Profile balanced · 2 roles · 93% of 28 passed · ↑2 ↓1/ }))
+  must('coder', await ui.find({ type: 'Text', text: /coder +█+.* 91% of 22 · \$0\.180 · 42s · ↑2 ↓1/ }))
+  must('levels and where they come from', await ui.find({ type: 'Text', text: /L1 s1 Haiku low · L2 2x s1 Haiku low \(own\)/ }))
+  must('a step change', await ui.find({ type: 'Text', text: /coder A s1→s2 miss \(wrong result\)/ }))
+  must('triage at the bottom', await ui.find({ type: 'Text', text: /34 requests: level held 82% · team fit 76% · start step 71%/ }))
+  must('a rule to look at', await ui.find({ type: 'Text', text: /rule docs-small: its level may be too low \(5 requests\)/ }))
+  await ui.unmount()
+})
+
+test('Settings: Enter steps a value, shown old → new and kept waiting; a asks, y writes it once through the helper', async ($, on) => {
+  const { spawned, inputs, clock } = tabsEngine(on)
+  const { ui, settle } = await openTab($, clock, 'settings')
+  must('headline', await ui.find({ type: 'Text', text: /Profile balanced \(default\) · 1 own setting · 1 problem/ }))
+  must('a problem in one line', await ui.find({ type: 'Text', text: /teams\.yaml: line 4/ }))
+  must('what the profile rests on', await ui.find({ type: 'Text', text: /the defaults · a passed task cost 33% less/ }))
+  must('a step with its model', await ui.find({ key: 'set-team.L2.coder.start', text: /s1 haiku low +profile/ }))
+  must('not changeable here', await ui.find({ type: 'Text', text: /benchmarks only/ }))
+  must('shown, changed with a command', await ui.find({ type: 'Text', text: /verify\.json/ }))
+  await ui.press({ key: 'set-profile' })
+  await settle()
+  must('old → new', await ui.find({ key: 'set-profile', text: /balanced → quality/ }))
+  must('the profile it would be', await ui.find({ type: 'Text', text: /not measured yet/ }))
+  await ui.press({ key: 'set-budgetsUsd.L2' })
+  await settle()
+  must('a budget steps through its choices', await ui.find({ key: 'set-budgetsUsd.L2', text: /\$4\.00 → \$6\.00/ }))
+  await ui.press({ key: 'set-budgetsUsd.L2' })
+  await ui.press({ key: 'set-budgetsUsd.L2' })
+  await ui.press({ key: 'set-budgetsUsd.L2' })
+  await ui.press({ key: 'set-budgetsUsd.L2' })
+  await settle()
+  must('round to where it was: no change waits', !(await ui.find({ key: 'set-budgetsUsd.L2', text: /→/ })))
+  must('one change waiting', await ui.find({ type: 'Text', text: /1 change waiting/ }))
+  must('nothing written yet', !spawned.some(a => a.includes('--apply')))
+  must('the bar keeps two buttons', (await ui.findAll({ type: 'Button', text: /^(Apply|Discard)$/ })).length === 2)
+  await ui.press({ key: 'apply' })
+  await settle()
+  must('the question', await ui.find({ type: 'Text', text: /Apply 1 change\? · next request: Profile/ }))
+  await ui.press({ key: 'apply-yes' })
+  await settle()
+  must('written once', spawned.filter(a => a.includes('--apply')).length === 1)
+  must('with the change and the revision', inputs[0] === JSON.stringify({ revision: { config: 'c-1', presets: 'p-1' }, set: { profile: 'quality' } }))
+  must('what it answered', await ui.find({ type: 'Text', text: /Applied: profile/ }))
+  must('nothing waits after', await ui.find({ type: 'Text', text: /No change waiting/ }))
+  await ui.unmount()
+})
+
+test('Settings: a refused change keeps waiting, with each problem on its own line; x drops what waits', async ($, on) => {
+  const { clock } = tabsEngine(on, {}, { ok: false, errors: [{ path: 'stepDown', message: 'not one of on, off' }, { path: 'recordPrompts', message: 'must be true or false' }] })
+  const { ui, settle } = await openTab($, clock, 'settings')
+  await ui.press({ key: 'set-stepDown' })
+  await ui.press({ key: 'set-recordPrompts' })
+  await settle()
+  must('two waiting', await ui.find({ type: 'Text', text: /2 changes waiting/ }))
+  must('a later one', await ui.find({ key: 'set-recordPrompts', text: /off → on +own · next start/ }))
+  await ui.press({ key: 'apply' })
+  await settle()
+  must('by when they take effect', await ui.find({ type: 'Text', text: /Apply 2 changes\? · now: Step down · next start: Record prompts/ }))
+  await ui.press({ key: 'apply-yes' })
+  await settle()
+  must('first problem', await ui.find({ type: 'Text', text: /stepDown: not one of/ }))
+  must('second problem', await ui.find({ type: 'Text', text: /must be true or false/ }))
+  must('still waiting', await ui.find({ type: 'Text', text: /2 changes waiting/ }))
+  await ui.press({ key: 'discard' })
+  await settle()
+  must('dropped', await ui.find({ type: 'Text', text: /No change waiting/ }))
+  await ui.unmount()
+})
+
+test('the tabs in a narrow dock and in the classic console: short labels, one-cell marks', async ($, on) => {
+  const { clock } = tabsEngine(on, { OS: 'Windows_NT' })
+  const { ui } = await openTab($, clock, 'work', { bodyColumns: 47, scroll: { offset: 0, bodyRows: 30 } })
+  must('short label', await ui.find({ key: 'tab-settings', text: /Config/ }))
+  must('one-cell marks', await ui.find({ key: 'req-r-1', text: /^x / }))
+  must('no two-cell marks', !(await ui.find({ type: 'Button', text: /[●○✓✗→]/ })))
+  await ui.press({ key: 'tab-savings' })
+  await clock.advance(1500)
+  await ui.advance(1500)
+  must('a bar of one-cell marks', await ui.find({ type: 'Text', text: /#+\.+/ }))
   await ui.unmount()
 })
 
@@ -185,5 +446,61 @@ test('an inline pane kept short gets lines only, and says how to make it taller'
   must('how to make room', await ui.find({ type: 'Text', text: /ctrl\+x up/ }))
   must('the members', await ui.find({ key: 'member-lead' }))
   must('no frames', !(await ui.find({ key: 'office-frame' })))
+  await ui.unmount()
+})
+
+// ------------------------------------------------------------------ a click's reaction (decision 200)
+
+type Node = { type?: string; props?: { key?: string }; children?: unknown[] } | string
+/** The text an element shows, its children's in order. */
+const textOf = (n: unknown): string => (typeof n === 'string' ? n : n && typeof n === 'object' ? ((n as { children?: unknown[] }).children ?? []).map(textOf).join('') : '')
+/**
+ * A member's shape as drawn: per canvas row, where its body starts and ends (the first and last block cell). The
+ * eyes move inside the face and the marks float outside it, so neither changes this; a reaction's shape or jump does.
+ */
+function bodyOf(tree: unknown, id: string): string[] {
+  const find = (n: unknown): Node | undefined => {
+    if (!n || typeof n !== 'object') return undefined
+    const e = n as Exclude<Node, string>
+    if (e.props?.key === `st-${id}`) return e
+    for (const c of e.children ?? []) { const f = find(c); if (f) return f }
+    return undefined
+  }
+  const station = find(tree)
+  const kids = station && typeof station === 'object' ? station.children ?? [] : []
+  // the canvas rows come first, then the desk's edge (a full row of ▀) and the labels
+  const rows: string[] = []
+  for (const k of kids) {
+    const t = textOf(k)
+    if (/^▀+$/.test(t)) break
+    const cells = [...t].slice(0, 15)
+    const at = cells.map((ch, x) => (/[█▀▄]/.test(ch) ? x : -1)).filter(x => x >= 0)
+    rows.push(at.length ? `${at[0]}-${at.at(-1)}` : '')
+  }
+  return rows
+}
+
+test('a click starts a reaction on that member alone, and it ends in the shape the member had (decision 200)', async ($, on) => {
+  engine(on)
+  await $.command.run({ command: 'office', args: 'demo' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.drawn()
+  await ui.advance(500)
+  const shape = async (id: string) => bodyOf(await ui.drawn({ in: 'office-scene' }), id).join('\n')
+  const before = await shape('demo-b')
+  const other = await shape('lead')
+  must('the body drawn', /\d/.test(before))
+  // coder B is the fourth desk of the first row
+  await ui.pointer({ type: 'down', x: 3 * 24 + 6, y: 3 + 3, button: 'left', in: 'office-scene' })
+  let changed = false
+  for (let k = 0; k < 20 && !changed; k++) { await ui.advance(40); changed = (await shape('demo-b')) !== before }
+  must('the reaction changes its drawing', changed)
+  must('the others keep theirs', (await shape('lead')) === other)
+  await ui.advance(3000)
+  must('back to the shape it had', (await shape('demo-b')) === before)
+  // clicks in a row: a bigger reaction, and still back to the same shape
+  for (let k = 0; k < 3; k++) { await ui.pointer({ type: 'down', x: 3 * 24 + 6, y: 3 + 3, button: 'left', in: 'office-scene' }); await ui.advance(150) }
+  await ui.advance(4000)
+  must('back again after clicks in a row', (await shape('demo-b')) === before)
   await ui.unmount()
 })

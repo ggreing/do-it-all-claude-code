@@ -33,6 +33,7 @@ import type { Ledger } from './ledger.ts';
 import { recordLimits } from './limits.ts';
 import { errorText, type Logger } from './log.ts';
 import { DASHBOARD_GONE, isDashboardPath, isMetricsRoute, metricsRoute } from './metrics-routes.ts';
+import { officeSettingsApply, officeSettingsView, projectView } from './office-settings.ts';
 import { OFFICE_PATH, officeRoute } from './office.ts';
 import type { ProxyUsage } from './proxyusage.ts';
 import type { Router } from './router.ts';
@@ -64,6 +65,8 @@ export const API = {
   reload: '/router/v1/reload',
   // decision 186: the team office panel's read (sealed)
   office: OFFICE_PATH,
+  // decision 194: the Settings tab's view (GET) and its one write (POST)
+  officeSettings: '/router/v1/office/settings',
 } as const;
 
 export interface ServerDeps {
@@ -204,6 +207,11 @@ export function createHttpServer(d: ServerDeps): http.Server {
       const r = metricsRoute(d.ledger, req.method, url, {
         recordPrompts: d.data?.recordPrompts === true,   // decision 142: a stored prompt shows only while the option is on
         secrets: [d.token, ...(d.data?.secrets() ?? [])],
+        // decisions 193, 194: the office tabs' reads
+        tabs: {
+          config: d.router.config, sessionCwd: s => d.router.sessionCwd(s),
+          ...(d.settings ? { homeRoot: d.settings.home.root, configFile: d.settings.home.config } : {}), ...(d.now ? { now: d.now } : {}),
+        },
       });
       return send(res, r.status, r.body);
     }
@@ -229,9 +237,21 @@ export function createHttpServer(d: ServerDeps): http.Server {
     }
     if (route === API.office) {
       if (req.method !== 'GET') throw methodNotAllowed(res, 'GET');
-      const r = officeRoute({ status: s => d.router.status(s), ledger: d.ledger }, req.method, url.searchParams);
+      const r = officeRoute({
+        status: s => d.router.status(s), ledger: d.ledger,
+        ...(d.settings ? { project: (s: string) => projectView(d.settings!.home.root, d.router.sessionCwd(s)) } : {}),
+      }, req.method, url.searchParams);
       if (r.status !== 200) throw new HttpError(r.status, (r.body as { error: string }).error);
       return send(res, 200, r.body);
+    }
+
+    if (route === API.officeSettings) {
+      if (!d.settings) throw new HttpError(404, 'not found');
+      const ctx = { home: d.settings.home, settings: d.settings, ...(d.ledger ? { ledger: d.ledger } : {}), sessionCwd: (s: string) => d.router.sessionCwd(s) };
+      if (req.method === 'GET') return send(res, 200, await officeSettingsView(ctx, url.searchParams.get('session_id') || undefined));
+      if (req.method !== 'POST') throw methodNotAllowed(res, 'GET, POST');
+      const [status, answer] = await officeSettingsApply(ctx, await readJson(req, maxBody));
+      return send(res, status, answer);
     }
 
     // ------------------------------------------------------------------ data management (spec 3.7, 4.4)

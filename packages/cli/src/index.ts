@@ -5,6 +5,8 @@ import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { effectivePluginDir, generateEffectivePlugin, paths, resolveLayout, routerHome, templateDirProblem, type Level } from '@do-it-all-claude-code/core';
+import { copyAppToHome } from './appcopy.ts';
+import { projectCommand } from './project.ts';
 import { configCommand, presetCommand, reloadCommand, roleCommand, type SettingsDeps } from './settings.ts';
 import { SettingsParseError, defaultClaudeSettings, ensureLocalState, planBackupClean, planProject, planStatusLine, promptStorageSummary, readConfig, writeConfig, type PlannedChange } from './setup.ts';
 import { CLI_VERSION, UPDATE_QUESTION, updateCommand } from './update.ts';
@@ -177,6 +179,92 @@ async function init(f: Record<string, string | boolean>) {
   if (api) console.log('API-key mode: run `do-it-all-claude-code start` (daemon and proxy), then start new Claude Code sessions. `do-it-all-claude-code doctor` checks the setup.');
 }
 
+// node:sqlite and the built-in proxy support the egress code needs (distribution note).
+const MIN_NODE = [24, 5, 0] as const;
+
+/**
+ * decision 192: the npm one-command install. `npx do-it-all-claude-code setup` (or `npm i -g` then `setup`).
+ * It checks Node, copies the bundled app into the router home (so the daemon/proxy survive an evicted npx cache
+ * or a switched Node), sets up subscription mode with the fewest questions (one Enter), installs the plugin and
+ * starts the daemon; auto-start then keeps it running. Project settings are NOT asked here (decision 192 Q3) —
+ * they are asked the first time the router delegates in a project.
+ */
+async function setup(f: Record<string, string | boolean>) {
+  if (!versionAtLeast(process.versions.node, MIN_NODE)) {
+    console.error(`do-it-all-claude-code needs Node ${MIN_NODE.join('.')} or newer, but this is Node ${process.versions.node}. Install a newer Node (nodejs.org, or your version manager), then run \`do-it-all-claude-code setup\` again.`);
+    process.exitCode = 1; return;
+  }
+  const mode = f.mode;
+  if (mode !== undefined && mode !== 'api') { console.error('--mode takes "api" (subscription mode is the default)'); process.exitCode = 2; return; }
+  const api = mode === 'api' ? apiDeps(f) : undefined;
+  const home = routerHome();
+  const settingsFile = typeof f['claude-settings'] === 'string' ? f['claude-settings'] : defaultClaudeSettings();
+  // Copy the bundled app into <home>/app so the daemon/proxy spawn from a stable path (a no-op in the workspace).
+  try { const r = copyAppToHome(home); if (r.copied) console.log(`app installed in ${r.root}`); }
+  catch (e) { console.error(`setup: could not copy the app into ${home} (${(e as Error).message})`); process.exitCode = 1; return; }
+  const pluginDir = effectivePluginDir(home);
+  // decision 161: move a previous release's home first (as init does)
+  const migrated = await migrateHome({
+    env: process.env, settingsFile,
+    statusLine: `node "${path.join(pluginDir, 'statusline.mjs')}"`, helpers: { localToken: localTokenHelper(), key: keyHelper() },
+    yes: f.yes === true, isTTY: process.stdin.isTTY === true, ask, out: line => console.log(line), keys: realKeys,
+  });
+  if (migrated === 'stop') { process.exitCode = 1; return; }
+  if (api) { const pre = await preflightApi(f, api); if (!pre.ok) { process.exitCode = pre.code; return; } }
+  // decision 168 / review L5: the template is the plugin shipped with the package (outside the router home, so
+  // generation into <home>/plugin is never a template subfolder); the daemon/proxy still spawn from <home>/app.
+  const templateDir = typeof f['plugin-dir'] === 'string' ? path.resolve(f['plugin-dir']) : resolveLayout(import.meta.url).pluginTemplateDir;
+  const templateProblem = templateDirProblem(home, templateDir);
+  if (templateProblem) { console.error(`setup: ${templateProblem}`); process.exitCode = 2; return; }
+  const local = await ensureLocalState({}, pluginDir, { newPort: f['new-port'] === true });
+  try { copyHelpersToHome(home); } catch (e) { console.log(`note: could not copy the API-mode helpers into the router home (${(e as Error).message}); API-key mode will set them up later`); }
+  try {
+    const g = generateEffectivePlugin(home, templateDir);
+    for (const rr of g.refused) console.log(`role ${rr.role}: your override does not hold against this template (${rr.errors.map(e => `${e.path}: ${e.message}`).join('; ')}); the role uses the template's file until it is fixed. \`do-it-all-claude-code role edit ${rr.role}\` fixes it.`);
+  } catch (e) { console.error(`could not generate the plugin from ${templateDir}: ${(e as Error).message}`); process.exitCode = 1; return; }
+  if (local.config.pluginTemplateDir !== templateDir) { local.config.pluginTemplateDir = templateDir; writeConfig(local.config); }
+  const config = api ? await configureApi(local.config, api) : local.config;
+  console.log(`local state ready: daemon port ${config.daemonPort}, plugin ${pluginDir}`);
+  // The one confirmation (Enter = yes): the settings changes, the plugin install and the daemon start.
+  const changes: PlannedChange[] = [];
+  const step = (name: string, plan: () => PlannedChange[]) => {
+    try { changes.push(...plan()); }
+    catch (e) { if (!(e instanceof SettingsParseError)) throw e; console.log(`skipped ${name}: ${e.message}. Fix the file and re-run setup, or set it up by hand (README).`); }
+  };
+  step('status line', () => { const sl = planStatusLine(settingsFile, path.join(pluginDir, 'statusline.mjs'), config); return sl ? [sl] : []; });
+  if (api) step('API-key mode settings', () => { const c = planApiSettings(api.settingsFile, 'proxy', config.proxyPort!, undefined, process.env, tlsChoice(api.settingsFile, readConfig() ?? config)); return c ? [c] : []; });
+  // --no-plugin: the plugin is already installed from the marketplace (the `/do-it-all-setup` path); do not
+  // re-install it from the local home marketplace, which would load every hook twice.
+  const installPluginStep = f['no-plugin'] !== true;
+  console.log('\nSetup will:');
+  for (const c of changes) console.log(`  - ${c.file}: ${c.summary}`);
+  if (installPluginStep) console.log(`  - install the plugin in Claude Code (a local marketplace in ${home})`);
+  else console.log('  - (the plugin is already installed from the marketplace; leaving it as is)');
+  console.log('  - start the router daemon (subscription mode)');
+  let go = f.yes === true;
+  if (!go) {
+    if (process.stdin.isTTY !== true) { console.log('Not a terminal: re-run with --yes to finish setup.'); return; }
+    go = await askDefaultYes('Proceed? [Y/n] ');
+  }
+  if (!go) { console.log('Nothing changed.'); return; }
+  for (const c of changes) c.apply();
+  if (installPluginStep) {
+    writeHomeMarketplace(home);
+    const installed = await installPlugin({ out: line => console.log(line) });
+    if (!installed) {
+      console.log('The plugin was not installed automatically. Run these when ready:');
+      for (const c of installPlan(home)) console.log(`  - ${c}`);
+    }
+  }
+  // --no-start: do everything but launch the daemon (the package smoke test; auto-start brings it up on the
+  // next session, or run `do-it-all-claude-code start`).
+  if (f['no-start'] === true) console.log('Daemon not started (--no-start); it starts itself on the next Claude Code session, or run `do-it-all-claude-code start`.');
+  else console.log(await start());
+  console.log('\nSetup complete. Now run `claude` — then `/office demo` previews the team office.');
+  console.log('The daemon starts itself when a Claude Code session starts; turn that off with `do-it-all-claude-code config set autoStart off`.');
+  if (api) console.log('API-key mode: `do-it-all-claude-code doctor` checks the key and the proxy.');
+}
+
 async function apiCommand(cmd: string, args: string[], f: Record<string, string | boolean>): Promise<number> {
   const d = apiDeps(f);
   if (cmd === 'mode') {
@@ -209,6 +297,7 @@ const isMain = !!process.argv[1] && real(process.argv[1]) === real(fileURLToPath
 if (isMain) {
   if (cmd === 'version' || cmd === '--version' || cmd === '-v') console.log(CLI_VERSION);
   else if (cmd === 'init') await init(f);
+  else if (cmd === 'setup') await setup(f);   // decision 192: the one-command install
   else if (cmd === 'start') console.log(await start());
   else if (cmd === 'stop') console.log(await stop());
   else if (cmd === 'status') console.log(await status());
@@ -238,6 +327,10 @@ if (isMain) {
   }
   else if (cmd === 'mode' || cmd === 'token' || cmd === 'key' || cmd === 'proxy') process.exitCode = await apiCommand(cmd, positional, f);
   else if (cmd === 'update') process.exitCode = await updateCommand(positional[0], { out: line => console.log(line) });   // decision 163
+  else if (cmd === 'project') process.exitCode = await projectCommand(positional[0], {   // decision 192 (Q3)
+    dir: typeof f.project === 'string' ? path.resolve(f.project) : process.cwd(),
+    ask: askDefaultYes, isTTY: process.stdin.isTTY === true, out: line => console.log(line), yes: f.yes === true,
+  });
   else if (cmd === 'config' || cmd === 'preset' || cmd === 'role' || cmd === 'reload') {   // decision 168
     const d: SettingsDeps = { out: line => console.log(line), isTTY: process.stdin.isTTY === true, ask: q => askDefaultYes(q) };
     try {
@@ -246,5 +339,5 @@ if (isMain) {
         : cmd === 'role' ? await roleCommand(positional[0], positional.slice(1), d) : await reloadCommand(d);
     } catch (e) { console.error((e as Error).message); process.exitCode = 1; }
   }
-  else console.log('usage: do-it-all-claude-code <version|init [--mode api]|start|stop|status|doctor|routing reset|data export|data purge|uninstall [--keep-key]|policy show|accept|revoke|mode subscription|api|direct|proxy|token rotate [--no-grace]|key set|proxy allow-upstream <origin>|update on|off|check|config list|get|set|edit|history|preset show|edit|role show|edit|reset <role>|reload>');
+  else console.log('usage: do-it-all-claude-code <version|setup [--mode api]|init [--mode api]|start|stop|status|doctor|routing reset|data export|data purge|uninstall [--keep-key]|project enable|disable|status|policy show|accept|revoke|mode subscription|api|direct|proxy|token rotate [--no-grace]|key set|proxy allow-upstream <origin>|update on|off|check|config list|get|set|edit|history|preset show|edit|role show|edit|reset <role>|reload>');
 }

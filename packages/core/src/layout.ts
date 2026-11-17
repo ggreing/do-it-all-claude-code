@@ -69,7 +69,11 @@ export function resolveLayout(moduleUrl: string, exists: (p: string) => boolean 
     };
   }
   // packaged: dir = <root>/dist, everything bundled flat beside the entries.
-  const distDir = dir;
+  return packagedLayout(dir);
+}
+
+/** A packaged (flat) layout whose entries live in `<distDir>` and whose plugin sits beside it. */
+function packagedLayout(distDir: string): ResolvedLayout {
   const root = path.resolve(distDir, '..');
   return {
     mode: 'packaged',
@@ -81,4 +85,36 @@ export function resolveLayout(moduleUrl: string, exists: (p: string) => boolean 
     localTokenHelper: path.join(distDir, 'local-token.mjs'),
     keyHelper: path.join(distDir, 'key-helper.mjs'),
   };
+}
+
+// --------------------------------------------------------------- the stable copy in the router home (decision 192)
+// The one-command install (`setup`) copies the bundled app (dist/{cli,daemon,proxy}.js, the helpers and plugin/)
+// into `<home>/app`, and the daemon/proxy are spawned from THAT copy, never from wherever the CLI happened to run.
+// This is what lets `npx do-it-all-claude-code setup` work: the npx cache is ephemeral (it can be cleared between
+// the one-off `setup` run and the next session's auto-start), and a Node version manager moves the global folder
+// when the user switches Node. A copy the router owns, beside its config and token, survives both.
+//
+// It is a packaged (flat) layout like any other; the only difference is where it lives. `resolveHomeApp` returns
+// null until `setup` has populated it, so a caller that falls back to its own layout behaves exactly as before.
+
+/** The directory the one-command install copies the bundled app into. */
+export const HOME_APP_SUBDIR = 'app';
+export const homeAppDir = (home: string): string => path.join(home, HOME_APP_SUBDIR);
+
+/** The home app's layout, or null when `setup` has not copied it in yet (then callers use their own layout). */
+export function resolveHomeApp(home: string, exists: (p: string) => boolean = fs.existsSync): ResolvedLayout | null {
+  const distDir = path.join(homeAppDir(home), 'dist');
+  return exists(path.join(distDir, 'cli.js')) ? packagedLayout(distDir) : null;
+}
+
+/**
+ * The layout the CLI should SPAWN the daemon and proxy from. In the workspace (dev/tsc) the running checkout wins,
+ * so a developer's edits are never shadowed by a stale `<home>/app`. Once installed (packaged), the stable home
+ * copy wins when it is there, falling back to the running module's own packaged layout (e.g. right after `setup`
+ * copies the files, before anything else resolves). `moduleUrl` is the caller's `import.meta.url`.
+ */
+export function appLayout(moduleUrl: string, home: string, exists: (p: string) => boolean = fs.existsSync): ResolvedLayout {
+  const own = resolveLayout(moduleUrl, exists);
+  if (own.mode === 'workspace') return own;
+  return resolveHomeApp(home, exists) ?? own;
 }

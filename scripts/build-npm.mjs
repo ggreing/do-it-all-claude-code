@@ -17,7 +17,8 @@
 // CLI's workspace-era path resolution (import.meta.resolve of the sibling packages, ../../../plugin,
 // proxyEntry -> src/main.ts) does not yet point at this layout. Those are init/spawn
 // changes owned by the cli package; this script only produces the target the CLI should resolve against. The
-// smoke test is scoped to `--version` and `doctor` on a fresh home, which do not spawn the daemon/proxy.
+// smoke test is scoped to `--version`, `doctor` and `setup --no-start` on a throwaway home (and a throwaway
+// CLAUDE_CONFIG_DIR / Claude settings file), none of which spawn the daemon/proxy or touch the real ~/.claude.
 import esbuild from 'esbuild';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -186,10 +187,39 @@ async function main() {
     console.log(r.out.split('\n').map(l => '    ' + l).join('\n').replace(/\n\s*$/, ''));
   }
 
+  // `setup --no-start` (decision 192): the home-side install work — copy the app into the router home, generate
+  // the plugin and register the status line — WITHOUT starting the daemon. It runs against a throwaway home, a
+  // throwaway CLAUDE_CONFIG_DIR and a throwaway Claude settings file, and an isolated (empty) legacy home, so
+  // nothing touches the real ~/.claude or ~/.agentic-router. The plugin's `claude plugin …` registration needs a
+  // real `claude` on PATH; here it is absent and fails gracefully, so this checks the home-side work only.
+  console.log('\n--- smoke: setup --no-start (isolated home + CLAUDE_CONFIG_DIR; never ~/.claude) ---');
+  const setupHome = path.join(work, 'setup-home');
+  const claudeCfg = path.join(work, 'claude-config');
+  const claudeSettings = path.join(work, 'claude-settings.json');
+  fs.mkdirSync(setupHome, { recursive: true });
+  fs.mkdirSync(claudeCfg, { recursive: true });
+  const setupEnv = { DO_IT_ALL_CLAUDE_CODE_HOME: setupHome, AGENTIC_ROUTER_HOME: path.join(work, 'legacy-none'), CLAUDE_CONFIG_DIR: claudeCfg };
+  const s = run(`${q(binPath)} setup --yes --no-start --claude-settings ${q(claudeSettings)}`, work, setupEnv);
+  console.log(`  $ do-it-all-claude-code setup --yes --no-start   (exit ${s.code})`);
+  console.log(s.out.split('\n').map(l => '    ' + l).join('\n').replace(/\n\s*$/, ''));
+  const appCli = path.join(setupHome, 'app', 'dist', 'cli.js');
+  const genManifest = path.join(setupHome, 'plugin', '.claude-plugin', 'marketplace.json');
+  const statusLineSet = fs.existsSync(claudeSettings) && /statusline\.mjs/.test(fs.readFileSync(claudeSettings, 'utf8'));
+  const setupChecks = {
+    'exit 0': s.code === 0,
+    'app copied to home (app/dist/cli.js)': fs.existsSync(appCli),
+    'plugin generated + local marketplace manifest': fs.existsSync(genManifest),
+    'status line written to the isolated settings': statusLineSet,
+  };
+  for (const [name, ok] of Object.entries(setupChecks)) console.log(`    [${ok ? 'ok' : 'FAIL'}] ${name}`);
+  const setupOk = Object.values(setupChecks).every(Boolean);
+
   rm(work);
   console.log('\n--- smoke summary ---');
   for (const r of results) console.log(`  ${r.sub.padEnd(10)} launched=${r.ran} exit=${r.code}`);
+  console.log(`  ${'setup'.padEnd(10)} ${setupOk ? 'ok' : 'FAILED'} (home-side install, no daemon)`);
   console.log(`\npackage staged at: ${PKG}`);
+  if (!setupOk) { console.error('\nsetup --no-start smoke FAILED (see the checks above)'); process.exit(1); }
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

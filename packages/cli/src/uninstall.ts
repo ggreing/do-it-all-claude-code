@@ -7,7 +7,7 @@
 // command says how to remove it.
 import fs from 'node:fs';
 import path from 'node:path';
-import { redact, routerHome } from '@do-it-all-claude-code/core';
+import { homeAppDir, redact, routerHome } from '@do-it-all-claude-code/core';
 import { HINT_HEADERS_ENV, isOurBaseUrl, isRouterHelper, recordApiState, recordNoProxy, removeLoopbackNoProxy, undoEnvAdded } from './apimode.ts';
 import { removeEndpointFiles } from './endpointfiles.ts';
 import { tlsPaths } from './localtls.ts';
@@ -158,6 +158,10 @@ export async function uninstall(f: Record<string, string | boolean>, d: Uninstal
   // decision 156: the daemon's endpoint file and socket, once it has stopped
   const endpointFiles = removeEndpointFiles(routerHome(), { dryRun: true });
   if (endpointFiles.length) changes.push({ file: routerHome(), summary: `remove the daemon's endpoint file and socket (${endpointFiles.map(p => path.basename(p)).join(', ')})`, apply() { removeEndpointFiles(routerHome()); } });
+  // decision 192: the bundled app copy `setup` placed in the home (the engine, not user data). Removing it, with
+  // the plugin's SessionStart hook going away when the plugin is uninstalled, fully turns auto-start off.
+  const appDir = homeAppDir(routerHome());
+  if (realDir(appDir)) changes.push({ file: appDir, summary: 'delete the bundled app copy (`do-it-all-claude-code setup` re-creates it); turns off auto-start', apply() { fs.rmSync(appDir, { recursive: true, force: true }); } });
   const key = f['keep-key'] === true ? 'kept' : await d.keyStatus();
   if (key !== 'present' && key !== 'not_found' && key !== 'kept') d.out(`The OS keychain could not be checked (${key}): an API key may remain in it under "do-it-all-claude-code".`);
   d.out('do-it-all-claude-code uninstall will:');

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { Document, parseDocument } from 'yaml';
 import { ZodError } from 'zod';
 import { DEFAULT_DELEGATE_FROM, DEFAULT_PRESETS, PROVISIONAL_BUDGET_USD, applyPresetFile, parsePresetsText, type PresetFile } from './presets.ts';
+import { DEFAULT_PROFILE, PROFILES, profileOf, profilePresets } from './profiles.ts';
 import { DEFAULT_AUTO_RELEASE, DEFAULT_HOLDOUT_RATE, MAX_HOLDOUT_RATE } from './release.ts';
 import { redactJson } from './security.ts';
 import type { Level, TeamPreset } from './types.ts';
@@ -34,8 +35,8 @@ export class SettingsRejected extends Error {
   }
 }
 
-/** Who writes a setting: the CLI through the daemon, or the CLI itself while the daemon is down. */
-export type SettingsSource = 'cli' | 'cli-direct';
+/** Who writes a setting: the CLI through the daemon, the CLI itself while the daemon is down, or the team office's Settings tab. */
+export type SettingsSource = 'cli' | 'cli-direct' | 'office';
 /** In the history, also the browser dashboard of releases before 0.5.0 (decision 183 removed it; its lines stay readable). */
 export type AuditSource = SettingsSource | 'dashboard';
 export interface WriteResult { ok: true; changed: string[]; nextStart: string[]; notes: string[] }
@@ -140,7 +141,7 @@ export function auditedWrite<T>(home: string, e: AuditEntry, write: () => T): T 
   }
 }
 
-const SOURCES: ReadonlySet<string> = new Set(['cli', 'cli-direct', 'dashboard']);
+const SOURCES: ReadonlySet<string> = new Set(['cli', 'cli-direct', 'office', 'dashboard']);
 const KINDS: ReadonlySet<string> = new Set(['config', 'presets', 'role']);
 /** The latest entries, newest first, a failed change marked; a line that is not one this code wrote is skipped. */
 export function readAudit(home: string, limit = 50): AuditEntry[] {
@@ -183,6 +184,7 @@ export interface ConfigKeySpec {
 }
 
 export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
+  { key: 'profile', type: 'enum', options: PROFILES, default: DEFAULT_PROFILE, appliesAt: 'now', description: 'Save, balanced or quality: where delegation starts, the teams and their start steps, wherever you set no value of your own (the next request uses it)' },
   { key: 'budgetsUsd', type: 'levels', default: PROVISIONAL_BUDGET_USD, min: 0, minExclusive: true, appliesAt: 'now', description: 'The budget in USD of one request at each level' },
   { key: 'delegateFrom', type: 'byLeadClass', options: LEVELS, default: DEFAULT_DELEGATE_FROM, appliesAt: 'now', description: 'The first level that gets a team, per lead model class' },
   { key: 'autoRelease', type: 'enum', options: ['on', 'observe', 'off'], default: DEFAULT_AUTO_RELEASE, appliesAt: 'now', description: 'Hand a delegated level back to the lead when its teams cost more per accepted task (observe only reports)' },
@@ -193,6 +195,8 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: 'eventRetentionDays', type: 'integer', min: 0, max: MAX_EVENT_RETENTION_DAYS, default: DEFAULT_EVENT_RETENTION_DAYS, appliesAt: 'next start', description: 'Days hook events are kept (0 keeps them)' },
   { key: 'updateCheck', type: 'enum', options: ['on', 'off'], default: 'off', appliesAt: 'now', description: 'Check GitHub once a day for a newer release (only reads the public release list)' },
   { key: 'office', type: 'enum', options: ['on', 'off'], default: 'on', appliesAt: 'now', description: 'Show the team office panel in Claude Code (/office; sessions started after the change)' },
+  { key: 'autoStart', type: 'enum', options: ['on', 'off'], default: 'on', appliesAt: 'now', description: 'Start the daemon automatically when a Claude Code session starts (SessionStart hook)' },
+  { key: 'officeAutoOpen', type: 'enum', options: ['on', 'off'], default: 'on', appliesAt: 'now', description: 'Open the team office by itself when a request gets its first worker (sessions started after the change)' },
   { key: 'forceLevel', type: 'enum', options: LEVELS, default: null, appliesAt: 'now', advanced: true, description: 'Benchmarks and debugging only: plan every new request at this level' },
   { key: 'fableOptIn', type: 'boolean', default: false, appliesAt: 'now', advanced: true, description: 'Let the ladder go up to the Fable step' },
   { key: 'bearerApi', type: 'enum', options: ['on', 'off'], default: 'off', appliesAt: 'next start', advanced: true, deprecated: true, description: 'Deprecated, to be removed: let the daemon accept the token as a Bearer header' },
@@ -404,11 +408,14 @@ export interface PresetsView {
 /** The user's teams.yaml and what it gives on top of the defaults (with config.json's budgets, which win). */
 export function presetsView(home: string): PresetsView {
   const text = readText(teamsFile(home));
-  let presets: Record<Level, TeamPreset> = DEFAULT_PRESETS;
-  let error: string | undefined;
-  if (text) { try { presets = applyPresetFile(validatePresetsText(text)); } catch (e) { error = e instanceof Error ? e.message : String(e); } }
   let budgets: Record<string, unknown> = {};
-  try { const c = JSON.parse(readText(configFile(home)) ?? '{}') as Record<string, unknown>; if (isObject(c.budgetsUsd)) budgets = c.budgetsUsd; } catch { /* none */ }
+  let config: Record<string, unknown> = {};
+  try { const c = JSON.parse(readText(configFile(home)) ?? '{}') as unknown; if (isObject(c)) config = c; } catch { /* none */ }
+  if (isObject(config.budgetsUsd)) budgets = config.budgetsUsd;
+  const base = profilePresets(profileOf(config));   // decision 194: the profile's teams and budgets are below the file
+  let presets: Record<Level, TeamPreset> = base;
+  let error: string | undefined;
+  if (text) { try { presets = applyPresetFile(validatePresetsText(text), base); } catch (e) { error = e instanceof Error ? e.message : String(e); } }
   const effective = Object.fromEntries(LEVELS.map(l => {
     const p = presets[l];
     const b = budgets[l];
@@ -441,6 +448,66 @@ export function mergePresetLevel(text: string, level: string, levelText: string)
   if (!isObject(js) || js[level] === null || js[level] === undefined) doc.delete(level); else doc.set(level, part.get(level, true));
   const out = doc.toString({ lineWidth: 0 });
   return out.trim() === '{}' ? '' : out;
+}
+
+const TEAM_LEVELS: readonly Level[] = ['L1', 'L2', 'L3'];
+const TEAM_ROLES = ['architect', 'ui-designer', 'coder', 'reviewer', 'tester'] as const;
+const TEAM_STEPS = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'] as const;
+export const TEAM_PATH = /^team\.(L[0-3])\.([a-z-]+)\.(start|count)$/;
+
+/**
+ * Team changes by path (decision 194, the Settings tab): `team.<level>.<role>.start` (a step) and
+ * `team.<level>.<role>.count` (0-4), applied to the user's teams.yaml text. `base` is what the levels are below
+ * that file (the profile's teams). A value of null puts that one value back to the base's; a level whose roles
+ * end up as the base has them is taken out of the file. Every problem is reported; any problem changes nothing.
+ */
+export function applyTeamPaths(text: string, base: Record<Level, TeamPreset>, set: Record<string, unknown>): string {
+  const errors: SettingsError[] = [];
+  let file: PresetFile = {};
+  if (text.trim()) {
+    try { file = validatePresetsText(text); }
+    catch { throw new SettingsRejected([{ path: TEAMS_FILE_NAME, message: 'the file has a problem: fix it with `do-it-all-claude-code preset edit` first' }]); }
+  }
+  const roles = new Map<Level, Array<{ role: typeof TEAM_ROLES[number]; count: number; start: typeof TEAM_STEPS[number] }>>();
+  for (const [p, value] of Object.entries(set)) {
+    const m = TEAM_PATH.exec(p);
+    if (!m) { errors.push({ path: p, message: 'not a team setting (team.<L1|L2|L3>.<role>.start or .count)' }); continue; }
+    const level = m[1] as Level, role = m[2] as typeof TEAM_ROLES[number], field = m[3] as 'start' | 'count';
+    if (!TEAM_LEVELS.includes(level)) { errors.push({ path: p, message: 'L0 has no team: the lead does it' }); continue; }
+    if (!(TEAM_ROLES as readonly string[]).includes(role)) { errors.push({ path: p, message: `not one of ${TEAM_ROLES.join(', ')}` }); continue; }
+    const list = roles.get(level) ?? structuredClone(file[level]?.roles ?? base[level].roles) as NonNullable<ReturnType<typeof roles.get>>;
+    roles.set(level, list);
+    const inBase = base[level].roles.find(r => r.role === role);
+    const at = list.findIndex(r => r.role === role);
+    if (value === null) {
+      if (!inBase) { if (at >= 0) list.splice(at, 1); continue; }
+      if (at >= 0) list[at] = { ...list[at]!, [field]: field === 'start' ? inBase.start : inBase.count };
+      else list.push({ role, count: inBase.count, start: inBase.start as typeof TEAM_STEPS[number] });
+      continue;
+    }
+    if (field === 'start' && !(typeof value === 'string' && (TEAM_STEPS as readonly string[]).includes(value))) { errors.push({ path: p, message: `must be one of ${TEAM_STEPS.join(', ')}` }); continue; }
+    if (field === 'count' && !(typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 4)) { errors.push({ path: p, message: 'must be a whole number from 0 to 4' }); continue; }
+    if (at >= 0) list[at] = { ...list[at]!, [field]: value };
+    else list.push({ role, count: field === 'count' ? value as number : 1, start: (field === 'start' ? value : inBase?.start ?? 's1') as typeof TEAM_STEPS[number] });
+  }
+  if (errors.length) throw new SettingsRejected(errors);
+  const doc = text.trim() ? parseDocument(text) : new Document({});
+  const same = (a: ReadonlyArray<{ role: string; count: number; start: string }>, b: ReadonlyArray<{ role: string; count: number; start: string }>) => {
+    const key = (l: typeof a) => l.filter(r => r.count > 0).map(r => `${r.role}:${r.count}:${r.start}`).sort().join(',');
+    return key(a) === key(b);
+  };
+  for (const [level, list] of roles) {
+    if (!list.some(r => r.count > 0)) throw new SettingsRejected([{ path: `team.${level}`, message: 'a team needs at least one member' }]);
+    if (same(list, base[level].roles)) {
+      doc.deleteIn([level, 'roles']);
+      const rest = doc.get(level) as { items?: unknown[] } | null | undefined;
+      if (!rest || !rest.items?.length) doc.delete(level);
+    } else doc.setIn([level, 'roles'], doc.createNode(list.map(r => ({ role: r.role, count: r.count, start: r.start }))));
+  }
+  const out = doc.toString({ lineWidth: 0 });
+  const next = out.trim() === '{}' ? '' : out;
+  if (next.trim()) validatePresetsText(next);
+  return next;
 }
 
 /** Validate, write, audit: teams.yaml (empty text removes the file: the defaults apply). */

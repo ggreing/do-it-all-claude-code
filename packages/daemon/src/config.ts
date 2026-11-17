@@ -1,6 +1,6 @@
 // config.json and token, both written by `do-it-all-claude-code init` (CLI).
 import fs from 'node:fs';
-import { MAX_HOLDOUT_RATE, holdoutRate } from '@do-it-all-claude-code/core';
+import { MAX_HOLDOUT_RATE, PROFILES, holdoutRate, withProfile } from '@do-it-all-claude-code/core';
 import { DEFAULT_EVENT_RETENTION_DAYS, MAX_EVENT_RETENTION_DAYS } from './data.ts';
 import type { Level, RouterConfig, TeamPreset } from '@do-it-all-claude-code/core';
 
@@ -36,7 +36,16 @@ export function applyBudgets(presets: Record<Level, TeamPreset>, budgets: Partia
   return out;
 }
 
+/**
+ * config.json as the router runs on it: each value checked, and the profile's values (decision 194) where the file
+ * sets none. What the user wrote is in the file; the settings view reads that.
+ */
 export function readConfig(file: string, warnings: string[] = []): ConfigFile {
+  return withProfile(readConfigFile(file, warnings));
+}
+
+/** config.json with each value checked, without the profile's values. */
+export function readConfigFile(file: string, warnings: string[] = []): ConfigFile {
   if (!fs.existsSync(file)) return {};
   const raw: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`invalid config file: ${file}`);
@@ -52,6 +61,9 @@ export function readConfig(file: string, warnings: string[] = []): ConfigFile {
   if (typeof o.pluginTemplateDir === 'string' && o.pluginTemplateDir) out.pluginTemplateDir = o.pluginTemplateDir;   // decision 168
   if (o.updateCheck === 'on' || o.updateCheck === 'off') out.updateCheck = o.updateCheck;   // decision 163
   if (o.office === 'on' || o.office === 'off') out.office = o.office;   // decision 186: read by the office panel itself
+  if (o.officeAutoOpen === 'on' || o.officeAutoOpen === 'off') out.officeAutoOpen = o.officeAutoOpen;   // decision 193: also read by the panel
+  if ((PROFILES as readonly unknown[]).includes(o.profile)) out.profile = o.profile as ConfigFile['profile'];   // decision 194
+  else if (o.profile !== undefined) warnings.push(`config.profile ignored: not ${PROFILES.join(', ')}`);
   const budgets = parseBudgets(o.budgetsUsd, warnings);
   if (budgets) out.budgetsUsd = budgets;
   if (o.recordPrompts === true) out.recordPrompts = true;

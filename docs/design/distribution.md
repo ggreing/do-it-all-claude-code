@@ -4,8 +4,40 @@ Today a user clones the repository, runs `npm ci`, runs `init`, and starts Claud
 `--plugin-dir`. This note covers the two ways to shorten that, the Claude Code plugin marketplace and npm,
 and recommends how to combine them.
 
-**Status: research and recommendation. Nothing here has been built or tried.** Points marked *to verify*
-come from the documentation only.
+**Status: built in 0.5.0 (decision 192).** The recommendation below was taken: one bundled npm package, a
+thin marketplace plugin, and `setup`/auto-start. The summary that follows is what shipped; the research after
+it is kept for the reasoning. Points still marked *to verify* need a real `claude` install to confirm.
+
+## What shipped (0.5.0, decision 192)
+
+Two ways in, and the daemon starts itself.
+
+- **npm, one command.** `npx do-it-all-claude-code setup` (or `npm i -g do-it-all-claude-code` then
+  `do-it-all-claude-code setup`). `setup` checks Node ≥ 24.5, copies the bundled `dist/` into `<home>/app`,
+  generates the plugin from the package's template (outside the home — review L5), writes the status line,
+  installs the plugin as a local marketplace from the home, and starts the daemon — subscription mode, one
+  confirmation (Enter). `--mode api`
+  for API-key mode; `--no-plugin` skips the plugin install (the marketplace path, below).
+- **The home copy is why `npx` works.** The daemon and proxy are spawned from `<home>/app` (core
+  `resolveHomeApp`/`appLayout`), never from the npx cache (which can be cleared) or the global folder (which a
+  Node version manager moves). `appLayout` prefers the home copy when present and falls back to the running
+  layout; the workspace checkout always wins in dev.
+- **Auto-start.** When a session starts and the daemon is not up, the plugin's SessionStart hook
+  (`relay.mjs`) spawns `node <home>/app/dist/cli.js start` detached, with a minimal environment that drops
+  secret-named and `ANTHROPIC_*`/`CLAUDE_CODE_OAUTH*` variables, and returns at once. Config `autoStart`
+  (on by default) turns it off. `start` stays and still works by hand.
+- **Inside Claude Code (marketplace).** `/plugin marketplace add ggreing/do-it-all-claude-code` →
+  `/plugin install do-it-all-claude-code@do-it-all` → `/do-it-all-setup`. The slash command runs
+  `npx -y do-it-all-claude-code@<pinned> setup --yes --no-plugin`: the plugin is already installed, so only the
+  engine is set up. The pin is bumped with the release (checklist §2) and checked by `marketplace-release.test`.
+- **The plugin stays thin.** It carries hooks, agents, skills and the MCP server only — no daemon or CLI — so
+  the git-subdir marketplace and its ref/sha pin stay small. The engine always comes from npm.
+- **uninstall** stops the daemon, removes the plugin and its local marketplace, and deletes `<home>/app`; with
+  the hook gone, auto-start is off. **doctor** checks that the home copy is present on a packaged install.
+- **Project worktree isolation** is asked at first delegation, not at install (Q3): see the router brief and
+  `do-it-all-claude-code project enable|disable|status`.
+
+*Points still marked* to verify *come from the documentation only.*
 
 ## Recommendation
 

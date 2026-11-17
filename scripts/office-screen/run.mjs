@@ -7,7 +7,7 @@
 // It never sends a prompt: it types slash commands (/office demo, /reload-plugins) and keys only, so no model
 // request is made. Claude Code runs with your own login and settings, which it does not change; it leaves
 // the session's usual records. It refuses ctrl+x followed by an arrow, which resizes a plugin pane and is kept in
-// your settings; a click presses and lets go on one cell, so it drags no pane edge. The router home and the repository it works in are yours to give (a test home with a
+// your settings, and left, which hands the session to Claude Code's background service; a click presses and lets go on one cell, so it drags no pane edge. The router home and the repository it works in are yours to give (a test home with a
 // running daemon). Install its two packages once: npm install --prefix scripts/office-screen
 //
 //   node scripts/office-screen/run.mjs --home <router home> --cwd <repository> [options] <steps>
@@ -30,7 +30,8 @@
 //
 // Steps, separated by ";" or one a line:
 //   wait <seconds>             until <regex> [<seconds>]  (waits for the screen to match; fails after 20 s)
-//   type <text>                enter | esc | tab | space | backspace | up | down | left | right | ctrl+<k>
+//   type <text>                enter | esc | tab | space | backspace | up | down | right | ctrl+<k>
+//                              (no left: on an empty prompt Claude Code moves the session to its background service)
 //   key <char>                 send <text with \x1b-style escapes>
 //   office [<args>]            types /office <args> and Enter          reload: types /reload-plugins and Enter
 //   resize <cols> <rows>       resizes the terminal and then the pseudo-terminal, as a terminal window does
@@ -137,9 +138,12 @@ function grab(term, whole = false) {
   const rows = [];
   for (let y = from; y < to; y++) {
     const line = buf.getLine(y);
-    if (!line) { rows.push({ text: '', wrapped: false, edge: false }); continue; }
+    if (!line) { rows.push({ text: '', wrapped: false, edge: false, inverse: false }); continue; }
     const last = line.getCell(term.cols - 1);
-    rows.push({ text: line.translateToString(true), wrapped: line.isWrapped, edge: !!last && last.getChars() !== '' && last.getChars() !== ' ' });
+    // a run of inverse cells with text in it: where a focus ring (or a selection) is drawn
+    let inverse = false;
+    for (let x = 0; x < term.cols && !inverse; x++) { const c = line.getCell(x); inverse = !!c && c.isInverse() !== 0 && c.getChars().trim() !== ''; }
+    rows.push({ text: line.translateToString(true), wrapped: line.isWrapped, edge: !!last && last.getChars() !== '' && last.getChars() !== ' ', inverse });
   }
   return rows;
 }
@@ -287,7 +291,7 @@ async function main() {
     const head = [
       `shot ${shotN} "${name}" at ${term.cols}x${term.rows} · ${o.term} · ${o.backend} · tui ${o.tui || 'yours'} · mouse ${modes.mouseTrackingMode} · ${term.buffer.active.type} screen`,
       rule,
-      ...view.map((r, y) => `${String(y + 1).padStart(3)}${r.wrapped ? '↵' : ' '}${r.edge ? '|' : ' '}${r.text}`),
+      ...view.map((r, y) => `${String(y + 1).padStart(3)}${r.wrapped ? '↵' : ' '}${r.edge ? '|' : r.inverse ? '»' : ' '}${r.text}`),
       rule,
       '',
       res.found.length ? 'findings:' : 'findings: none',
@@ -346,8 +350,20 @@ async function main() {
   const enter = expected => {
     const t = promptText();
     const ok = t === null ? expected === undefined : expected !== undefined ? t === expected : t === '' || SAFE.test(t);
-    if (!ok) throw new Error(`the prompt holds ${JSON.stringify(t ?? '(no prompt on screen)')}: Enter would send it on, so the run stops here`);
+    const classic = /this launch is using the classic renderer/.test(text()) ? ' (Claude Code fell back to its classic renderer for this launch, where the prompt is not read: run again)' : '';
+    if (!ok) throw new Error(`the prompt holds ${JSON.stringify(t ?? '(no prompt on screen)')}: Enter would send it on, so the run stops here${classic}`);
     write('\r');
+  };
+  // Left on an empty prompt hands the session to Claude Code's background service, where it outlives the run. The
+  // run never sends left; should that view show anyway, it goes back (esc), ends the session there and stops.
+  const BACKGROUND = /Your session moved to the background/;
+  const leaveBackground = async () => {
+    dump('background');
+    write('\x1b'); await settle(800);
+    write('\x03'); await sleep(300); write('\x03');
+    const until = Date.now() + 5000;
+    while (!exited && Date.now() < until) await sleep(100);
+    throw new Error('Claude Code moved the session to its background view: the run went back, ended the session and stops here');
   };
 
   // the first screen: wait for the prompt, answering the trust question if it comes
@@ -368,6 +384,8 @@ async function main() {
     const [cmd, ...restWords] = step.split(/\s+/);
     const rest = step.slice(cmd.length).trim();
     if (exited && cmd !== 'quit') { console.log(`Claude Code ended (code ${exited.exitCode}) before "${step}"`); break; }
+    if (!exited && BACKGROUND.test(text())) await leaveBackground();
+    if (cmd === 'left') throw new Error('"left" is not sent: on an empty prompt Claude Code moves the session into its background service');
     // ctrl+x and an arrow resize a plugin pane, and Claude Code keeps that size in your own settings for every
     // plugin's pane: the run never sends it
     if (afterCtrlX && /^(up|down|left|right)$/.test(cmd)) throw new Error(`"ctrl+x" then "${cmd}" would change the pane size Claude Code keeps in your settings`);
@@ -395,7 +413,9 @@ async function main() {
       const before = promptText();
       if (before !== '') throw new Error(`the prompt holds ${JSON.stringify(before ?? '(no prompt on screen)')}: "${command}" not typed`);
       await typeText(command);
-      await settle(400);
+      // Enter only once the prompt shows the command whole (a slow echo, the command menu drawing)
+      const shown = Date.now() + 3000;
+      do await settle(200); while (promptText() !== command && Date.now() < shown);
       enter(command);
       await settle(600);
     } else if (cmd === 'resize') {
@@ -449,6 +469,7 @@ async function main() {
     } else throw new Error(`unknown step "${step}"`);
   }
 
+  if (!exited && BACKGROUND.test(text())) await leaveBackground();
   if (!exited) { try { p.kill(); } catch { /* gone */ } }
   await sleep(200);
   raw.end();
@@ -456,8 +477,10 @@ async function main() {
   console.log(`screens in ${out}`);
 }
 
-main().then(() => process.exit(0), err => {
+main().then(() => process.exit(0), async err => {
   console.error(`office-screen: ${err.message}`);
+  // ended as a person ends it (ctrl+c twice), so its next start does not take this one for a failed start
+  try { child?.write(''); await sleep(300); child?.write(''); await sleep(1500); } catch { /* gone */ }
   try { child?.kill(); } catch { /* gone */ }
   setTimeout(() => process.exit(1), 300);
 });

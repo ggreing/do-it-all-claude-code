@@ -5,12 +5,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_PRESETS, PROTECTED_WRITE_PATHS, costUsd, formatTriageContext, scopeKey, triage, type Usage } from '@do-it-all-claude-code/core';
+import { DEFAULT_PRESETS, PROTECTED_WRITE_PATHS, costUsd, formatTriageContext, scopeKey, triage, writeProjectState, type Usage } from '@do-it-all-claude-code/core';
 import { AWAITING_USER_MARKER } from '../src/continuation.ts';
 import type { StatusView } from '../src/router.ts';
 import {
-  TEAM_L0_PRESETS, TEAM_L1_PRESETS,
-  FIXTURE_CALLS, copyTranscript, editAgentPrompt, getStatus, git, loadSpike, makeRepo, postHook, retarget, rmrf, rows, startTestDaemon, write,
+  TEAM_L0_PRESETS, TEAM_L1_PRESETS, claudeAdapter,
+  FIXTURE_CALLS, copyTranscript, editAgentPrompt, getStatus, git, loadSpike, makeRepo, postHook, retarget, rmrf, rows, startTestDaemon, tmpDir, write,
   type HookInput, type TestDaemon,
 } from './helpers.ts';
 
@@ -39,10 +39,40 @@ const out = async (d: TestDaemon, h: HookInput): Promise<Out> => {
 };
 const subagentStop = (h: HookInput, stopHookActive: boolean): HookInput => ({ ...h, stop_hook_active: stopHookActive });
 
+// ------------------------------------------------------------------ decision 192 (Q3): first-delegation note
+
+test('decision 192: a fresh project gets the one-time project-setup note on the first team delegation', () => withDaemon(async d => {
+  const repo = makeRepo({ 'README.md': 'r\n' });
+  const ups = (session: string): HookInput => ({ hook_event_name: 'UserPromptSubmit', session_id: session, cwd: repo, prompt: 'add a new feature to src/x.ts' });
+  const first = (await out(d, ups('ps-a'))).hookSpecificOutput?.additionalContext ?? '';
+  assert.match(first, /Project setup \(first delegation here\)/);
+  assert.ok(first.includes(AWAITING_USER_MARKER), 'the note tells the lead to use the awaiting-user marker');
+  assert.ok(first.includes('do-it-all-claude-code project enable'), 'the note names the enable command');
+  // once per project: a later prompt (new session) in the same repo does not repeat it
+  const second = (await out(d, ups('ps-b'))).hookSpecificOutput?.additionalContext ?? '';
+  assert.doesNotMatch(second, /Project setup \(first delegation here\)/);
+  // a non-git cwd (no work-tree root) never gets the note
+  const outside = (await out(d, { hook_event_name: 'UserPromptSubmit', session_id: 'ps-c', cwd: tmpDir('nongit'), prompt: 'add a new feature' })).hookSpecificOutput?.additionalContext ?? '';
+  assert.doesNotMatch(outside, /Project setup \(first delegation here\)/);
+}, { config: { forceLevel: 'L2' } }));
+
+test('decision 192: a replayed (spooled) prompt does not consume the one-time project-setup ask', () => withDaemon(async d => {
+  const repo = makeRepo({ 'README.md': 'r\n' });
+  // a spooled prompt's context reaches no one, so it must not record the ask (M1)
+  await d.router.process(claudeAdapter.toRouterEvent({ session_id: 'sp', cwd: repo, transcript_path: path.join(d.home, 'sp.jsonl'), hook_event_name: 'UserPromptSubmit', prompt: 'add a feature' }, { spooled: true }));
+  assert.equal(fs.existsSync(path.join(d.home, 'projects')), false, 'a spooled prompt leaves no project state');
+  // a later live prompt in the same project still gets the note
+  const live = (await out(d, { hook_event_name: 'UserPromptSubmit', session_id: 'sp-live', cwd: repo, prompt: 'add a feature' })).hookSpecificOutput?.additionalContext ?? '';
+  assert.match(live, /Project setup \(first delegation here\)/);
+}, { config: { forceLevel: 'L2' } }));
+
 // ------------------------------------------------------------------ spike s1: two parallel coders
 
 test('s1: brief injected, B denied (wrong step), A paired by order, verified, usage and verdict recorded', () => withDaemon(async d => {
   const repo = makeRepo({ 'README.md': 'r\n', 'check.cjs': PASS });
+  // decision 192: this test asserts the bare triage brief, so mark the project already-asked — otherwise the
+  // first-delegation project-setup note would be appended (that note has its own test).
+  writeProjectState({ path: repo, askedAt: new Date().toISOString() }, d.home);
   try {
     const inputs = retarget(loadSpike('s1'), repo);
     setPrompt(inputs, L1_PROMPT);

@@ -14,6 +14,10 @@ The order is by cost and by what depends on what:
 3. Part C is one delegated request with reproduce first on. It answers the most points per request.
 4. Part D is one delegated request whose verify always fails.
 5. Part E is optional: slow or disruptive checks that nothing else waits for.
+6. Part F is the 0.5.0 tabs and the profile (decisions 193, 194). Its first two checks need no model and can
+   be done with part B; the rest read what parts C and D left in the ledger.
+7. Part G is the project question and writers that share a checkout (decision 192): two delegated requests in a
+   repository the router has not seen.
 
 Write down for each check: passed, failed, or not checked, and what was seen. A check that fails names the
 fallback the notes already hold.
@@ -212,6 +216,111 @@ stops while no member works.
 **E4. The desktop app.** A plugin installed at user scope also draws there: open a local session in the
 desktop app and run `/office demo`.
 
+## Part F. The tabs and the profile (decisions 193, 194)
+
+The tabs are Office, Work, Savings, Team and Settings (`o`, `w`, `s`, `t`, `c`); `p` steps the period in Savings
+and Team. The routes behind them are tested without the engine; what a session shows is that the panel draws
+them and that a write from the panel lands.
+
+**F1. The Settings tab shows values with their source.** No model needed. Open `/office`, press `c`.
+
+Expected: the profile reads `balanced` (default); every item shows a value and where it comes from; a budget
+reads its default; nothing shows a path of this machine. With `do-it-all-claude-code config set budgetsUsd.L2 7`
+in another terminal, the L2 budget reads 7 with "own" after the panel's next refresh.
+
+**F2. A write from the panel, and the profile.** No model needed.
+
+1. Move to the profile, press Enter until it reads `quality`, then `a` and `y`.
+2. In another terminal: `do-it-all-claude-code config get profile` and `do-it-all-claude-code config history`.
+3. In the panel, look at the L2 team, "Step down after easy results" and the L1 and L3 budgets.
+4. Change one more value, then press `x`.
+5. Change a value in the panel but do not apply; change any setting with the CLI; then press `a` and `y`.
+6. Put the profile back to `balanced` the same way, and `config set budgetsUsd.L2 default`.
+
+Expected: (2) `quality`, and the newest history line has source `office` and names `profile`; (3) the L2
+coders start on `s2 (haiku high)` with source "profile", step-down reads off with source "profile", the L1 and
+L3 budgets read 3 and 22.5 with "profile x 1.5", and the L2 budget still reads 7, "own"; (4) nothing is
+written and no history line appears; (5) the panel says the settings changed since it read them and writes
+nothing, and after its refresh the apply works.
+
+If (2) shows source `cli` instead of `office`, the helper's write is going through the CLI's route; if (5)
+overwrites the CLI's change, the revision is not being sent.
+
+**F3. Work, while a request runs and after.** During part C or D keep the Work tab open.
+
+Expected while it runs: the request is the top line, marked as running, with its level and, once the coder
+has stopped, the files it changed with `+`/`−` line counts. After it closed: it moves below, with passed or
+failed; opening it shows the judged and final level, each subtask with role, model and effort, its scope and
+changed files, each check with passed and failed counts and its time, the reproduction state (part C), the
+step change with its reason (part D: `s1 → s2, miss`), and the time split into lead, workers, verify and
+waiting. No prompt text anywhere, also with `recordPrompts` on.
+
+**F4. Savings keeps measured and estimated apart.** After parts C and D, press `s`, and `p` for each period.
+
+Expected: the first block is what was spent, labelled as an API-equivalent estimate on a subscription or as
+billed in API-key mode, with the 5-hour and 7-day limits as the status line shows them. The estimate "at the
+lead's price" stands apart with its four assumption lines and says how many requests it left out; the holdout
+comparison says how many requests are still missing instead of a difference. No single "saved" number is
+shown. The bars match the days (or hours) the requests of parts C and D ran in.
+
+**F5. Team.** Press `t`.
+
+Expected: each role with its model and effort per level and the source (after F2 step 6: "default"); the
+coder's line counts the subtasks of parts C and D with a pass rate, and one step-up; the recent step changes
+list part D's raise with its reason; the triage numbers and the auto-release table are at the bottom.
+
+## Part G. The project question, and writers that share a checkout (decision 192)
+
+Use a third scratch repository, **R3**, that no session has run in: a small Node project with two unrelated
+source files (for example `src/a.js` and `src/b.js`, each with its own test file), committed. Set
+`forceLevel L2`.
+
+**G1. The first delegation asks once, and "no" is remembered.**
+
+1. In R3, give a request that needs both files changed in unrelated ways, and say that the two parts are
+   independent.
+2. When the lead asks whether to turn on isolation for this project, answer no.
+3. `do-it-all-claude-code project status` in R3.
+4. After the request, give a second small request in the same repository.
+
+Expected: (1) before it dispatches anyone, the lead asks one question about work trees for parallel writers
+and waits for the answer; (2) the work goes on in the checkout; (3) the status
+says it was asked and what was decided; (4) the lead does not ask again. The Office tab's top line reads
+"Isolation off: overlapping edits take turns" for this project.
+
+If the lead never asks, look at `<home>/projects/`: a file there with `askedAt` means the note was given and
+the lead ignored it, which is a wording problem; no file means the note was not added.
+
+**G2. Two writers in one checkout: the first to finish is not verified on its own.** In the request of G1,
+with isolation off, the lead should send two coders at the same time, one per file.
+
+Expected, in the Work tab's detail and the Office: the coder that stops first shows `scope ok` only and reads
+as waiting for the tree's verify, not as failed and not as passed; when the second coder stops, the build
+and tests run once, and both read passed. The daemon's log has "verify held: other writers still change the
+same work tree" once and "held subtask passed with the last writer of its work tree" once. Neither coder's
+slot is raised.
+
+If the lead sends the coders one after the other instead, nothing is held (each is verified alone); repeat
+with a request that names the two parts as parallel. If the first coder is failed for a test that the second
+coder's half-made change broke, the hold did not apply: note whether the two ran in the checkout or in work
+trees of their own (the Agent results name a branch for a work tree).
+
+**G3. A failure of the last writer names the other.** Optional. As G2, with a verify that fails (R2's
+`verify.json` in R3).
+
+Expected: the first coder is held; the second coder's failure, after its one fix round, is reported to the
+lead with "also saw the changes of subtask A (…), which were not verified on their own"; the step-up is the
+second coder's.
+
+**G4. "Yes" turns isolation on.** In a fourth repository the router has not seen: answer yes at the question
+and run `do-it-all-claude-code project enable` as the lead says.
+
+Expected: the Office tab's line no longer says isolation is off; the settings view's "Work trees for parallel
+writers" line reads on; with two parallel coders each Agent result names a branch to merge, and each coder
+is verified when it stops.
+
+Afterwards: `config set forceLevel default`.
+
 ## What each result decides
 
 | Check | If it fails |
@@ -225,3 +334,8 @@ desktop app and run `/office demo`.
 | D | the wording of the stop reason |
 | E1 | the limits of the hook and the relay |
 | E2 | nothing changes; it sizes the risk |
+| F1, F3, F4, F5 | a defect in what the panel draws; the routes themselves are tested |
+| F2 | the helper's write (source, revision); fix before release |
+| G1 | the wording of the project note, or where it is added |
+| G2, G3 | the hold for writers that share a checkout; fix before release |
+| G4 | the `project enable` path and Claude Code's own work tree setting |
