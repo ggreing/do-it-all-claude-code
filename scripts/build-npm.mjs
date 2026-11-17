@@ -120,7 +120,7 @@ async function main() {
     name: 'do-it-all-claude-code',
     version: VERSION,
     description: rootPkg.description,
-    license: 'Apache-2.0',
+    license: 'BUSL-1.1',
     type: 'module',
     engines: { node: '>=24.5' },
     bin: {

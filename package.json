@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.4.0",
   "description": "Difficulty-based team router for Claude Code: triage each request, build a right-sized subagent team, and move each session up or down a model x effort ladder.",
-  "license": "Apache-2.0",
+  "license": "BUSL-1.1",
   "type": "module",
   "engines": {
     "node": ">=24"

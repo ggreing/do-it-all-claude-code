@@ -268,4 +268,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Please report security issues privately 
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Business Source License 1.1 (BUSL-1.1). You may use it, at work too, to build and run your own software; selling it, or a paid product or service built mainly on it, needs a commercial license from the author. Each version becomes Apache-2.0 four years after it is published. Versions up to 0.4.0 were released under Apache-2.0 and stay so. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

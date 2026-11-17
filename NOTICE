@@ -1,7 +1,10 @@
 Do It All Claude Code
 Copyright 2026 ggreing
 
-This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+This product is licensed under the Business Source License 1.1 (see LICENSE). Each version becomes available
+under the Apache License, Version 2.0 four years after it is published. Versions up to and including 0.4.0,
+and the source published before 2026-11-18, were released under the Apache License, Version 2.0 and remain
+available under it.
 
 The published package bundles third-party software. Their licenses and notices are listed in
 THIRD_PARTY_NOTICES.md.

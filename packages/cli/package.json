@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "private": true,
   "description": "do-it-all-claude-code command: init, start, stop, status, doctor, supervise, mode, token, key, proxy",
-  "license": "Apache-2.0",
+  "license": "BUSL-1.1",
   "type": "module",
   "engines": {
     "node": ">=24"

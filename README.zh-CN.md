@@ -234,4 +234,4 @@ do-it-all-claude-code config set profile quality
 
 ## 许可证
 
-Apache-2.0。见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE)。
+Business Source License 1.1（BUSL-1.1）。用它来开发和运行你自己的软件（包括在工作中）是免费的；出售它，或提供主要依靠它的付费产品或服务，需要作者的商业许可。每个版本在发布四年后变为 Apache-2.0。0.4.0 及以前的版本以 Apache-2.0 发布，保持不变。见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE)。

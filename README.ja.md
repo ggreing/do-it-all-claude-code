@@ -268,4 +268,4 @@ do-it-all-claude-code config set profile quality
 
 ## ライセンス
 
-Apache-2.0。[LICENSE](LICENSE) と [NOTICE](NOTICE) を参照してください。
+Business Source License 1.1（BUSL-1.1）です。仕事を含め、自分のソフトウェアを作って動かすために使うのは自由です。これを販売したり、これが主な価値となる有料の製品・サービスを提供したりするには、作者の商用ライセンスが必要です。各バージョンは公開から 4 年後に Apache-2.0 になります。0.4.0 までは Apache-2.0 で公開されており、そのままです。[LICENSE](LICENSE) と [NOTICE](NOTICE) を参照してください。
