@@ -28,6 +28,9 @@ open an issue to discuss anything substantial before you start.
     — the guard's decisions, including a regression case for every known bypass. A new bypass gets a case here.
   - `node scripts/guard-e2e/run.mjs` — the guard as a hook of a real Claude Code, against a local fake
     upstream (no API call, nothing billed; see `scripts/guard-e2e/README.md`). Every step must end as expected.
+- For a change to how the team office draws (`plugin/office/`), also run `claude plugin test plugin/` and look at
+  it in a real Claude Code with `scripts/office-screen` (development only, with its own
+  `npm install --prefix scripts/office-screen`; see its README). It sends no prompt.
 - Line endings are **LF**, enforced by `.gitattributes` (CRLF only for Windows-native `.ps1`/`.cmd`/`.bat`).
 
 ## Pull requests

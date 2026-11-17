@@ -26,6 +26,34 @@ panel, never the router.
 - The model and effort come from the `turn.step` hook (a streaming hook, `async function*`), which reads
   `e.model` and `e.effort` of every model request, per agent.
 
+## The room and the terminal (as built)
+
+- The office lays itself out in the room the pane has (`bodyColumns`, `scroll.bodyRows`; `officeLayout` in
+  `model.ts`):
+  - the desks when they fit with at least three session rows under them, and the back wall when that fits too;
+  - else small desks: the same member in the same shape, without the monitor and with one row over its head
+    (15 columns and 9 rows a desk against 22 and 11). The dock of a 120- or 160-column terminal is 54 to 69
+    columns across, two full desks a row, and five members then need 36 rows of full desks; small desks take 20;
+  - only when even those do not fit, one line a member: the name, the model and effort, the status and its time,
+    what it is doing. A press or 1–9 picks a member, as on the desks;
+  - in a room too low for frames, lines only, and a line on making the office taller (`ctrl+x tab`, then
+    `ctrl+x up`). This is an inline pane the person made short: Claude Code keeps that height in their settings
+    for every plugin pane, and it wins over the office's request. In fullscreen an inline pane gets at most a
+    third of the room in any case.
+- Every frame stops two columns short of the body's right edge, and the scene is only as wide as its desks. A line
+  that reaches the terminal's last column is the first one a narrower window wraps; the classic console and the
+  system ConPTY mark such rows as wrapped.
+- When it opens, the pane asks for `columns` (docked: up to 45% of the terminal) and `rows` (inline).
+- **The classic Windows console** is any Windows terminal that does not say which it is, decided as Claude Code
+  decides it for its own figures (`unicodeTerminal`). There the office is always the list:
+  - its marks are ones that console draws one cell wide (`*`, `v`, `-`, `x`, `>`, `->`), with single-line
+    frames. Measured in that console, `●`, `○` and `→` take two cells where Claude Code counts one, so a row
+    holding one is shifted and its later updates land beside it;
+  - the scene and the pointer are left out.
+  - The numbers seen in the prompt there come from Claude Code's own mouse tracking. Fullscreen turns it on with
+    or without the office, and `CLAUDE_CODE_DISABLE_MOUSE=1` turns it off.
+- `scripts/office-screen` (development only) runs Claude Code in a virtual terminal and checks these screens.
+
 ## 1. Where it lives in the product plugin
 
 **Measured** with `claude plugin validate` on a copy of `plugin/` with the prototype's module added (Claude Code
@@ -383,7 +411,9 @@ The per-field role form is dropped; a whole-file edit covers it.
 
 - It starts from the prototype's tests (the demo seats the team, a press shows that member below, an empty office
   says how to fill it) and adds:
-  - the tabs and their keys;
+  - the tabs and their keys, each tab drawn once (History once threw on a local that hid the JSX factory `h`;
+    `office-model.test.ts` now refuses such a local in the office's `.tsx`);
+  - the room's layouts (desks, small desks in a narrow dock, the list, lines only) and the classic console's list;
   - the daemon-off line;
   - a mocked `http.fetch` answering sealed responses;
   - the step-against-effort header;

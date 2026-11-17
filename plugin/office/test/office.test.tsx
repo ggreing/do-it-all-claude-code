@@ -32,10 +32,10 @@ const OFFICE_LINE = JSON.stringify({
 type On = Parameters<Parameters<typeof test>[1]>[1]
 
 /** The engine around the office: a tested Claude Code build, a session id, a clock, and a helper that says `lines`. */
-function engine(on: On, lines: string[] = []): { spawned: string[][]; clock: ReturnType<typeof mock.clock> } {
+function engine(on: On, lines: string[] = [], env: Record<string, string> = {}): { spawned: string[][]; clock: ReturnType<typeof mock.clock> } {
   const spawned: string[][] = []
   const clock = mock.clock(on, { now: 1_000_000 })
-  mock.env(on, {})
+  mock.env(on, env)
   on('session.version', () => ({ value: { version: '2.1.325' } }))
   on('session.id', () => ({ value: 'kit-session' }))
   on('command.register', () => ({ value: { command: 'office' } }))
@@ -64,11 +64,11 @@ test('the preview seats the team, and a press shows that member below', async ($
     must('coder A session', await ui.find({ type: 'Text', text: /Read\(src\/slug\.ts\)/ }))
 
     // a click on the fourth desk (coder B): it is pressed, and its session shows below
-    await ui.pointer({ type: 'down', x: 3 * 22 + 6, y: 3 + 3, button: 'left', in: 'office-scene' })
+    await ui.pointer({ type: 'down', x: 3 * 24 + 6, y: 3 + 3, button: 'left', in: 'office-scene' })
     await ui.advance(200)
     must('coder B task', await ui.find({ type: 'Text', text: /CLI uses the new slugify/ }))
     // the same desk again: the space below is empty again
-    await ui.pointer({ type: 'down', x: 3 * 22 + 6, y: 3 + 3, button: 'left', in: 'office-scene' })
+    await ui.pointer({ type: 'down', x: 3 * 24 + 6, y: 3 + 3, button: 'left', in: 'office-scene' })
     await ui.advance(200)
     must('empty space', await ui.find({ type: 'Text', text: /Click a member/ }))
     // a hover draws without throwing, and the frames keep coming
@@ -76,7 +76,7 @@ test('the preview seats the team, and a press shows that member below', async ($
     await ui.advance(3000)
     await ui.drawn({ in: 'office-scene' })
     // back to coder A, as the preview opened, for the next surface
-    await ui.pointer({ type: 'down', x: 2 * 22 + 6, y: 3 + 3, button: 'left', in: 'office-scene' })
+    await ui.pointer({ type: 'down', x: 2 * 24 + 6, y: 3 + 3, button: 'left', in: 'office-scene' })
     await ui.unmount()
   }
 })
@@ -113,6 +113,12 @@ test('without the router the office says so; the four tabs switch with their key
   await settle()
   must('daemon down', await ui.find({ type: 'Text', text: /router daemon not reachable/ }))
   for (const key of ['tab-office', 'tab-history', 'tab-cost', 'tab-routing']) must(key, await ui.find({ key }))
+  // the History tab draws (it once threw on a local that hid the JSX factory, and the pane went blank)
+  await ui.press({ key: 'tab-history' })
+  await settle()
+  must('history drawn', await ui.find({ type: 'Text', text: /Loading…|No closed requests yet/ }))
+  must('history without a fault', !(await ui.find({ key: 'tab-error' })))
+  must('helper for the history tab', spawned.some(a => a.includes('history')))
   await ui.press({ key: 'tab-cost' })
   await settle()
   must('cost periods', await ui.find({ key: 'period-7d' }))
@@ -123,5 +129,61 @@ test('without the router the office says so; the four tabs switch with their key
   await ui.press({ key: 'tab-office' })
   await settle()
   must('back in the office', await ui.find({ type: 'Text', text: /Click a member/ }))
+  await ui.unmount()
+})
+
+test('in a narrow dock (a 120-column terminal) the members sit at small desks, and a click picks the one under it', async ($, on) => {
+  engine(on)
+  await $.command.run({ command: 'office', args: 'demo' })
+  // the dock beside the transcript of a 120 x 40 terminal: 54 across, 34 high; full desks would be two a row
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 54, scroll: { offset: 0, bodyRows: 34 } }, surface: 'terminal' })
+  await ui.drawn()
+  must('the scene', await ui.find({ key: 'office-scene' }))
+  must('no list', !(await ui.find({ key: 'member-demo-a' })))
+  must('coder B', await ui.find({ type: 'Text', text: /coder B/, in: 'office-scene' }))
+  must('model and effort', await ui.find({ type: 'Text', text: /Sonnet medium/, in: 'office-scene' }))
+  // small desks are 15 across with a 1-column gap, 9 rows and a gap down, under the title line: coder B is the
+  // fourth member, the first desk of the second row
+  await ui.pointer({ type: 'down', x: 6, y: 1 + 10 + 2, button: 'left', in: 'office-scene' })
+  await ui.advance(200)
+  must('coder B task', await ui.find({ type: 'Text', text: /CLI uses the new slugify/ }))
+  await ui.unmount()
+})
+
+test('in a room too low for the desks the office is a line a member, and a press follows that member', async ($, on) => {
+  engine(on)
+  await $.command.run({ command: 'office', args: 'demo' })
+  // inline above the prompt in a short terminal
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 98, scroll: { offset: 0, bodyRows: 16 } }, surface: 'terminal' })
+  await ui.drawn()
+  must('the list', await ui.find({ key: 'member-demo-a' }))
+  must('no scene', !(await ui.find({ key: 'office-scene' })))
+  must('model and effort', await ui.find({ type: 'Text', text: /· Haiku low/ }))
+  await ui.press({ key: 'member-demo-b' })
+  await ui.advance(200)
+  must('coder B task', await ui.find({ type: 'Text', text: /CLI uses the new slugify/ }))
+  await ui.unmount()
+})
+
+test('in the classic Windows console the office is the list with marks that console draws one cell wide', async ($, on) => {
+  engine(on, [], { OS: 'Windows_NT' })
+  await $.command.run({ command: 'office', args: 'demo' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.drawn()
+  must('the list', await ui.find({ key: 'member-demo-a' }))
+  must('no scene', !(await ui.find({ key: 'office-scene' })))
+  must('one-cell marks', await ui.find({ type: 'Text', text: /\* working/ }))
+  must('no two-cell marks', !(await ui.find({ type: 'Text', text: /[●○→]/ })))
+  await ui.unmount()
+})
+
+test('an inline pane kept short gets lines only, and says how to make it taller', async ($, on) => {
+  engine(on)
+  await $.command.run({ command: 'office', args: 'demo' })
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 98, scroll: { offset: 0, bodyRows: 3 } }, surface: 'terminal' })
+  await ui.drawn()
+  must('how to make room', await ui.find({ type: 'Text', text: /ctrl\+x up/ }))
+  must('the members', await ui.find({ key: 'member-lead' }))
+  must('no frames', !(await ui.find({ key: 'office-frame' })))
   await ui.unmount()
 })

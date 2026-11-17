@@ -34,7 +34,15 @@ const ROLES = ['architect', 'coder', 'reviewer', 'tester', 'ui-designer'] as con
 export const ROLE_NAME: Record<OfficeRole, string> = {
   lead: 'lead', architect: 'architect', coder: 'coder', reviewer: 'reviewer', tester: 'tester', 'ui-designer': 'designer', helper: 'helper',
 };
-export const STATUS_WORD: Record<OfficeStatus, string> = { working: '● working', done: '✓ done', waiting: '○ waiting', failed: '✗ failed' };
+/**
+ * The marks the office draws with. The classic Windows console draws ●, ○ and → two cells wide where Claude Code
+ * counts one, so every row holding one is shifted and its later updates land beside it; there the office keeps to
+ * marks it draws one cell wide (measured in that console, as Claude Code falls back for its own figures).
+ */
+export type Glyphs = { status: Record<OfficeStatus, string>; tool: string; text: string; picked: string; arrow: string; border: string; range: string };
+export const GLYPHS: Glyphs = { status: { working: '●', done: '✓', waiting: '○', failed: '✗' }, tool: '●', text: '●', picked: '▸', arrow: '→', border: 'round', range: '–' };
+export const CLASSIC_GLYPHS: Glyphs = { status: { working: '*', done: 'v', waiting: '-', failed: 'x' }, tool: '*', text: '*', picked: '>', arrow: '->', border: 'single', range: '-' };
+export function statusWord(s: OfficeStatus, g: Glyphs = GLYPHS): string { return `${g.status[s]} ${s}`; }
 
 export function roleOf(subagentType: string): OfficeRole {
   const t = subagentType.split(':').pop() ?? subagentType;
@@ -285,3 +293,92 @@ export function versionAtLeast(version: string | undefined, min: readonly [numbe
 
 /** The Claude Code build the office was tested on (decision 186 ②; the router's MIN_CLAUDE is the same). */
 export const OFFICE_MIN_CLAUDE = [2, 1, 325] as const;
+
+// ------------------------------------------------------------------ the terminal and the room
+
+/**
+ * Whether the terminal draws Unicode marks one cell wide, decided as Claude Code decides it for its own figures:
+ * anywhere but Windows unless TERM is linux; on Windows only in a terminal that says which it is. Elsewhere on
+ * Windows it is the classic console. The names are the environment variables of Claude Code's process.
+ */
+export function unicodeTerminal(env: Readonly<Record<string, string | undefined>>): boolean {
+  if (env.OS !== 'Windows_NT') return env.TERM !== 'linux';
+  return Boolean(env.WT_SESSION) || Boolean(env.TERMINUS_SUBLIME) || env.ConEmuTask === '{cmd::Cmder}'
+    || env.TERM_PROGRAM === 'Terminus-Sublime' || env.TERM_PROGRAM === 'vscode'
+    || env.TERM === 'xterm-256color' || env.TERM === 'alacritty' || env.TERM === 'rxvt-unicode' || env.TERM === 'rxvt-unicode-256color'
+    || env.TERMINAL_EMULATOR === 'JetBrains-JediTerm';
+}
+
+/** Columns every frame leaves free at the body's right: a line that reaches a terminal's last column is the first one a narrower window wraps. */
+export const SLACK = 2;
+/** A desk with the gap after it (scene.tsx: STATION_W + 2 across, STATION_H + 1 down). */
+export const DESK_W = 24;
+export const DESK_H = 12;
+/** A small desk with the gap after it: the same member, no monitor, less room above its head (scene.tsx: MINI). */
+export const SMALL_DESK_W = 16;
+export const SMALL_DESK_H = 10;
+export const SESSION_ROWS = 12;
+export const MIN_SESSION_ROWS = 3;
+
+export type OfficeLayout = {
+  /**
+   * `desks`: the members at their desks (scene.tsx); `list`: one line each; `tiny`: a room too low for frames (an
+   * inline pane the person made short: Claude Code keeps that size for every plugin pane), lines only
+   */
+  mode: 'desks' | 'list' | 'tiny';
+  /** `desks`: full desks with a monitor, or small ones where the full ones do not fit (the member drawn the same) */
+  small: boolean;
+  /** the back wall above the desks */
+  wall: boolean;
+  /** desks to a row */
+  perRow: number;
+  /** the frames' width: the body's less SLACK */
+  width: number;
+  /** what a frame holds across: its width less the border and the padding */
+  inner: number;
+  /** the session's lines and its two header lines (`tiny`: the session's lines that fit, maybe none) */
+  sessionRows: number;
+};
+
+/**
+ * The office in the room the pane has, with at least MIN_SESSION_ROWS of session below: the desks with the back
+ * wall, the desks alone, small desks (a 120-column terminal's dock is about 54 across, two full desks a row), and
+ * only when even those do not fit one line a member; the session takes the rest. The classic console always gets
+ * the list. Rows: the tab row, the router's line, the office's frame and title line, then the desks or the list,
+ * then the session's frame. Too low for that: `tiny`, the tab row, a line on making room, the members' lines, then
+ * what is left of the session.
+ */
+export function officeLayout(o: { columns: number; rows: number; members: number; routerLine: boolean; classic: boolean }): OfficeLayout {
+  const width = Math.max(20, o.columns - SLACK);
+  const inner = width - 4;
+  const perRow = Math.floor((inner + 2) / DESK_W);
+  const perSmall = Math.floor((inner + 1) / SMALL_DESK_W);
+  const fixed = 1 + (o.routerLine ? 1 : 0) + 2 + 1 + 2;
+  // no members: the plant and the line saying how the desks fill
+  const desks = (wall: boolean) => fixed + (wall ? 2 : 0) + (o.members ? Math.ceil(o.members / perRow) * DESK_H : 7);
+  const small = fixed + (o.members ? Math.ceil(o.members / perSmall) * SMALL_DESK_H : 7);
+  const list = fixed + Math.max(1, o.members);
+  const room = (used: number) => Math.max(MIN_SESSION_ROWS, o.rows - used);
+  const base = { perRow: Math.max(1, perRow), width, inner, small: false };
+  if (!o.classic && perRow >= 1) {
+    if (desks(true) + MIN_SESSION_ROWS <= o.rows) return { ...base, mode: 'desks', wall: true, sessionRows: room(desks(true)) };
+    if (desks(false) + MIN_SESSION_ROWS <= o.rows) return { ...base, mode: 'desks', wall: false, sessionRows: room(desks(false)) };
+  }
+  if (!o.classic && perSmall >= 1 && small + MIN_SESSION_ROWS <= o.rows) {
+    return { ...base, mode: 'desks', small: true, perRow: perSmall, wall: false, sessionRows: room(small) };
+  }
+  if (list + MIN_SESSION_ROWS <= o.rows) return { ...base, mode: 'list', wall: false, sessionRows: room(list) };
+  return { ...base, mode: 'tiny', wall: false, inner: width, sessionRows: Math.max(0, o.rows - 2 - Math.max(1, o.members)) };
+}
+
+/** The rows and columns the pane asks for when it opens: room for the desks and a full session; the engine grants what it can spare. */
+export function wantedRoom(members: number): { rows: number; columns: number } {
+  const across = Math.max(2, Math.min(4, members));
+  return { rows: 1 + 1 + 2 + 1 + 2 + Math.max(1, Math.ceil(members / 4)) * DESK_H + 2 + SESSION_ROWS, columns: across * DESK_W - 2 + 4 + SLACK };
+}
+
+/** `text` cut to `max` characters, with an ellipsis where it was cut. */
+export function fit(text: string, max: number): string {
+  const chars = [...text];
+  return chars.length <= max ? text : `${chars.slice(0, Math.max(0, max - 1)).join('')}…`;
+}

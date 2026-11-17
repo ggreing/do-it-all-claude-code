@@ -172,6 +172,8 @@ async function init(f: Record<string, string | boolean>) {
   console.log(installed
     ? 'Plugin installed; `do-it-all-claude-code role edit <role>` changes a role in the generated folder, and the edit survives updates.'
     : `Not installed yet — run the two commands above when ready, or load it directly with: claude --plugin-dir "${pluginDir}"`);
+  // decision 186: in an already-open session the plugin loads with /reload-plugins; then /office opens the team office
+  if (installed) console.log('In an open Claude Code session run /reload-plugins to load it now (or start a new session); then /office opens the team office.');
   if (api) console.log('API-key mode: run `do-it-all-claude-code start` (daemon and proxy), then start new Claude Code sessions. `do-it-all-claude-code doctor` checks the setup.');
 }
 
@@ -244,5 +246,5 @@ if (isMain) {
         : cmd === 'role' ? await roleCommand(positional[0], positional.slice(1), d) : await reloadCommand(d);
     } catch (e) { console.error((e as Error).message); process.exitCode = 1; }
   }
-  else console.log('usage: do-it-all-claude-code <version|init [--mode api]|start|stop|status|doctor|routing reset|data export|data purge|uninstall [--keep-key]|policy show|accept|revoke|mode subscription|api|direct|proxy|token rotate [--no-grace]|key set|proxy allow-upstream <origin>|update on|off|check|config list|get|set|edit|preset show|edit|role show|edit <role>|reload>');
+  else console.log('usage: do-it-all-claude-code <version|init [--mode api]|start|stop|status|doctor|routing reset|data export|data purge|uninstall [--keep-key]|policy show|accept|revoke|mode subscription|api|direct|proxy|token rotate [--no-grace]|key set|proxy allow-upstream <origin>|update on|off|check|config list|get|set|edit|history|preset show|edit|role show|edit|reset <role>|reload>');
 }

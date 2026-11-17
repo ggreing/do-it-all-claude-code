@@ -334,6 +334,39 @@ export function effectivePluginCheck(cfg: CliConfig): Check {
   return { name, ok: true, blocking: false, detail: `${dir} (generated from ${cfg.pluginTemplateDir})` };
 }
 
+export interface PluginValidation { code: number | null; out: string }
+export type PluginValidator = (pluginDir: string) => PluginValidation | null;
+
+/** Runs `claude plugin validate <dir>` — a local check (no `claude -p`, no model call, no API). null when claude is not found. */
+export const realPluginValidator: PluginValidator = pluginDir => {
+  try {
+    const o = { encoding: 'utf8' as const, timeout: 20000, windowsHide: true };
+    // On Windows claude is a .cmd shim; the dir is the only argument (no user-controlled flags), so shell:true is safe.
+    const out = process.platform === 'win32'
+      ? execSync(`claude plugin validate "${pluginDir}"`, o)
+      : execFileSync('claude', ['plugin', 'validate', pluginDir], o);
+    return { code: 0, out };
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException & { status?: number | null; stdout?: string; stderr?: string };
+    if (err.code === 'ENOENT') return null;   // claude not installed: the `claude code` check already covers that
+    return { code: typeof err.status === 'number' ? err.status : 1, out: `${err.stdout ?? ''}${err.stderr ?? ''}` };
+  }
+};
+
+/**
+ * Decision 186: the team office plugin loads in this Claude Code. "Loads" means the validator ends with
+ * "✔ Validation passed"; any refusal about the README or an icon directory is printed before that line and does
+ * not stop the office, so it is not a failure. Non-blocking. null (skipped) when claude is not found.
+ */
+export function pluginValidateCheck(pluginDir: string, r: PluginValidation | null): Check | null {
+  if (!r) return null;
+  const out = r.out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').trim();
+  const ok = /^\s*(?:[✔✓]\s*)?Validation passed\b/m.test(out);
+  const firstProblem = out.split('\n').map(l => l.trim()).filter(Boolean).find(l => /\b(error|invalid|failed|missing)\b/i.test(l));
+  return { name: 'team office plugin', ok, blocking: false,
+    detail: ok ? 'claude plugin validate passed' : `claude plugin validate did not pass${firstProblem ? `: ${firstProblem}` : ` (exit ${r.code ?? '?'})`}; run \`claude plugin validate "${pluginDir}"\`` };
+}
+
 /** Decision 164: the Bearer switch is off by default and stays for this release only; a warning while it is on. */
 export function bearerApiCheck(cfg: CliConfig): Check | null {
   return cfg.bearerApi === 'on' ? { name: 'bearerApi', ok: false, blocking: false,
@@ -377,6 +410,8 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Chec
   if (cfg) checks.push({ name: 'prompt text', ok: true, blocking: false, detail: promptStorageSummary(cfg.recordPrompts) });   // decision 142
   if (cfg) checks.push(updateCheckLine(cfg));   // decision 163
   if (cfg) checks.push(effectivePluginCheck(cfg));   // decision 168
+  // decision 186: does the team office plugin validate in this Claude Code? (non-blocking; skipped if claude is absent)
+  if (cfg?.pluginDir) { const v = pluginValidateCheck(cfg.pluginDir, realPluginValidator(cfg.pluginDir)); if (v) checks.push(v); }
   // review L3: a packaged install copies the apiKeyHelpers into the router home; warn if a copy drifted from the
   // installed one (a Node-version change, say). `start` refreshes them. [] in the workspace.
   if (cfg) for (const h of staleHelpers()) checks.push({ name: `apiKeyHelper (${h})`, ok: false, blocking: false, detail: 'the router-home copy differs from the installed one: run do-it-all-claude-code start to refresh it' });

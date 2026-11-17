@@ -198,6 +198,65 @@ test('decision 168 review L3: doctor warns when a generated role file is not wha
   assert.equal(effectivePluginCheck(readConfig()!).ok, true);
 });
 
+test('decision 168: config history lists changes newest first, the source as recorded, and honours the limit', async () => {
+  assert.equal(await configCommand('set', ['holdoutRate', '0.1'], deps().d), 0);
+  assert.equal(await configCommand('set', ['stepDown', 'off'], deps().d), 0);
+  const h = deps();
+  assert.equal(await configCommand('history', [], h.d), 0);
+  assert.match(h.text(), /cli-direct {2}config/);                       // the source is printed as recorded
+  assert.match(h.text(), /stepDown: .*-> "off"/);
+  assert.ok(h.text().indexOf('stepDown') < h.text().indexOf('holdoutRate'), 'newest first');
+  const one = deps();
+  assert.equal(await configCommand('history', ['1'], one.d), 0);
+  assert.match(one.text(), /stepDown/);
+  assert.doesNotMatch(one.text(), /holdoutRate/);                       // the limit keeps only the newest
+  const bad = deps();
+  assert.equal(await configCommand('history', ['-2'], bad.d), 2);
+  assert.match(bad.text(), /positive whole number/);
+});
+
+test('decision 168: config history on a fresh home says nothing was recorded', async () => {
+  const h = deps();
+  assert.equal(await configCommand('history', [], h.d), 0);
+  assert.match(h.text(), /No settings changes recorded\./);
+});
+
+test('decision 168: role reset drops the override and puts the role back to the template, then is a no-op', async () => {
+  const file = path.join(effectivePluginDir(home), 'agents', 'coder.md');
+  const edit = deps([t => t.replace('effort: low', 'effort: high')]);
+  assert.equal(await roleCommand('edit', ['coder'], edit.d), 0, edit.text());
+  assert.match(fs.readFileSync(file, 'utf8'), /effort: high/);
+  const r = deps();
+  assert.equal(await roleCommand('reset', ['coder'], r.d), 0, r.text());
+  assert.match(r.text(), /Saved: effort/);
+  assert.match(fs.readFileSync(file, 'utf8'), /effort: low/);
+  const again = deps();
+  assert.equal(await roleCommand('reset', ['coder'], again.d), 0);
+  assert.match(again.text(), /No change: coder already matches the template/);
+  assert.equal(await roleCommand('reset', ['boss'], deps().d), 2);     // not a role
+});
+
+test('decision 168: role reset without the generated plugin (install from before) asks for init (409)', async () => {
+  writeConfig({ ...readConfig()!, pluginTemplateDir: undefined, pluginDir: PLUGIN } as never);
+  const r = deps();
+  assert.equal(await roleCommand('reset', ['coder'], r.d), 1);
+  assert.match(r.text(), /Not saved; nothing was changed/);
+  assert.match(r.text(), /run do-it-all-claude-code init again/);
+});
+
+test('decision 186: pluginValidateCheck passes only when the validator ends with "Validation passed"; skipped when claude is absent', async () => {
+  const { pluginValidateCheck } = await import('../src/doctor.ts');
+  const pass = pluginValidateCheck('/p', { code: 0, out: 'checking...\n✔ Validation passed\n' });
+  assert.deepEqual([pass!.ok, pass!.blocking], [true, false]);
+  // a README / icon-directory refusal printed before the passing line is not a failure
+  assert.equal(pluginValidateCheck('/p', { code: 0, out: 'warning: README not found\n✔ Validation passed\n' })!.ok, true);
+  const fail = pluginValidateCheck('/p', { code: 1, out: 'error: invalid plugin.json\n' });
+  assert.deepEqual([fail!.ok, fail!.blocking], [false, false]);
+  assert.match(fail!.detail, /invalid plugin\.json/);
+  assert.match(fail!.detail, /claude plugin validate "\/p"/);
+  assert.equal(pluginValidateCheck('/p', null), null);                 // claude not found: the check is skipped
+});
+
 test('decision 168 review L5: init refuses a --plugin-dir inside the router home, before writing anything', async () => {
   const { spawnSync } = await import('node:child_process');
   const fresh = path.join(tmp, 'fresh-home');

@@ -1,0 +1,10 @@
+{
+  "name": "office-screen",
+  "private": true,
+  "description": "Development only: drives Claude Code in a virtual terminal to check how the team office draws. Not part of the package or CI.",
+  "type": "module",
+  "devDependencies": {
+    "@xterm/headless": "6.0.0",
+    "node-pty": "1.1.0"
+  }
+}

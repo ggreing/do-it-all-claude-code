@@ -2,10 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
 import {
-  DAEMON_DOWN, LEAD, OFFICE_MIN_CLAUDE, ROLE_NAME, STATUS_WORD, callRow, checksLine, compileSecrets, elapsed, fromAgentStatus,
-  homeCandidates, joinPath, labelFor, modelName, officeSwitch, oneLine, parseHelperLine, requestLine, resultRow, roleOf, stepLine,
-  subtaskOf, tagOf, takeLines, textRow, usd, versionAtLeast, withRow,
-  type DaemonOffice, type OfficeAgent, type OfficeRole, type OfficeRow, type OfficeStatus,
+  CLASSIC_GLYPHS, DAEMON_DOWN, GLYPHS, LEAD, OFFICE_MIN_CLAUDE, ROLE_NAME, SLACK, callRow, checksLine, compileSecrets, elapsed, fit,
+  fromAgentStatus, homeCandidates, joinPath, labelFor, modelName, officeLayout, officeSwitch, oneLine, parseHelperLine, requestLine,
+  resultRow, roleOf, statusWord, stepLine, subtaskOf, tagOf, takeLines, textRow, unicodeTerminal, usd, versionAtLeast, wantedRoom, withRow,
+  type DaemonOffice, type Glyphs, type OfficeAgent, type OfficeRole, type OfficeRow, type OfficeStatus,
 } from './model'
 import type { OfficeDaemonState, OfficeTab, OfficeTabData } from '../types/office'
 
@@ -20,7 +20,6 @@ import type { OfficeDaemonState, OfficeTab, OfficeTabData } from '../types/offic
 
 const PANE = 'office'
 const TITLE = 'Team office'
-const SESSION_ROWS = 12
 
 const agents = atom({ plugin: 'do-it-all-claude-code', key: 'agents' } as const, [], { shape: 'agents-1' })
 const rows = atom({ plugin: 'do-it-all-claude-code', key: 'rows' } as const, {}, { shape: 'rows-1' })
@@ -38,6 +37,7 @@ type Engine = EngineInterface
 const ROLE_COLOR: Record<OfficeRole, string> = {
   lead: 'claude', architect: 'suggestion', coder: 'planMode', reviewer: 'warning', tester: 'success', 'ui-designer': 'merged', helper: 'inactive',
 }
+const STATUS_COLOR: Record<OfficeStatus, string> = { working: 'warning', done: 'success', waiting: 'inactive', failed: 'error' }
 
 // ------------------------------------------------------------------ what this module keeps (never in $.state)
 
@@ -55,6 +55,9 @@ let closedByPerson = false
 let lastDaemon = ''
 let demoAt = -1
 let helper: { key: string; stop(): void } | null = null
+/** The classic Windows console (no terminal that says which it is): the list with one-cell marks, no scene. */
+let classic = false
+const glyphs = (): Glyphs => (classic ? CLASSIC_GLYPHS : GLYPHS)
 
 function start($: Engine): Promise<void> {
   started ??= (async () => {
@@ -70,6 +73,16 @@ function start($: Engine): Promise<void> {
     try { root = $.plugin.root } catch { root = '' }
     const env = async (read: () => Promise<string | undefined>) => { try { return await read() } catch { return undefined } }
     const userHome = (await env(() => $.env.get('USERPROFILE'))) ?? (await env(() => $.env.get('HOME')))
+    // the terminal, decided as Claude Code decides it for its own figures (model.ts: unicodeTerminal)
+    classic = !unicodeTerminal({
+      OS: await env(() => $.env.get('OS')),
+      WT_SESSION: await env(() => $.env.get('WT_SESSION')),
+      TERMINUS_SUBLIME: await env(() => $.env.get('TERMINUS_SUBLIME')),
+      ConEmuTask: await env(() => $.env.get('ConEmuTask')),
+      TERM_PROGRAM: await env(() => $.env.get('TERM_PROGRAM')),
+      TERM: await env(() => $.env.get('TERM')),
+      TERMINAL_EMULATOR: await env(() => $.env.get('TERMINAL_EMULATOR')),
+    })
     const envHome = await env(() => $.env.get('DO_IT_ALL_CLAUDE_CODE_HOME'))
     for (const home of homeCandidates({ pluginRoot: root, envHome, userHome })) {
       let text: string | undefined
@@ -89,9 +102,9 @@ function start($: Engine): Promise<void> {
 // ------------------------------------------------------------------ the helper process
 
 function stopHelper(): void {
-  const h = helper
+  const running = helper
   helper = null
-  h?.stop()
+  running?.stop()
 }
 
 /** Reads one helper line into $.state. */
@@ -113,7 +126,7 @@ async function onLine($: Engine, text: string): Promise<void> {
     return { ...rest, at: now, data: m.data ?? prev.data, ...(m.error ? { error: m.error } : {}) }
   }
   if (m.type === 'history') await update($, history, fresh)
-  else if (m.type === 'detail') await update($, history, h => ({ ...h, detail: m.data ?? { error: m.error ?? 'no such request' } }))
+  else if (m.type === 'detail') await update($, history, cur => ({ ...cur, detail: m.data ?? { error: m.error ?? 'no such request' } }))
   else if (m.type === 'cost') await update($, cost, c => ({ ...fresh(c), period: m.period ?? c.period ?? '7d' }))
   else if (m.type === 'routing') await update($, routing, fresh)
 }
@@ -150,8 +163,8 @@ async function steerHelper($: Engine): Promise<void> {
   if (!enabled || !paneOpen) { stopHelper(); return }
   const which = await read($, tab)
   const c = await read($, cost)
-  const h = await read($, history) as HistoryState
-  ensureHelper($, which, c.period ?? '7d', which === 'history' ? h.detailId ?? '' : '')
+  const hist = await read($, history) as HistoryState
+  ensureHelper($, which, c.period ?? '7d', which === 'history' ? hist.detailId ?? '' : '')
 }
 
 // ------------------------------------------------------------------ state changes
@@ -194,8 +207,11 @@ async function pollAgents($: Engine): Promise<void> {
   }
 }
 
-async function openPane($: Engine): Promise<{ isPlaced: boolean; reason?: string }> {
-  const opened = await $.ui.open({ id: PANE, title: TITLE })
+async function openPane($: Engine, focus = false): Promise<{ isPlaced: boolean; reason?: string }> {
+  // inline, left to itself, the engine gives a pane a third of its room; this asks for the office's (the classic
+  // renderer grants more, fullscreen a third at most, and a size the person kept wins)
+  const want = wantedRoom((await read($, agents)).length)
+  const opened = await $.ui.open({ id: PANE, title: TITLE, rows: want.rows, columns: want.columns, ...(focus ? { focus: true as const } : {}) })
   if (opened.isPlaced) paneOpen = true
   return opened
 }
@@ -402,14 +418,23 @@ export const register: Register = on => {
       const id = d.id
       await update($, selected, cur => (cur === id ? '' : id))
     }
+    // a click on the scene gives it the keyboard, so the scene passes the tab keys on (o, h, c, r)
+    if (d && d.type === 'tab' && (d.id === 'office' || d.id === 'history' || d.id === 'cost' || d.id === 'routing')) {
+      const id = d.id
+      await update($, tab, () => id)
+      await steerHelper($)
+      // the scene had the keys and leaves with the Office tab: the pane asks for them, so the next tab key is not
+      // typed into the prompt (granted only while the prompt holds no text)
+      if (id !== 'office' && paneOpen) await openPane($, true).catch(() => undefined)
+    }
     return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const els = $.ui.resolve(e)
-    const { Box, Text, Button } = els
-    const Client = 'Client' in els ? els.Client : undefined
+    const { Box, Text, Button } = $.ui.resolve(e)
     const which = await read($, tab)
+    const pane = e.props as { bodyColumns?: number; scroll?: { bodyRows?: number } } | undefined
+    const room: Room = { columns: pane?.bodyColumns ?? 100, rows: pane?.scroll?.bodyRows ?? 40 }
 
     const tabs = (
       <Box key="tabs" flexDirection="row">
@@ -418,78 +443,150 @@ export const register: Register = on => {
         ))}
       </Box>
     )
-
-    if (which === 'history') return <Box flexDirection="column">{tabs}{await historyTab($, e)}</Box>
-    if (which === 'cost') return <Box flexDirection="column">{tabs}{await costTab($, e)}</Box>
-    if (which === 'routing') return <Box flexDirection="column">{tabs}{await routingTab($, e)}</Box>
-
-    const list = await read($, agents)
-    const all = await read($, rows)
-    const sel = await read($, selected)
-    const dstate = await read($, daemon)
-    await read($, tick)
-    const view = (dstate.reach === 'ok' ? dstate.view : null) as DaemonOffice | null
-    const now = await $.clock.now()
-    const working = list.filter(a => a.status === 'working').length
-    const target = list.find(a => a.id === sel)
-
-    const lastTool = (id: string) => {
-      const mine = all[id] ?? []
-      for (let k = mine.length - 1; k >= 0; k--) if (mine[k]!.kind === 'tool') return mine[k]!.text
-      return ''
+    let body: RenderElement
+    try {
+      body = which === 'history' ? await historyTab($, e, room)
+        : which === 'cost' ? await costTab($, e, room)
+        : which === 'routing' ? await routingTab($, e, room)
+        : await officeTab($, e, room)
+    } catch (err) {
+      // a tab that cannot draw says so below the tabs, which stay, so the person can still leave it
+      const first = String(err instanceof Error ? err.message : err).split('\n')[0] ?? ''
+      body = <Box key="tab-error" width={Math.max(20, room.columns - SLACK)}><Text color="error" wrap="truncate-end">{`This tab could not draw: ${first}`}</Text></Box>
     }
-    const scene = {
-      agents: list.map(a => ({ id: a.id, role: a.role, label: a.label, model: a.model, effort: a.effort ?? '', status: a.status, time: elapsed(a, now), doing: a.status === 'working' ? lastTool(a.id) : '' })),
-      selected: sel,
-      summary: list.length ? `${list.length} member${list.length === 1 ? '' : 's'} · ${working} working` : '',
-    }
-    const daemonLine = dstate.reach === 'ok' ? requestLine(view)
-      : dstate.reach === 'refused' ? 'the router refused the call — run do-it-all-claude-code doctor'
-      : dstate.reach === 'setup' ? 'the router is not set up — run do-it-all-claude-code init' : DAEMON_DOWN
+    return <Box flexDirection="column">{tabs}{body}</Box>
+  })
+}
 
-    const line = (row: OfficeRow, j: number) => {
-      if (row.kind === 'tool') return <Text key={`row-${j}`} wrap="truncate-end"><Text color="success">●</Text> <Text bold>{row.text}</Text></Text>
-      if (row.kind === 'result') return <Text key={`row-${j}`} wrap="truncate-end" dimColor>{'  ⎿  '}{row.text}</Text>
-      if (row.kind === 'error') return <Text key={`row-${j}`} wrap="truncate-end" color="error">{'  ⎿  '}{row.text}</Text>
-      return <Text key={`row-${j}`} wrap="truncate-end">● {row.text}</Text>
-    }
+// ------------------------------------------------------------------ the office tab
 
-    const session = target ? all[target.id] ?? [] : []
-    const sub = target && target.id !== LEAD ? subtaskOf(view, target) : undefined
-    const plan = target ? stepLine(target, sub) : null
-    const detail = !target ? '' : target.id === LEAD ? requestLine(view)
-      : sub ? [sub.checks.length ? checksLine(sub.checks) : '', sub.repro?.required ? `repro ${sub.repro.state}` : ''].filter(Boolean).join(' · ') : ''
+/** The pane's body as the engine gave it: `bodyColumns` across, `scroll.bodyRows` the most rows it may take. */
+type Room = { columns: number; rows: number }
+type RenderEvent = Parameters<Engine['ui']['resolve']>[0]
 
+async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderElement> {
+  const els = $.ui.resolve(e)
+  const { Box, Text, Button } = els
+  // the scene is a surface module; the classic console gets the list instead (its marks and its redraws)
+  const Client = 'Client' in els && !classic ? els.Client : undefined
+  const g = glyphs()
+  const list = await read($, agents)
+  const all = await read($, rows)
+  const sel = await read($, selected)
+  const dstate = await read($, daemon)
+  await read($, tick)
+  const view = (dstate.reach === 'ok' ? dstate.view : null) as DaemonOffice | null
+  const now = await $.clock.now()
+  const working = list.filter(a => a.status === 'working').length
+  const target = list.find(a => a.id === sel)
+
+  const lastTool = (id: string) => {
+    const mine = all[id] ?? []
+    for (let k = mine.length - 1; k >= 0; k--) if (mine[k]!.kind === 'tool') return mine[k]!.text
+    return ''
+  }
+  const daemonLine = dstate.reach === 'ok' ? requestLine(view)
+    : dstate.reach === 'refused' ? 'the router refused the call — run do-it-all-claude-code doctor'
+    : dstate.reach === 'setup' ? 'the router is not set up — run do-it-all-claude-code init' : DAEMON_DOWN
+  // The pane stays within the rows Claude Code gives it, and every frame stops SLACK columns short of its right
+  // edge: a frame taller than the room cannot be redrawn in place, and a line that reaches the terminal's last
+  // column is the first a narrower window wraps. Desks when they fit, else a line a member (model.ts: officeLayout).
+  const layout = officeLayout({ columns: room.columns, rows: room.rows, members: list.length, routerLine: Boolean(daemonLine), classic: !Client })
+  const summary = list.length ? `${list.length} member${list.length === 1 ? '' : 's'} · ${working} working` : ''
+  const doing = (a: OfficeAgent) => (a.status === 'working' ? lastTool(a.id) : '')
+  const pick = (id: string) => { void update($, selected, cur => (cur === id ? '' : id)).catch(() => undefined) }
+
+  const line = (row: OfficeRow, j: number) => {
+    if (row.kind === 'tool') return <Text key={`row-${j}`} wrap="truncate-end"><Text color="success">{g.tool}</Text> <Text bold>{row.text}</Text></Text>
+    if (row.kind === 'result') return <Text key={`row-${j}`} wrap="truncate-end" dimColor>{'  ⎿  '}{row.text}</Text>
+    if (row.kind === 'error') return <Text key={`row-${j}`} wrap="truncate-end" color="error">{'  ⎿  '}{row.text}</Text>
+    return <Text key={`row-${j}`} wrap="truncate-end">{g.text} {row.text}</Text>
+  }
+
+  // one line a member: who, the model and effort it runs at, its status, what it does; the engine writes a
+  // Button's hotkey before it ("1: "), so the line is that much shorter
+  const memberLine = (a: OfficeAgent, i: number) => {
+    const avail = layout.inner - (i < 9 ? 3 : 0)
+    const head = `${a.id === sel ? g.picked : ' '} ${a.label}`
+    const model = ` · ${a.model}${a.effort ? ` ${a.effort}` : ''}`
+    const status = ` · ${statusWord(a.status, g)}${a.status === 'waiting' ? '' : ` ${elapsed(a, now)}`}`
+    const what = doing(a)
+    const used = [...`${head}${model}${status}`].length
+    const tail = what && avail - used > 6 ? fit(` · ${what}`, avail - used) : ''
     return (
-      <Box flexDirection="column">
-        {tabs}
-        {daemonLine ? <Text key="daemon" dimColor wrap="truncate-end">{daemonLine}</Text> : null}
-        <Box flexDirection="column" borderStyle="round" borderColor="inactive" paddingX={1}>
-          {Client
-            ? <Client key="office-scene" module="./scene.tsx" props={scene} width="100%" />
-            : <Text dimColor>{scene.agents.map(a => `${a.label} ${a.status === 'working' ? '●' : a.status === 'done' ? '✓' : a.status === 'failed' ? '✗' : '○'}`).join('  ') || 'Team office'}</Text>}
-        </Box>
-        <Box flexDirection="column" borderStyle="round" borderColor={target ? ROLE_COLOR[target.role] : 'inactive'} borderDimColor={!target} paddingX={1} height={SESSION_ROWS + 2}>
-          {!target
-            ? <Box flexGrow={1} alignItems="center" justifyContent="center"><Text dimColor>Click a member to follow its session here · or press 1–9</Text></Box>
-            : (
-              <Box flexDirection="column">
-                <Box justifyContent="space-between">
-                  <Text wrap="truncate-end"><Text bold color={ROLE_COLOR[target.role]}>{target.label}</Text><Text dimColor> · {target.model}{target.effort ? ` ${target.effort}` : ''} · {target.task} · {STATUS_WORD[target.status]}</Text></Text>
-                  {target.real && target.id !== LEAD
-                    ? <Button key="open-view" hotkey="v" onPress={() => { void $.ui.view({ agentId: target.id }) }}>View in main</Button>
-                    : null}
-                </Box>
-                {plan || detail
-                  ? <Text key="plan" wrap="truncate-end" dimColor>{plan ? plan.plan : ''}{plan?.ranAt ? <Text color="warning">{` · ${plan.ranAt}`}</Text> : null}{detail ? `${plan ? ' · ' : ''}${detail}` : ''}</Text>
-                  : null}
-                {session.length === 0 ? <Text dimColor>No lines yet.</Text> : session.slice(-(SESSION_ROWS - 2)).map(line)}
-              </Box>
-            )}
-        </Box>
+      <Button key={`member-${a.id}`} plain {...(i < 9 ? { hotkey: String(i + 1) } : {})} onPress={() => pick(a.id)}>
+        {used > avail
+          ? fit(`${head}${model}${status}`, avail)
+          : <Text><Text bold color={ROLE_COLOR[a.role]}>{head}</Text><Text dimColor>{model}</Text><Text color={STATUS_COLOR[a.status]}>{status}</Text><Text dimColor>{tail}</Text></Text>}
+      </Button>
+    )
+  }
+
+  const scene = {
+    agents: list.map(a => ({ id: a.id, role: a.role, label: a.label, model: a.model, effort: a.effort ?? '', status: a.status, time: elapsed(a, now), doing: doing(a) })),
+    selected: sel,
+    summary,
+    compact: !layout.wall,
+    perRow: layout.perRow,
+    small: layout.small,
+  }
+  const office = layout.mode === 'desks' && Client
+    ? <Client key="office-scene" module="./scene.tsx" props={scene} width={layout.inner} />
+    : (
+      <Box key="office-list" flexDirection="column">
+        <Text key="office-title" wrap="truncate-end"><Text bold>DO IT ALL · team office</Text><Text dimColor>{summary ? `  ${summary}` : ''}</Text></Text>
+        {list.length === 0 ? <Text key="office-empty" dimColor wrap="truncate-end">The team takes its desks when a request gets one · /office demo for a preview</Text> : null}
+        {list.map(memberLine)}
       </Box>
     )
-  })
+
+  const session = target ? all[target.id] ?? [] : []
+  const sub = target && target.id !== LEAD ? subtaskOf(view, target) : undefined
+  const plan = target ? stepLine(target, sub) : null
+  const detail = !target ? '' : target.id === LEAD ? requestLine(view)
+    : sub ? [sub.checks.length ? checksLine(sub.checks) : '', sub.repro?.required ? `repro ${sub.repro.state}` : ''].filter(Boolean).join(' · ') : ''
+  const hint = layout.mode === 'desks'
+    ? `Click a member to follow its session here · then 1${g.range}9 picks, o h c r switch tabs`
+    : `1${g.range}9 or a click picks a member to follow here (ctrl+x tab gives the office the keys) · o h c r switch tabs`
+
+  // a room too low for frames: Claude Code keeps the height a person once gave an inline pane, for every plugin's
+  if (layout.mode === 'tiny') {
+    return (
+      <Box key="office-tiny" flexDirection="column" width={layout.width}>
+        <Text key="tiny-room" dimColor wrap="truncate-end">{`${room.rows} rows here: ctrl+x tab, then ctrl+x up, makes the office taller`}</Text>
+        {list.length === 0 ? <Text key="office-empty" dimColor wrap="truncate-end">The team takes its desks when a request gets one · /office demo for a preview</Text> : null}
+        {list.map(memberLine)}
+        {target && layout.sessionRows > 0 ? session.slice(-layout.sessionRows).map(line) : null}
+      </Box>
+    )
+  }
+
+  return (
+    <Box flexDirection="column">
+      {daemonLine ? <Box key="daemon" width={layout.width}><Text dimColor wrap="truncate-end">{daemonLine}</Text></Box> : null}
+      <Box key="office-frame" flexDirection="column" borderStyle={g.border} borderColor="inactive" paddingX={1} width={layout.width}>
+        {office}
+      </Box>
+      <Box key="session-frame" flexDirection="column" borderStyle={g.border} borderColor={target ? ROLE_COLOR[target.role] : 'inactive'} borderDimColor={!target} paddingX={1} width={layout.width} height={layout.sessionRows + 2}>
+        {!target
+          ? <Box flexGrow={1} alignItems="center" justifyContent="center"><Text dimColor wrap="truncate-end">{hint}</Text></Box>
+          : (
+            <Box flexDirection="column">
+              <Box justifyContent="space-between">
+                <Text wrap="truncate-end"><Text bold color={ROLE_COLOR[target.role]}>{target.label}</Text><Text dimColor> · {target.model}{target.effort ? ` ${target.effort}` : ''} · {target.task} · {statusWord(target.status, g)}</Text></Text>
+                {target.real && target.id !== LEAD
+                  ? <Button key="open-view" hotkey="v" onPress={() => { void $.ui.view({ agentId: target.id }) }}>View in main</Button>
+                  : null}
+              </Box>
+              {plan || detail
+                ? <Text key="plan" wrap="truncate-end" dimColor>{plan ? plan.plan : ''}{plan?.ranAt ? <Text color="warning">{` · ${plan.ranAt}`}</Text> : null}{detail ? `${plan ? ' · ' : ''}${detail}` : ''}</Text>
+                : null}
+              {session.length === 0 ? <Text dimColor>No lines yet.</Text> : session.slice(-Math.max(1, layout.sessionRows - 2)).map(line)}
+            </Box>
+          )}
+      </Box>
+    </Box>
+  )
 }
 
 // ------------------------------------------------------------------ the other tabs
@@ -503,45 +600,55 @@ const when = (iso: string): string => {
 }
 const secs = (ms: number | null) => (typeof ms === 'number' ? `${Math.round(ms / 1000)}s` : '—')
 
-async function historyTab($: Engine, e: Parameters<Engine['ui']['resolve']>[0]): Promise<RenderElement> {
+// Each tab draws within the frames' width (the body's less SLACK) and with the marks the terminal draws one cell
+// wide. No local takes the JSX factory's names (h, Fragment): the JSX in its scope would call it instead.
+
+async function historyTab($: Engine, e: RenderEvent, room: Room): Promise<RenderElement> {
   const { Box, Text, Button } = $.ui.resolve(e)
-  const h = await read($, history) as HistoryState
-  const list = ((h.data as { rows?: HistoryRowView[] } | null)?.rows ?? [])
-  const detail = h.detailId ? h.detail as null | undefined | { error?: string; requestId?: string; record?: Record<string, unknown>; signals?: Array<{ subtaskId: string | null; kind: string; ok: boolean }>; hasPrompt?: boolean } : null
-  if (h.detailId) {
+  const g = glyphs()
+  const width = Math.max(20, room.columns - SLACK)
+  const hist = await read($, history) as HistoryState
+  const list = ((hist.data as { rows?: HistoryRowView[] } | null)?.rows ?? [])
+  const detail = hist.detailId ? hist.detail as null | undefined | { error?: string; requestId?: string; record?: Record<string, unknown>; signals?: Array<{ subtaskId: string | null; kind: string; ok: boolean }>; hasPrompt?: boolean } : null
+  if (hist.detailId) {
     const rec = detail?.record ?? {}
     const subs = (Array.isArray(rec.subtasks) ? rec.subtasks : []) as Array<{ id?: string; role?: string; step?: string; status?: string; verdict?: string | null }>
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" width={width}>
         <Button key="back" hotkey="b" onPress={() => { void update($, history, x => { const { detail: _d, detailId: _i, ...rest } = x as HistoryState; return rest }) }}>Back</Button>
         {!detail ? <Text dimColor>Loading…</Text> : null}
-        {detail?.error ? <Text color="error">{detail.error}</Text> : null}
-        <Text bold>{h.detailId}</Text>
-        {detail && !detail.error && subs.length === 0 ? <Text dimColor>No subtasks: the lead did this request itself.</Text> : null}
+        {detail?.error ? <Text color="error" wrap="truncate-end">{detail.error}</Text> : null}
+        <Text bold wrap="truncate-end">{hist.detailId}</Text>
+        {detail && !detail.error && subs.length === 0 ? <Text dimColor wrap="truncate-end">No subtasks: the lead did this request itself.</Text> : null}
         {subs.map((s, i) => {
           const sig = (detail?.signals ?? []).filter(x => x.subtaskId === s.id && x.kind !== 'review')
           return <Text key={`sub-${i}`} wrap="truncate-end">{`${s.id ?? '?'} ${s.role ?? ''} ${s.step ?? ''} ${s.status ?? ''}${s.verdict ? ` (${s.verdict})` : ''}`}<Text dimColor>{sig.length ? ` · ${sig.map(x => `${x.kind} ${x.ok ? 'ok' : 'failed'}`).join(', ')}` : ''}</Text></Text>
         })}
-        {detail?.hasPrompt ? <Text dimColor>The prompt is kept in the request record (recordPrompts); the office does not show it.</Text> : null}
+        {detail?.hasPrompt ? <Text dimColor wrap="truncate-end">The prompt is kept in the request record (recordPrompts); the office does not show it.</Text> : null}
       </Box>
     )
   }
   return (
-    <Box flexDirection="column">
-      {h.error ? <Text color="error" wrap="truncate-end">{h.error}</Text> : null}
-      {list.length === 0 && !h.error ? <Text dimColor>{h.at ? 'No closed requests yet.' : 'Loading…'}</Text> : null}
-      {list.map(row => (
-        <Button key={`req-${row.requestId}`} plain onPress={() => { void update($, history, x => ({ ...x, detailId: row.requestId, detail: undefined })) }}>
-          {`${when(row.closedAt)}  ${row.level}${row.finalLevel !== row.level ? `→${row.finalLevel}` : ''}  ${(row.outcome ?? '—').padEnd(10)} ${row.success ? '✓' : '✗'} ${usd(row.totalUsd).padStart(7)}`}
-          <Text dimColor>{`  ${secs(row.durationMs)}${row.verifyFailures ? ` · ${row.verifyFailures} verify failure${row.verifyFailures === 1 ? '' : 's'}` : ''}${row.acceptance && row.acceptance !== 'n/a' ? ` · ${row.acceptance}` : ''}`}</Text>
-        </Button>
-      ))}
+    <Box flexDirection="column" width={width}>
+      {hist.error ? <Text color="error" wrap="truncate-end">{hist.error}</Text> : null}
+      {list.length === 0 && !hist.error ? <Text dimColor>{hist.at ? 'No closed requests yet.' : 'Loading…'}</Text> : null}
+      {list.map(row => {
+        const main = `${when(row.closedAt)}  ${row.level}${row.finalLevel !== row.level ? `${g.arrow}${row.finalLevel}` : ''}  ${(row.outcome ?? '—').padEnd(10)} ${row.success ? g.status.done : g.status.failed} ${usd(row.totalUsd).padStart(7)}`
+        const more = `  ${secs(row.durationMs)}${row.verifyFailures ? ` · ${row.verifyFailures} verify failure${row.verifyFailures === 1 ? '' : 's'}` : ''}${row.acceptance && row.acceptance !== 'n/a' ? ` · ${row.acceptance}` : ''}`
+        return (
+          <Button key={`req-${row.requestId}`} plain onPress={() => { void update($, history, x => ({ ...x, detailId: row.requestId, detail: undefined })) }}>
+            {fit(main, width)}
+            <Text dimColor>{fit(more, Math.max(0, width - [...main].length))}</Text>
+          </Button>
+        )
+      })}
     </Box>
   )
 }
 
-async function costTab($: Engine, e: Parameters<Engine['ui']['resolve']>[0]): Promise<RenderElement> {
+async function costTab($: Engine, e: RenderEvent, room: Room): Promise<RenderElement> {
   const { Box, Text, Button } = $.ui.resolve(e)
+  const width = Math.max(20, room.columns - SLACK)
   const c = await read($, cost) as OfficeTabData
   const s = c.data as null | {
     total: number; successRate: number | null; costPerAcceptedTaskUsd: number | null
@@ -553,7 +660,7 @@ async function costTab($: Engine, e: Parameters<Engine['ui']['resolve']>[0]): Pr
   }
   const pct = (v: number | null | undefined) => (typeof v === 'number' ? `${Math.round(v * 100)}%` : '—')
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={width}>
       <Box key="periods" flexDirection="row">
         {([['24h', '24 hours', 't'], ['7d', '7 days', 'w'], ['30d', '30 days', 'm']] as const).map(([id, label, key]) => (
           <Button key={`period-${id}`} hotkey={key} variant={(c.period ?? '7d') === id ? 'primary' : 'secondary'} onPress={() => { void update($, cost, x => ({ ...x, period: id, data: null })) }}>{label}</Button>
@@ -562,13 +669,13 @@ async function costTab($: Engine, e: Parameters<Engine['ui']['resolve']>[0]): Pr
       {c.error ? <Text color="error" wrap="truncate-end">{c.error}</Text> : null}
       {!s ? <Text dimColor>{c.error ? '' : 'Loading…'}</Text> : (
         <Box flexDirection="column">
-          <Text>{`${s.total} request${s.total === 1 ? '' : 's'} · ${usd(s.cost.totalUsd)} (lead ${usd(s.cost.leadUsd)}, workers ${usd(s.cost.subtaskUsd)}) · ${usd(s.costPerAcceptedTaskUsd)} per accepted · ${s.acceptance ? `${s.acceptance.accepted} of ${s.total} accepted` : `success ${pct(s.successRate)}`}`}</Text>
+          <Text wrap="truncate-end">{`${s.total} request${s.total === 1 ? '' : 's'} · ${usd(s.cost.totalUsd)} (lead ${usd(s.cost.leadUsd)}, workers ${usd(s.cost.subtaskUsd)}) · ${usd(s.costPerAcceptedTaskUsd)} per accepted · ${s.acceptance ? `${s.acceptance.accepted} of ${s.total} accepted` : `success ${pct(s.successRate)}`}`}</Text>
           {s.byLevel.map(l => <Text key={`lvl-${l.level}`} wrap="truncate-end">{`  ${l.level}  ${String(l.count).padStart(4)}  ${usd(l.totalUsd).padStart(8)}  success ${pct(l.successRate)}`}</Text>)}
           {s.flags.estimated || s.flags.unknown || s.flags.budgetExceeded
-            ? <Text color="warning">{[s.flags.estimated ? `${s.flags.estimated} estimated` : '', s.flags.unknown ? `${s.flags.unknown} with unknown costs` : '', s.flags.budgetExceeded ? `${s.flags.budgetExceeded} over budget` : ''].filter(Boolean).join(' · ')}</Text>
+            ? <Text color="warning" wrap="truncate-end">{[s.flags.estimated ? `${s.flags.estimated} estimated` : '', s.flags.unknown ? `${s.flags.unknown} with unknown costs` : '', s.flags.budgetExceeded ? `${s.flags.budgetExceeded} over budget` : ''].filter(Boolean).join(' · ')}</Text>
             : null}
           {s.limits && (s.limits.fiveHour || s.limits.sevenDay)
-            ? <Text dimColor>{[s.limits.fiveHour ? `5-hour limit ${Math.round(s.limits.fiveHour.usedPercentage)}% used` : '', s.limits.sevenDay ? `7-day limit ${Math.round(s.limits.sevenDay.usedPercentage)}% used` : ''].filter(Boolean).join(' · ')}</Text>
+            ? <Text dimColor wrap="truncate-end">{[s.limits.fiveHour ? `5-hour limit ${Math.round(s.limits.fiveHour.usedPercentage)}% used` : '', s.limits.sevenDay ? `7-day limit ${Math.round(s.limits.sevenDay.usedPercentage)}% used` : ''].filter(Boolean).join(' · ')}</Text>
             : null}
         </Box>
       )}
@@ -576,8 +683,10 @@ async function costTab($: Engine, e: Parameters<Engine['ui']['resolve']>[0]): Pr
   )
 }
 
-async function routingTab($: Engine, e: Parameters<Engine['ui']['resolve']>[0]): Promise<RenderElement> {
+async function routingTab($: Engine, e: RenderEvent, room: Room): Promise<RenderElement> {
   const { Box, Text } = $.ui.resolve(e)
+  const g = glyphs()
+  const width = Math.max(20, room.columns - SLACK)
   const rt = await read($, routing) as OfficeTabData
   const dstate = await read($, daemon)
   const view = (dstate.reach === 'ok' ? dstate.view : null) as (DaemonOffice & { routing?: { mode: string; holdoutRate: number; classes: Array<{ leadClass: string; levels: Array<{ level: string; released: boolean; delegated: { n: number; costPerAcceptedUsd: number | null }; direct: { n: number; costPerAcceptedUsd: number | null }; decision: { action: string; reason: string } }> }> } }) | null
@@ -585,14 +694,14 @@ async function routingTab($: Engine, e: Parameters<Engine['ui']['resolve']>[0]):
   const pct = (n: number, of: number) => (of ? `${Math.round((n / of) * 100)}%` : '—')
   const r = view?.routing
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={width}>
       {rt.error ? <Text color="error" wrap="truncate-end">{rt.error}</Text> : null}
-      {r ? <Text bold>{`auto-release ${r.mode} · holdout ${Math.round(r.holdoutRate * 100)}%`}</Text> : <Text dimColor>{dstate.reach === 'ok' ? 'No routing data yet.' : DAEMON_DOWN}</Text>}
+      {r ? <Text bold wrap="truncate-end">{`auto-release ${r.mode} · holdout ${Math.round(r.holdoutRate * 100)}%`}</Text> : <Text dimColor wrap="truncate-end">{dstate.reach === 'ok' ? 'No routing data yet.' : DAEMON_DOWN}</Text>}
       {(r?.classes ?? []).flatMap(c => c.levels.filter(l => l.delegated.n || l.direct.n).map(l => (
-        <Text key={`arm-${c.leadClass}-${l.level}`} wrap="truncate-end">{`  ${c.leadClass} ${l.level}${l.released ? ' (lead-direct now)' : ''}  team n=${l.delegated.n} ${usd(l.delegated.costPerAcceptedUsd)}/accepted · lead n=${l.direct.n} ${usd(l.direct.costPerAcceptedUsd)}/accepted → ${l.decision.action}`}<Text dimColor>{` (${l.decision.reason.replace(/_/g, ' ')})`}</Text></Text>
+        <Text key={`arm-${c.leadClass}-${l.level}`} wrap="truncate-end">{`  ${c.leadClass} ${l.level}${l.released ? ' (lead-direct now)' : ''}  team n=${l.delegated.n} ${usd(l.delegated.costPerAcceptedUsd)}/accepted · lead n=${l.direct.n} ${usd(l.direct.costPerAcceptedUsd)}/accepted ${g.arrow} ${l.decision.action}`}<Text dimColor>{` (${l.decision.reason.replace(/_/g, ' ')})`}</Text></Text>
       )))}
-      {report ? <Text>{`triage: ${report.overall.total} requests · level held ${pct(report.overall.levelHeld, report.overall.total)} · team fit ${pct(report.overall.teamFit, report.overall.total)} · start step fit ${pct(report.overall.startStepFit, report.overall.total)}`}</Text> : null}
-      {(report?.byLevel ?? []).filter(l => l.planned !== l.final).map(l => <Text key={`pl-${l.planned}-${l.final}`} dimColor>{`  planned ${l.planned}, ended ${l.final}: ${l.count}`}</Text>)}
+      {report ? <Text wrap="truncate-end">{`triage: ${report.overall.total} requests · level held ${pct(report.overall.levelHeld, report.overall.total)} · team fit ${pct(report.overall.teamFit, report.overall.total)} · start step fit ${pct(report.overall.startStepFit, report.overall.total)}`}</Text> : null}
+      {(report?.byLevel ?? []).filter(l => l.planned !== l.final).map(l => <Text key={`pl-${l.planned}-${l.final}`} dimColor wrap="truncate-end">{`  planned ${l.planned}, ended ${l.final}: ${l.count}`}</Text>)}
       {(report?.byRule ?? []).filter(x => x.suggestLevelUp || x.suggestStepUp).map(x => <Text key={`rule-${x.rule}`} color="warning" wrap="truncate-end">{`  rule ${x.rule}: ${x.suggestLevelUp ? 'its level may be too low' : 'its start step may be too low'} (${x.count} requests)`}</Text>)}
     </Box>
   )

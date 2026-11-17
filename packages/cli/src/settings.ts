@@ -1,4 +1,4 @@
-// `do-it-all-claude-code config get|set|list|edit`, `preset show|edit`, `role show|edit`, `reload` (decision 168).
+// `do-it-all-claude-code config get|set|list|edit|history`, `preset show|edit`, `role show|edit|reset`, `reload` (decision 168).
 // One write core (core settings.ts and role-overrides.ts) behind two ways in: when the daemon is up, the change
 // goes to it as a sealed call and it validates, writes, reloads and audits; when it is down, the CLI writes with
 // the same core and the daemon reads the files at its next start. A rejected change shows every problem and keeps
@@ -9,8 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   SettingsRejected, TOOLS_RULE, applyConfigChange, applyPresetsChange, applyRoleChange, configView, generateEffectivePlugin, isRoleName, mergePresetLevel,
-  parseConfigInput, paths, presetLevelText, presetsView, readText, revisionOf, rolesView, routerHome,
-  type ConfigView, type PresetsView, type RolesView, type SettingsError,
+  parseConfigInput, paths, presetLevelText, presetsView, readAudit, readText, revisionOf, rolesView, routerHome,
+  type AuditEntry, type ConfigView, type PresetsView, type RolesView, type SettingsError,
 } from '@do-it-all-claude-code/core';
 import { daemonIdentity, daemonProcessAlive, daemonRequest } from './daemonctl.ts';
 import { readConfig } from './setup.ts';
@@ -23,6 +23,8 @@ type Answer = [status: number, body: { ok?: boolean; changed?: string[]; nextSta
 export interface SettingsTransport {
   via: 'daemon' | 'direct';
   view(): Promise<View>;
+  /** The settings change log, newest first (decision 168); the daemon's route or, without it, the files. */
+  history(limit: number): Promise<AuditEntry[]>;
   write(kind: Kind, body: Record<string, unknown>): Promise<Answer>;
 }
 
@@ -38,6 +40,7 @@ export function directTransport(home: string = routerHome()): SettingsTransport 
       const c = cfg();
       return { config: configView(readText(path.join(home, 'config.json'))), presets: presetsView(home), roles: rolesView(home, c?.pluginTemplateDir, c?.pluginDir) };
     },
+    async history(limit) { return readAudit(home, limit); },
     async write(kind, body) {
       if (kind === 'config') return answer(() => { const { config: _c, ...r } = applyConfigChange(home, body, 'cli-direct'); return r; });
       if (kind === 'presets') return answer(() => applyPresetsChange(home, body, 'cli-direct'));
@@ -64,6 +67,11 @@ export function daemonTransport(port: number, token: string): SettingsTransport 
       const r = await daemonRequest(port, 'GET', '/router/v1/settings', { token, timeoutMs: 10_000 });
       if (!r || r.status !== 200) throw new Error(r?.status === 404 ? 'this daemon has no settings routes: restart it with `do-it-all-claude-code stop` and `start`' : 'the daemon did not answer');
       return JSON.parse(r.body) as View;
+    },
+    async history(limit) {
+      const r = await daemonRequest(port, 'GET', `/router/v1/settings/history?limit=${encodeURIComponent(String(limit))}`, { token, timeoutMs: 10_000 });
+      if (!r || r.status !== 200) throw new Error(r?.status === 404 ? 'this daemon has no settings routes: restart it with `do-it-all-claude-code stop` and `start`' : 'the daemon did not answer');
+      return (JSON.parse(r.body) as { entries: AuditEntry[] }).entries;
     },
     async write(kind, body) {
       const r = await daemonRequest(port, 'POST', ROUTES[kind], { token, body: JSON.stringify(body), timeoutMs: 60_000 });
@@ -198,8 +206,26 @@ export async function configCommand(sub: string | undefined, args: string[], d: 
       return t.write('config', { replace, revision });
     }, t);
   }
-  d.out('usage: do-it-all-claude-code config list | get <key> | set <key> <value> | edit');
+  if (sub === 'history') {
+    const raw = args[0];
+    const limit = raw === undefined ? 50 : Number(raw);
+    if (raw !== undefined && (!Number.isInteger(limit) || limit <= 0)) { d.out('usage: do-it-all-claude-code config history [<limit>]  (a positive whole number; default 50)'); return 2; }
+    const entries = await t.history(limit);
+    if (!entries.length) { d.out('No settings changes recorded.'); return 0; }
+    for (const e of entries) d.out(formatAudit(e));
+    return 0;
+  }
+  d.out('usage: do-it-all-claude-code config list | get <key> | set <key> <value> | edit | history [<limit>]');
   return 2;
+}
+
+/** One line for a settings-change log entry: time, source as recorded, what changed, and whether it did not apply. */
+function formatAudit(e: AuditEntry): string {
+  const what = e.changes.length
+    ? e.changes.map(c => (c.changed ? `${c.path}: changed` : `${c.path}: ${asJson(c.from ?? null)} -> ${asJson(c.to ?? null)}`)).join('; ')
+    : '(no change)';
+  const head = `${e.at}  ${e.source}  ${e.kind}${e.target ? ` ${e.target}` : ''}`;
+  return `${head}  ${what}${e.failed ? `  [not applied: ${e.error ?? 'the write failed'}]` : ''}`;
 }
 
 const LEVELS = ['L0', 'L1', 'L2', 'L3'];
@@ -236,9 +262,16 @@ export async function presetCommand(sub: string | undefined, args: string[], d: 
 
 export async function roleCommand(sub: string | undefined, args: string[], d: SettingsDeps): Promise<number> {
   const role = args[0];
-  if (sub !== 'show' && sub !== 'edit') { d.out('usage: do-it-all-claude-code role show <role> | edit <role>'); return 2; }
+  if (sub !== 'show' && sub !== 'edit' && sub !== 'reset') { d.out('usage: do-it-all-claude-code role show <role> | edit <role> | reset <role>'); return 2; }
   if (!isRoleName(role)) { d.out('the role is one of architect, ui-designer, coder, reviewer, tester'); return 2; }
   const t = await (d.transport ?? settingsTransport)();
+  if (sub === 'reset') {
+    // decision 168: drop any override and put the role back to the template (409 when there is no generated plugin)
+    const [status, a] = await t.write('role', { role, reset: true });
+    if (status !== 200 || a.ok === false) { printErrors(d, a.errors); return 1; }
+    if (a.changed?.length) printSaved(d, t, a); else d.out(`No change: ${role} already matches the template.`);
+    return 0;
+  }
   const v = (await t.view()).roles;
   const item = v.items.find(i => i.role === role);
   if (!item) { d.out(`no ${role}.md in the plugin`); return 1; }
