@@ -139,28 +139,28 @@ test('error text: a code the lead can act on', () => {
 
 test('escalation on request (decision 128)', () => {
   const base: EscalationState = { step: 's1', upCount: 0, fableOptIn: false, evidence: 'lead', leadOnlyRaises: 0, userTurn: false };
-  // the lead's word alone: once per slot, inside the same model (decision 226: s1 -> haiku-medium, same model)
-  assert.deepEqual(decideEscalation(base), { granted: true, to: 'haiku-medium', leadOnly: true });
+  // decision 229: step-up is the legacy path s1 -> s2 -> s3 -> s4 -> s5 -> s6. The lead's word alone raises once per
+  // slot, inside the same model: s1 -> s2 (both Haiku), s3 -> s4 (both Sonnet), s5 -> s6 (both Opus).
+  assert.deepEqual(decideEscalation(base), { granted: true, to: 's2', leadOnly: true });
   assert.deepEqual(decideEscalation({ ...base, leadOnlyRaises: 1 }), { granted: false, code: 'needs_user', why: 'second_lead_only' });
-  // within a model the lead's word is enough: s2 (haiku-high) -> haiku-xhigh, s3 (sonnet-medium) -> s4 (sonnet-high)
-  assert.deepEqual(decideEscalation({ ...base, step: 's2' }), { granted: true, to: 'haiku-xhigh', leadOnly: true });
   assert.deepEqual(decideEscalation({ ...base, step: 's3' }), { granted: true, to: 's4', leadOnly: true });
-  // a model change needs more than the lead's word: s4 (sonnet-high) -> opus-low crosses to Opus
+  assert.deepEqual(decideEscalation({ ...base, step: 's5' }), { granted: true, to: 's6', leadOnly: true });
+  // a model change needs more than the lead's word: s2 (Haiku) -> s3 (Sonnet), s4 (Sonnet) -> s5 (Opus)
+  assert.deepEqual(decideEscalation({ ...base, step: 's2' }), { granted: false, code: 'needs_user', why: 'tier' });
   assert.deepEqual(decideEscalation({ ...base, step: 's4' }), { granted: false, code: 'needs_user', why: 'tier' });
-  assert.deepEqual(decideEscalation({ ...base, step: 'haiku-xhigh' }), { granted: false, code: 'needs_user', why: 'tier' });   // haiku-xhigh -> sonnet-low
   // a user turn or a reviewer / tester reject lifts both limits
-  assert.deepEqual(decideEscalation({ ...base, step: 'haiku-xhigh', userTurn: true }), { granted: true, to: 'sonnet-low', leadOnly: false });
-  assert.deepEqual(decideEscalation({ ...base, leadOnlyRaises: 1, userTurn: true }), { granted: true, to: 'haiku-medium', leadOnly: false });
-  assert.deepEqual(decideEscalation({ ...base, step: 's4', evidence: 'independent', leadOnlyRaises: 1 }), { granted: true, to: 'opus-low', leadOnly: false });
+  assert.deepEqual(decideEscalation({ ...base, step: 's2', userTurn: true }), { granted: true, to: 's3', leadOnly: false });
+  assert.deepEqual(decideEscalation({ ...base, leadOnlyRaises: 1, userTurn: true }), { granted: true, to: 's2', leadOnly: false });
+  assert.deepEqual(decideEscalation({ ...base, step: 's4', evidence: 'independent', leadOnlyRaises: 1 }), { granted: true, to: 's5', leadOnly: false });
   // the shared limit of raises and the top step always go to the user, whatever the evidence
   assert.equal(MAX_STEP_UPS, 3);
   for (const evidence of ['lead', 'independent'] as const) {
     assert.deepEqual(decideEscalation({ ...base, evidence, upCount: 3, userTurn: true }), { granted: false, code: 'needs_user', why: 'limit' });
     assert.deepEqual(decideEscalation({ ...base, evidence, step: 's6', userTurn: true }), { granted: false, code: 'needs_user', why: 'limit' });   // s6 is the ceiling without Fable
   }
-  assert.deepEqual(decideEscalation({ ...base, upCount: 2 }), { granted: true, to: 'haiku-medium', leadOnly: true });
-  // decision 226: with Fable opted in, opus-high (s5) -> fable-low, and fable-high (s7) is the top
-  assert.deepEqual(decideEscalation({ ...base, step: 's5', fableOptIn: true, evidence: 'independent' }), { granted: true, to: 'fable-low', leadOnly: false });
+  assert.deepEqual(decideEscalation({ ...base, upCount: 2 }), { granted: true, to: 's2', leadOnly: true });
+  // decision 226/229: with Fable opted in, s5 (opus-high) -> s7 (fable-high), the top
+  assert.deepEqual(decideEscalation({ ...base, step: 's5', fableOptIn: true, evidence: 'independent' }), { granted: true, to: 's7', leadOnly: false });
   assert.deepEqual(decideEscalation({ ...base, step: 's7', fableOptIn: true, evidence: 'independent' }), { granted: false, code: 'needs_user', why: 'limit' });
 });
 

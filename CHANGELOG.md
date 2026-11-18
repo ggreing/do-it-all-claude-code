@@ -39,9 +39,11 @@ All notable changes to this project are documented here. This project adheres to
   routine change does not get Opus coders and a small hard one does. The fixed seven-step ladder became a grid of
   four models × five efforts (`s1`…`s7` stay as aliases of the seven measured/Phase-0 cells); the thirteen new
   cells carry **estimated** cost coefficients (list price × an effort multiplier read from Claude Code 2.1.326),
-  marked estimated in the config, the office and `doctor`, to be measured in subscription mode. A slot moves on
-  the grid by effort first within a model, then a model change; a hard task that comes back unverified jumps the
-  model once within budget before it returns to the lead. Decision 220's keep-it-with-the-lead bound now applies
+  marked estimated in the config, the office and `doctor`, to be measured in subscription mode. A slot steps UP in
+  big, measured steps along the legacy cells (`s1`→`s2`→`s3`→`s4`→`s5`→`s6`, or `s5`→`s7` with Fable), so three
+  raises carry a routine coder to `s4` and a moderate one to `s6`; it steps DOWN in fine grid steps, effort first
+  within a model. A hard task that comes back unverified jumps the model once within budget before it returns to
+  the lead. Decision 220's keep-it-with-the-lead bound now applies
   to routine and moderate only — a small *hard* change goes to a stronger worker (an Opus lead keeps it). The
   profiles shift the whole table one notch; a `teams.yaml` start or a role override still wins. Provisional, and
   the estimated cells especially: see [docs/design/difficulty-steps.md](docs/design/difficulty-steps.md).

@@ -68,18 +68,24 @@ export function isCellId(id: string): boolean {
 export const COST_ORDER: readonly Cell[] = [...GRID].sort((a, b) => a.coefficient - b.coefficient || GRID.indexOf(a) - GRID.indexOf(b));
 
 /**
- * The automatic step-up path (decisions 225, 226): climb effort within a model while the next effort cell is still
- * cheaper than the next model's entry, then change model; dominated cells (haiku-max, sonnet-xhigh/max, opus-max)
- * are off this path and reachable by config only. Ceiling s6 (opus-xhigh) without Fable. With Fable opted in, the
- * rule routes opus-high -> fable-low -> fable-medium -> fable-high (s7) and opus-xhigh (s6) drops off the path,
- * because at $8/$40 the Fable entry costs less than opus-xhigh (decision 226); ceiling s7.
+ * Decision 229: step-UP and step-DOWN are asymmetric. A miss — and every reject streak, lead-requested raise,
+ * verify-gap raise, and the profile +1 notch — raises in BIG, measured steps along the legacy cells only:
+ * s1 -> s2 -> s3 -> s4 -> s5 -> s6. So three raises (MAX_STEP_UPS) carry a routine coder (s1) to s4 and a moderate
+ * coder (s3) to s6. With Fable opted in, s5 -> s7 instead of s6 (decision 226 drops s6 when Fable is on).
  */
-const AUTO_CORE: readonly LadderId[] = ['s1', 'haiku-medium', 's2', 'haiku-xhigh', 'sonnet-low', 's3', 's4', 'opus-low', 'opus-medium', 's5'];   // up to opus-high
-const AUTO_NO_FABLE: readonly LadderId[] = [...AUTO_CORE, 's6'];
-const AUTO_FABLE: readonly LadderId[] = [...AUTO_CORE, 'fable-low', 'fable-medium', 's7'];
-function autoSeq(fableOptIn: boolean): readonly LadderId[] {
-  return fableOptIn ? AUTO_FABLE : AUTO_NO_FABLE;
+const UP_NO_FABLE: readonly LadderId[] = ['s1', 's2', 's3', 's4', 's5', 's6'];
+const UP_FABLE: readonly LadderId[] = ['s1', 's2', 's3', 's4', 's5', 's7'];
+function upSeq(fableOptIn: boolean): readonly LadderId[] {
+  return fableOptIn ? UP_FABLE : UP_NO_FABLE;
 }
+
+/**
+ * Decision 226/229: step-DOWN stays fine-grained — lower effort first within the model, then drop a model tier —
+ * so a slot eases back gently. This is the full grid path, walked backwards by stepDown only.
+ */
+const DOWN_CORE: readonly LadderId[] = ['s1', 'haiku-medium', 's2', 'haiku-xhigh', 'sonnet-low', 's3', 's4', 'opus-low', 'opus-medium', 's5'];   // up to opus-high
+const DOWN_NO_FABLE: readonly LadderId[] = [...DOWN_CORE, 's6'];
+const DOWN_FABLE: readonly LadderId[] = [...DOWN_CORE, 'fable-low', 'fable-medium', 's7'];
 
 // ------------------------------------------------------------------ legacy 1-D view (back-compat)
 
@@ -118,11 +124,12 @@ export function topStep(fableOptIn: boolean): Step {
 }
 
 /**
- * The next cell up the automatic path. For a cell on the path, the following one; for a config-only cell, the
- * cheapest path cell that costs more than it. Null at or above the ceiling.
+ * The next cell up the legacy up-path (decision 229). For a cell on the path, the following legacy cell; for an
+ * off-path cell (a teams.yaml/role-override/save-notch start, or a slot that stepped down onto an in-between cell),
+ * the cheapest up-path cell that costs more than it. Null at or above the ceiling (s6, or s7 with Fable).
  */
 export function stepUp(step: LadderId, fableOptIn = false): LadderId | null {
-  const seq = autoSeq(fableOptIn);
+  const seq = upSeq(fableOptIn);
   const i = seq.indexOf(step);
   if (i >= 0) return i < seq.length - 1 ? seq[i + 1]! : null;
   const c = cellOf(step).coefficient;
@@ -131,19 +138,17 @@ export function stepUp(step: LadderId, fableOptIn = false): LadderId | null {
 }
 
 /**
- * The next cell up the automatic path whose MODEL differs (decision 225): a hard task that comes back unverified
- * jumps model, not just effort. Null at or above the ceiling.
+ * The next up-path cell whose MODEL differs (decisions 225, 229): a hard task that comes back unverified jumps
+ * model, not just effort — from s3 or s4 that is s5 (Opus); from s5 it is s7 with Fable, else none (hand back).
  */
 export function modelJump(step: LadderId, fableOptIn = false): LadderId | null {
+  const seq = upSeq(fableOptIn);
   const from = cellOf(step).model;
-  let cur: LadderId | null = step;
-  while (cur !== null) {
-    const next: LadderId | null = stepUp(cur, fableOptIn);
-    if (next === null) return null;
-    if (cellOf(next).model !== from) return next;
-    cur = next;
-  }
-  return null;
+  const i = seq.indexOf(step);
+  if (i >= 0) { for (let j = i + 1; j < seq.length; j++) if (cellOf(seq[j]!).model !== from) return seq[j]!; return null; }
+  const c = cellOf(step).coefficient;
+  const cand = seq.map(cellOf).filter(x => x.coefficient > c && x.model !== from).sort((a, b) => a.coefficient - b.coefficient)[0];
+  return cand ? cand.id : null;
 }
 
 /**
@@ -152,13 +157,13 @@ export function modelJump(step: LadderId, fableOptIn = false): LadderId | null {
  */
 export function stepDown(step: LadderId): LadderId | null {
   // a cell may be on the Fable path (s7, fable-*) or the no-Fable path (s6); walk back on whichever holds it.
-  for (const seq of [AUTO_FABLE, AUTO_NO_FABLE]) {
+  for (const seq of [DOWN_FABLE, DOWN_NO_FABLE]) {
     const i = seq.indexOf(step);
     if (i > 0) return seq[i - 1]!;
     if (i === 0) return null;
   }
   const c = cellOf(step).coefficient;
-  const down = AUTO_NO_FABLE.map(cellOf).filter(x => x.coefficient < c).sort((a, b) => b.coefficient - a.coefficient)[0];
+  const down = DOWN_NO_FABLE.map(cellOf).filter(x => x.coefficient < c).sort((a, b) => b.coefficient - a.coefficient)[0];
   return down ? down.id : null;
 }
 

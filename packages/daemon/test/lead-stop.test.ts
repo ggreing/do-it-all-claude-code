@@ -25,7 +25,7 @@ async function withRepo(fn: (d: TestDaemon, repo: string, post: (h: HookInput) =
   };
   try {
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
-    pinRoutine(d, 's');   // decision 226: coder starts at s1 (haiku·low); a miss raises to haiku-medium
+    pinRoutine(d, 's');   // decision 226: coder starts at s1 (haiku·low); decision 229: a miss raises to s2 (haiku·high)
     await fn(d, repo, post);
   } finally { await d.close(); rmrf(d.home); rmrf(repo); }
 }
@@ -52,7 +52,7 @@ async function miss(post: (h: HookInput) => Promise<Out>, repo: string, tag: str
 
 test('after a miss with the slot raised, the lead is told to dispatch again, not offered a report to the user', () => withRepo(async (d, repo, post) => {
   const told = await miss(post, repo, 'A', 'a1', 'haiku', 'low');
-  assert.match(told, /now runs one step higher, at haiku-medium \(model="haiku", effort="medium"\): a new attempt must use these values\. Dispatch subtask A again now with these values, and include what failed in its prompt\. Do not report to the user before that attempt has finished\.$/);
+  assert.match(told, /now runs one step higher, at s2 \(model="haiku", effort="high"\): a new attempt must use these values\. Dispatch subtask A again now with these values, and include what failed in its prompt\. Do not report to the user before that attempt has finished\.$/);
   assert.doesNotMatch(told, /Decide:|or report to the user/);
 }));
 
@@ -73,14 +73,14 @@ test('the lead\'s Stop is blocked once while a failed coder subtask can be tried
   await miss(post, repo, 'A', 'a1', 'haiku', 'low');
   const out = await post(leadStop());
   assert.equal(out.decision, 'block');
-  assert.match(out.reason ?? '', /^\[do-it-all-claude-code\] subtask A \(coder\) failed and no new attempt was dispatched\. Its slot now runs at haiku-medium: call the Agent tool for it again now with model="haiku", effort="medium", and include what failed in the prompt\./);
+  assert.match(out.reason ?? '', /^\[do-it-all-claude-code\] subtask A \(coder\) failed and no new attempt was dispatched\. Its slot now runs at s2: call the Agent tool for it again now with model="haiku", effort="high", and include what failed in the prompt\./);
   assert.match(out.reason ?? '', /end your message with \[router:awaiting-user\]\.$/);
   assert.deepEqual(request(d), { status: 'open', stop_blocks: 1 });   // the request stays open: the turn goes on
   assert.equal(rows(d, 'SELECT COUNT(*) AS c FROM request_records')[0]!.c, 0);
 
   // the lead dispatches again; that attempt misses too; a second block does not happen in this request
-  await miss(post, repo, 'A', 'a2', 'haiku', 'medium');   // decision 226: re-dispatch at the raised cell haiku-medium
-  assert.deepEqual(rows(d, "SELECT status, step FROM subtasks WHERE id = 'A'"), [{ status: 'failed', step: 'haiku-medium' }]);   // decision 226: a miss from s1 raises to haiku-medium
+  await miss(post, repo, 'A', 'a2', 'haiku', 'high');   // decision 229: re-dispatch at the raised cell s2 (haiku·high)
+  assert.deepEqual(rows(d, "SELECT status, step FROM subtasks WHERE id = 'A'"), [{ status: 'failed', step: 's2' }]);   // decision 229: a miss from s1 raises to s2
   assert.deepEqual(await post(leadStop()), {});
   assert.deepEqual(request(d), { status: 'closed', stop_blocks: 1 });
 }));
@@ -101,7 +101,7 @@ test('not blocked: the lead asks the user', () => withRepo(async (d, repo, post)
 test('not blocked: a newer attempt on the slot was dispatched, under the same tag or another', () => withRepo(async (d, repo, post) => {
   await miss(post, repo, 'A', 'a1', 'haiku', 'low');
   // another tag on the same slot, still running: the lead is waiting for it
-  assert.deepEqual(await post(call('A2', 'haiku', 'medium')), {});   // decision 226: the raised cell is haiku-medium
+  assert.deepEqual(await post(call('A2', 'haiku', 'high')), {});   // decision 229: the raised cell is s2 (haiku·high)
   await post(start('a2'));
   assert.deepEqual(await post(leadStop('Waiting for the new attempt.')), {});
   assert.equal(request(d).stop_blocks, 0);

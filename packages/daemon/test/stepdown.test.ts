@@ -139,26 +139,32 @@ test('a raise locks the slot for two tasks; coming back down gives the raise bac
   await s.tool('router_report_triage', { kind: 'team', level: 'L2', files: 5, confidence: 0.8, difficulty: 'routine' });
   await s.pass('RV', 'sonnet', 'medium', 'reviewer');
   await s.pass('A', 'haiku', 'low');
-  // verify passed, the lead judges the result wrong: one raise on its word (decision 128), and the floor lock
-  assert.equal((await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result' })).result?.step, 'haiku-medium');
-  assert.deepEqual(coder0(d), { step: 'haiku-medium', up_count: 1, easy_streak: 0, last_easy: 0, lock_step: 'haiku-medium', lock_left: 2, down_count: 0, fail_streak: 0, lead_raises: 1 });
-  // two tasks at the raised step, both easy: the third runs one step lower
-  await s.pass('B', 'haiku', 'medium');
+  // verify passed, the lead judges the result wrong: one raise on its word (decision 128), and the floor lock.
+  // decision 229: a raise goes a big legacy step up (s1 -> s2); step-down is fine, so it eases back s2 -> haiku-medium -> s1.
+  assert.equal((await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result' })).result?.step, 's2');
+  assert.deepEqual(coder0(d), { step: 's2', up_count: 1, easy_streak: 0, last_easy: 0, lock_step: 's2', lock_left: 2, down_count: 0, fail_streak: 0, lead_raises: 1 });
+  // two tasks at the raised step (s2 = haiku·high), both easy: the third eases one fine step down (s2 -> haiku-medium)
+  await s.pass('B', 'haiku', 'high');
   assert.equal((await s.easy('B')).result?.steppedDown, undefined);
   assert.deepEqual([coder0(d)!.lock_left, coder0(d)!.easy_streak], [1, 1]);
-  await s.pass('C', 'haiku', 'medium');
+  await s.pass('C', 'haiku', 'high');
   assert.deepEqual([coder0(d)!.lock_left, coder0(d)!.lock_step], [0, null]);
   const down = await s.easy('C');
-  assert.deepEqual([down.result?.steppedDown, down.result?.slot.step, down.result?.slot.upCount, down.result?.slot.upsLeft], [true, 's1', 0, 3]);
-  assert.deepEqual(coder0(d), { step: 's1', up_count: 0, easy_streak: 0, last_easy: 1, lock_step: null, lock_left: 0, down_count: 1, fail_streak: 0, lead_raises: 1 });
-  assert.match(denied(await s.post(s.call('D', 'coder', 'haiku', 'high'))), /the coder runs at step s1/);
-  await s.pass('D', 'haiku', 'low');
-  // the bottom step stays, however easy
+  assert.deepEqual([down.result?.steppedDown, down.result?.slot.step, down.result?.slot.upCount, down.result?.slot.upsLeft], [true, 'haiku-medium', 0, 3]);   // the up-count raise is handed back
+  assert.deepEqual(coder0(d), { step: 'haiku-medium', up_count: 0, easy_streak: 0, last_easy: 1, lock_step: null, lock_left: 0, down_count: 1, fail_streak: 0, lead_raises: 1 });
+  assert.match(denied(await s.post(s.call('D', 'coder', 'haiku', 'high'))), /the coder runs at step haiku-medium/);
+  // two more easy passes ease it the rest of the way to the bottom (haiku-medium -> s1)
+  await s.pass('D', 'haiku', 'medium');
   await s.easy('D');
-  await s.pass('E', 'haiku', 'low');
-  assert.deepEqual((r => [r.result?.steppedDown, r.result?.slot.step])(await s.easy('E')), [undefined, 's1']);
+  await s.pass('E', 'haiku', 'medium');
+  assert.deepEqual((r => [r.result?.steppedDown, r.result?.slot.step])(await s.easy('E')), [true, 's1']);
+  // the bottom step stays, however easy
+  await s.pass('F', 'haiku', 'low');
+  await s.easy('F');
+  await s.pass('G', 'haiku', 'low');
+  assert.deepEqual((r => [r.result?.steppedDown, r.result?.slot.step])(await s.easy('G')), [undefined, 's1']);
   // the lead's one raise on its own word was used: step-down did not hand it back
-  const again = await s.tool('router_request_escalation', { subtaskId: 'E', reason: 'wrong_result' });
+  const again = await s.tool('router_request_escalation', { subtaskId: 'G', reason: 'wrong_result' });
   assert.deepEqual([again.code, again.result?.why], ['needs_user', 'second_lead_only']);
 }));
 

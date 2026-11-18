@@ -16,28 +16,28 @@ test('the grid has 4 models x 5 efforts, with the six legacy cells measured (dec
   assert.equal(cellOf('s7').estimated, true);
 });
 
-test('step-up climbs effort within a model, then jumps model (dominated cells pruned, decision 225)', () => {
-  // haiku: low -> medium -> high -> xhigh, then jump to sonnet (haiku-max is pruned, costs more than sonnet-low)
-  assert.equal(stepUp('s1'), 'haiku-medium');
-  assert.equal(stepUp('haiku-medium'), 's2');       // haiku high
-  assert.equal(stepUp('s2'), 'haiku-xhigh');
-  assert.equal(stepUp('haiku-xhigh'), 'sonnet-low');
-  assert.equal(stepUp('sonnet-low'), 's3');         // sonnet medium
-  assert.equal(stepUp('s3'), 's4');                 // sonnet high
-  assert.equal(stepUp('s4'), 'opus-low');           // sonnet-xhigh/max pruned
-  assert.equal(stepUp('opus-low'), 'opus-medium');
-  assert.equal(stepUp('opus-medium'), 's5');        // opus high
+test('step-up goes in big legacy steps: s1 -> s2 -> s3 -> s4 -> s5 -> s6 (decision 229)', () => {
+  assert.equal(stepUp('s1'), 's2');
+  assert.equal(stepUp('s2'), 's3');
+  assert.equal(stepUp('s3'), 's4');
+  assert.equal(stepUp('s4'), 's5');
   assert.equal(stepUp('s5'), 's6');                 // opus xhigh = ceiling (no Fable)
   assert.equal(stepUp('s6'), null);
   assert.equal(topStep(false), 's6');
   assert.equal(topStep(true), 's7');
+  // three raises carry a routine coder (s1) to s4 and a moderate coder (s3) to s6
+  assert.equal(stepUp(stepUp(stepUp('s1')!)!), 's4');
+  assert.equal(stepUp(stepUp(stepUp('s3')!)!), 's6');
+  // an off-path cell (teams.yaml / step-down in-between) goes to the cheapest up-path cell that costs more
+  assert.equal(stepUp('haiku-medium'), 's2');       // 1.6 -> s2 (3.1)
+  assert.equal(stepUp('sonnet-low'), 's3');         // 7.5 -> s3 (9.1)
+  assert.equal(stepUp('opus-low'), 's5');           // 21.6 -> s5 (44.9); s4 is cheaper
 });
 
-test('with Fable opted in the top of the path is opus-high -> fable-low -> fable-medium -> fable-high, s6 off it (decision 226)', () => {
-  assert.equal(stepUp('s5', true), 'fable-low');
-  assert.equal(stepUp('fable-low', true), 'fable-medium');
-  assert.equal(stepUp('fable-medium', true), 's7');   // fable high = ceiling
+test('with Fable opted in, step-up is s5 -> s7 and s6 is off the up-path (decisions 226, 229)', () => {
+  assert.equal(stepUp('s5', true), 's7');
   assert.equal(stepUp('s7', true), null);
+  assert.equal(stepUp(stepUp(stepUp('s3', true)!, true)!, true), 's7');   // moderate + Fable: three raises reach s7
 });
 
 test('step-down lowers effort first, then drops a model (decisions 225, 226)', () => {

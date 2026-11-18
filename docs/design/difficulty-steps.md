@@ -139,28 +139,29 @@ reached by the slot's own movement (a miss, or the hard-unverified model jump) o
 `router_request_escalation`, not by a fourth difficulty value — difficulty stays three levels and
 the grid movement does the rest.
 
-## 2. How a slot moves on the grid
+## 2. How a slot moves on the grid (decision 229)
 
-The grid's **cost order is the new 1-D projection**, so the existing triggers (`ladder.ts`) map
-straight onto it: `stepUp` = advance to the next cell in the step-up path; `stepDown` = retreat one;
-`MAX_STEP_UPS = 3`, the floor-lock, and the two-easy-passes step-down are unchanged. A **model
-change is a new subagent** (today's `crossesTier`); an **effort change within a model is a new call
-to the same subagent**. The path refines the raw cost order with control's rules:
+Step-UP and step-DOWN are **asymmetric**: up goes in big, measured steps so a miss buys a real
+improvement; down eases back gently. `MAX_STEP_UPS = 3`, the floor-lock, and the two-easy-passes
+rule are unchanged. A **model change is a new subagent** (`crossesTier`); an **effort change within
+a model is a new call to the same subagent**.
 
-- **On a miss (two failures, or a reject):** step **effort up within the model while the next
-  effort cell is still cheaper than the cheapest cell of the next model**, then change model. So
-  from haiku: low → medium → high → xhigh, then **jump to sonnet** (haiku·max is skipped — it costs
-  more than sonnet·low/medium). This prunes the dominated cells (haiku·max, sonnet·max, opus·max,
-  fable mid-cells) from the automatic path; they stay addressable by config only.
-- **A hard task that comes back unverified / hitl:** **jump model** immediately (skip the
-  within-model effort climb), within the request budget, before handing back to the lead — once per
-  slot per request. This is decision 225 point 2, sharpened: on the grid an unverified hard result
-  means the model, not the effort, was the shortfall. Guards: below top, budget has room for the
-  next model's cell, once only; else hand back to the lead. routine/moderate unverified ends hand
-  back to the lead as today (no jump), so a routine task with legitimately no test doesn't burn
-  Opus.
-- **Step-down (two easy passes):** **lower effort first within the model**, then drop a model tier
-  — the retreat mirrors the climb. `quality` profile keeps `stepDown: off`.
+- **On a miss (two failures, or a reject), a lead-requested raise, or a verify-gap raise:**
+  `stepUp` moves along the **legacy cells only** — `s1 → s2 → s3 → s4 → s5 → s6`. So three raises
+  carry a routine coder (`s1`) to `s4` and a moderate coder (`s3`) to `s6`. With Fable opted in,
+  `s5 → s7` instead of `s6` (decision 226 drops `s6` when Fable is on). From an off-path cell (a
+  teams.yaml / role-override / save-notch start, or a slot that stepped down onto an in-between
+  cell), `stepUp` goes to the cheapest up-path cell that costs more than it.
+- **A hard task that comes back unverified / hitl:** `modelJump` — the next up-path cell whose
+  model differs (from `s3`/`s4` that is `s5`; from `s5` it is `s7` with Fable, else none) — within
+  the request budget, once per slot per request, before handing back to the lead. routine/moderate
+  unverified ends hand back to the lead as before (no jump), so a routine task with legitimately no
+  test doesn't burn Opus.
+- **Step-down (two easy passes, and the `save` −1 notch):** `stepDown` stays **fine-grained** —
+  lower effort first within the model, then drop a model tier: `s3 → sonnet·low → haiku·xhigh → s2 →
+  haiku·medium → s1`; `s5 → opus·medium → opus·low → s4`. So a slot that over-shot on a miss can
+  ease back onto an in-between cell, and a later miss then takes it up the legacy path again. The
+  `quality` profile keeps `stepDown: off`.
 
 ## 3. Interaction with decision 220's small-direct bound
 

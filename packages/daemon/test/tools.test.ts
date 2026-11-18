@@ -314,7 +314,7 @@ test('router_request_escalation on the lead\'s word: once per slot inside a mode
   await s.pass('A', 'a2', 'sonnet', 'high');
   const n = await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result' });
   assert.deepEqual([n.ok, n.code, n.result?.why, n.result?.step], [false, 'needs_user', 'tier', 's4']);
-  assert.match(n.message ?? '', /needs_user: the next step \(opus-low\) changes the model/);
+  assert.match(n.message ?? '', /needs_user: the next step \(s5\) changes the model/);   // decision 229: s4 -> s5 crosses to Opus
   assert.equal(slots(d)[0]!.step, 's4');
   assert.deepEqual((await s.tool('router_get_plan')).result?.pendingUser, [{ kind: 'escalation', subtaskId: 'A' }]);
   // saying the user confirmed is not enough: the ledger must show a user turn after the request
@@ -326,10 +326,10 @@ test('router_request_escalation on the lead\'s word: once per slot inside a mode
   assert.equal((await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result', userConfirmed: true })).code, 'needs_user');
   await s.userTurn();
   const u = await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result', userConfirmed: true });
-  assert.deepEqual([u.ok, u.result?.how, u.result?.step, u.result?.model, u.result?.effort, u.result?.upsLeft], [true, 'user_turn', 'opus-low', 'opus', 'low', 1]);
-  assert.deepEqual(slots(d), [{ role: 'coder', slot: 0, step: 'opus-low', up_count: 2, fail_streak: 0, lead_raises: 1 }]);
+  assert.deepEqual([u.ok, u.result?.how, u.result?.step, u.result?.model, u.result?.effort, u.result?.upsLeft], [true, 'user_turn', 's5', 'opus', 'high', 1]);   // decision 229: s4 -> s5 (opus-high)
+  assert.deepEqual(slots(d), [{ role: 'coder', slot: 0, step: 's5', up_count: 2, fail_streak: 0, lead_raises: 1 }]);
   assert.equal(d.ledger.count('confirmations'), 0);
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'opus', 'low')), {});
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'opus', 'high')), {});
 }));
 
 test('router_request_escalation: a reviewer reject raises at once, also across a model; the 3-raise limit goes to the user', () => withDaemon(async (d, repo) => {
@@ -341,22 +341,22 @@ test('router_request_escalation: a reviewer reject raises at once, also across a
   await s.pass('R', 'r1', 'sonnet', 'high', 'reviewer');
   await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'reviewer', bySubtaskId: 'R' });
   const g = await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'review_reject' });
-  assert.deepEqual([g.ok, g.result?.how, g.result?.from, g.result?.step, g.result?.model, g.result?.upCount], [true, 'review_reject', 's4', 'opus-low', 'opus', 2]);
+  assert.deepEqual([g.ok, g.result?.how, g.result?.from, g.result?.step, g.result?.model, g.result?.upCount], [true, 'review_reject', 's4', 's5', 'opus', 2]);   // decision 229: s4 -> s5
   assert.equal(slots(d).find(x => x.role === 'coder')!.lead_raises, 0);
 
   // one raise left: a second lead reject in a row uses it; after that every request goes to the user
-  await s.pass('A', 'a2', 'opus', 'low');
+  await s.pass('A', 'a2', 'opus', 'high');   // slot now s5 (opus-high)
   await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'lead' });
-  await s.pass('A', 'a3', 'opus', 'low');
-  assert.deepEqual((r => [r.result?.raised, r.result?.slot.step, r.result?.slot.upsLeft])(await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'lead' })), [true, 'opus-medium', 0]);
-  await s.pass('A', 'a4', 'opus', 'medium');
+  await s.pass('A', 'a3', 'opus', 'high');
+  assert.deepEqual((r => [r.result?.raised, r.result?.slot.step, r.result?.slot.upsLeft])(await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'lead' })), [true, 's6', 0]);   // decision 229: s5 -> s6
+  await s.pass('A', 'a4', 'opus', 'xhigh');   // slot now s6 (opus-xhigh)
   await s.pass('R2', 'r2', 'sonnet', 'high', 'reviewer');
   await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'reviewer', bySubtaskId: 'R2' });
   const lim = await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'review_reject' });
-  assert.deepEqual([lim.ok, lim.code, lim.result?.why, lim.result?.step, lim.result?.upsLeft], [false, 'needs_user', 'limit', 'opus-medium', 0]);
+  assert.deepEqual([lim.ok, lim.code, lim.result?.why, lim.result?.step, lim.result?.upsLeft], [false, 'needs_user', 'limit', 's6', 0]);
   assert.match(lim.message ?? '', /no raise left \(3 step-ups or the top step\)\. Stop this subtask and ask the user/);
   assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'hitl', verdict: 'rejected' }]);
-  assert.equal(slots(d).find(x => x.role === 'coder')!.step, 'opus-medium');
+  assert.equal(slots(d).find(x => x.role === 'coder')!.step, 's6');
   // a user turn does not lift the limit: the user chooses how to go on (spec 5.3)
   await s.userTurn();
   assert.equal((await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'review_reject', userConfirmed: true })).result?.why, 'limit');
