@@ -58,6 +58,7 @@ import { claudeBin, runCaptured } from '../bench/src/kpi/capture.ts';
 import { ALLOWED_SINCE_222, claudeArgs } from '../bench/src/kpi/run-args.ts';
 import { analysePhases, type LedgerTiming, type StreamLine } from '../bench/src/kpi/phases.ts';
 import { mcpSeen, routerMcpReady } from '../bench/src/kpi/router-mcp.ts';
+import { leadTurns } from '../bench/src/kpi/session.ts';
 import { DEFAULT_PROFILE, PROFILES, profileOf } from '../packages/core/src/profiles.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -316,7 +317,8 @@ for (const [task, a] of order) {
     taskId: task.id, arrangement: a, level: task.level, leadModel: LEAD, leadEffort: EFFORT, rep: 1, allowedSince222: true,
     passed: graded.pass, grade: graded.detail, costUsd, wallSeconds: Math.round(r.ms / 1000),
     costLeadUsd: a === 'direct' ? costUsd : (facts as any).costLeadUsd, costSubagentsUsd: a === 'direct' ? 0 : (facts as any).costSubagentsUsd,
-    leadCalls: r.out?.num_turns ?? null, models, ...stats, ...(a === 'direct' ? { outcome: 'router-off', levelChosen: null, agentTool: DIRECT_AGENT_TOOL } : { routerMcp: ROUTER_MCP, profile: ranProfile }), ...facts,
+    // over every result line of the run: a lead woken by its background workers writes one per turn, and num_turns counts one turn
+    leadCalls: leadTurns(r.lines), models, ...stats, ...(a === 'direct' ? { outcome: 'router-off', levelChosen: null, agentTool: DIRECT_AGENT_TOOL } : { routerMcp: ROUTER_MCP, profile: ranProfile }), ...facts,
     mcp: { seen: mcp.seen, servers: mcp.servers.map(s => `${s.name} (${s.status})`), routerTools: mcp.routerTools },
     timedOut: r.timedOut, error: r.out?.is_error ? String(r.out?.subtype ?? r.out?.result ?? '').slice(0, 300) : (r.out ? undefined : r.stderr.slice(-300)),
     phases,

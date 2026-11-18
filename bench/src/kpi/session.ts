@@ -92,11 +92,84 @@ export function leadContext(lines: readonly StreamLine[]): LeadContext {
   };
 }
 
+const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
+const TOKEN_KEYS = ['inputTokens', 'outputTokens', 'thinkingTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens'] as const;
+
+/** One model's figures on a result line (modelUsage and model_usage_since_last_result have the same shape). */
+export interface ModelFigures { inputTokens: number; outputTokens: number; thinkingTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; costUsd: number }
+
+function figures(v: unknown): Record<string, ModelFigures> | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out: Record<string, ModelFigures> = {};
+  for (const [model, u] of Object.entries(v as Record<string, Record<string, unknown> | null>)) {
+    const f = {} as ModelFigures;
+    for (const k of TOKEN_KEYS) f[k] = Number(u?.[k]) || 0;
+    f.costUsd = Number(u?.costUSD) || 0;
+    out[model] = f;
+  }
+  return out;
+}
+
+/**
+ * What a step's process reported about cost. In a resumed session these are not the step's own figures:
+ * total_cost_usd and modelUsage go on from the total the session's transcript saved, so a step's last result
+ * carries every step so far (measured in the first session of this scenario: each step's cache-read count in
+ * modelUsage was the sum of the streams of the steps up to it; Claude Code 2.1.326 describes the field so too).
+ */
+export interface Reported {
+  /** total_cost_usd of the process's last result line; 0 without one. */
+  totalUsd: number;
+  /** modelUsage of the same line. */
+  modelUsage: Record<string, ModelFigures> | null;
+  /**
+   * The cost in model_usage_since_last_result, added over ALL the process's result lines (a process that waits
+   * for background workers writes several): what this process itself counted. Null when no line carries the
+   * field (it is optional). Calls that end after the last result line are not in it.
+   */
+  sinceLastResultUsd: number | null;
+}
+
+export function reported(lines: readonly StreamLine[], result: Record<string, unknown> | null): Reported {
+  let since: number | null = null;
+  for (const l of lines) {
+    if (l.m.type !== 'result') continue;
+    const f = figures(l.m.model_usage_since_last_result);
+    if (f) since = (since ?? 0) + Object.values(f).reduce((a, u) => a + u.costUsd, 0);
+  }
+  return { totalUsd: Number(result?.total_cost_usd) || 0, modelUsage: figures(result?.modelUsage), sinceLastResultUsd: since === null ? null : round6(since) };
+}
+
+/** Round trips of the lead over the step: num_turns of a result line counts one turn, and a process woken by its background workers writes a result per turn. */
+export function leadTurns(lines: readonly StreamLine[]): number | null {
+  const results = lines.filter(l => l.m.type === 'result');
+  return results.length ? results.reduce((a, l) => a + (Number(l.m.num_turns) || 0), 0) : null;
+}
+
+/**
+ * How a step's cost was taken from its reported total:
+ * - 'first': nothing was reported before it, the total is the step's.
+ * - 'difference': the total minus the total of the step before (the usual case in a resumed session).
+ * - 'own-total': the total did not go on from the step before, so it is the step's own. A total below the one
+ *   before cannot be a running total; and where the process's own since-last-result figures add up to the
+ *   total rather than to the difference, the process started counting at zero (a transcript without a saved
+ *   total, a /clear).
+ * - 'none': no result line, or one without a total (a process that was killed, a startup error): no cost is
+ *   known for the step, and the next step's difference is taken from the last total there was.
+ */
+export type CostBasis = 'first' | 'difference' | 'own-total' | 'none';
+
 export interface StepCost {
-  /** The result line's total_cost_usd. */
+  /** The step's own cost: see costBasis. The budget counts this. */
   costUsd: number;
-  /** The same result's per-model usage, added up (its costUSD figures). */
+  costBasis: CostBasis;
+  /** total_cost_usd as the step's last result line had it (in a resumed session: every step so far). */
+  reportedTotalUsd: number;
+  /** The step's own per-model tokens and cost, taken from modelUsage the same way as costUsd; models with nothing in the step are left out. */
+  usage: Record<string, ModelFigures> | null;
+  /** The per-model costs of `usage`, added up. */
   usageCostUsd: number | null;
+  /** What the process itself counted (Reported.sinceLastResultUsd): a second reading of the step's cost, not used for it. */
+  sinceLastResultUsd: number | null;
   /** The input side of every message in THIS process's stream at list price: what the step paid to read and write context, without any output. */
   streamInputUsd: number;
   streamInputLeadUsd: number;
@@ -105,32 +178,72 @@ export interface StepCost {
   unpricedMessages: number;
 }
 
-export function stepCost(lines: readonly StreamLine[], result: Record<string, unknown> | null): StepCost {
+function basisOf(now: Reported, before: Reported | null): CostBasis {
+  if (!(now.totalUsd > 0)) return 'none';
+  if (!before || !(before.totalUsd > 0)) return 'first';
+  if (now.totalUsd < before.totalUsd) return 'own-total';
+  const since = now.sinceLastResultUsd;
+  if (since !== null && Math.abs(since - now.totalUsd) < Math.abs(since - (now.totalUsd - before.totalUsd))) return 'own-total';
+  return 'difference';
+}
+
+/**
+ * A step's cost. `now` is what the step's process reported, `before` what the last step with a total reported
+ * (null for the first step). The caller keeps `now` as the next step's `before` unless the basis is 'none'.
+ */
+export function stepCost(lines: readonly StreamLine[], now: Reported, before: Reported | null = null): StepCost {
   let lead = 0, workers = 0, unpriced = 0;
   for (const m of messages(lines)) {
     const usd = costUsd(m.model.replace(/\[.*$/, ''), { ...m.usage, output_tokens: 0 });
     if (usd === null) { unpriced++; continue; }
     if (m.lead) lead += usd; else workers += usd;
   }
-  const perModel = result?.modelUsage && typeof result.modelUsage === 'object' ? Object.values(result.modelUsage as Record<string, { costUSD?: unknown }>) : null;
-  const round = (n: number) => Math.round(n * 1e6) / 1e6;
+  const basis = basisOf(now, before);
+  const base = basis === 'difference' ? before : null;
+  let usage: Record<string, ModelFigures> | null = null;
+  // a difference needs both sides: after a step whose per-model usage is not known, this step's cannot be told apart
+  if (now.modelUsage && basis !== 'none' && (!base || base.modelUsage)) {
+    usage = {};
+    for (const [model, f] of Object.entries(now.modelUsage)) {
+      const b = base?.modelUsage?.[model];
+      const own = {} as ModelFigures;
+      for (const k of TOKEN_KEYS) own[k] = f[k] - (b?.[k] ?? 0);
+      own.costUsd = round6(f.costUsd - (b?.costUsd ?? 0));
+      if (own.costUsd !== 0 || TOKEN_KEYS.some(k => own[k] !== 0)) usage[model] = own;
+    }
+  }
   return {
-    costUsd: Number(result?.total_cost_usd ?? 0),
-    usageCostUsd: perModel ? round(perModel.reduce((a, u) => a + (Number(u?.costUSD) || 0), 0)) : null,
-    streamInputUsd: round(lead + workers), streamInputLeadUsd: round(lead), streamInputWorkersUsd: round(workers), unpricedMessages: unpriced,
+    costUsd: basis === 'none' ? 0 : round6(now.totalUsd - (base?.totalUsd ?? 0)), costBasis: basis, reportedTotalUsd: now.totalUsd,
+    usage, usageCostUsd: usage ? round6(Object.values(usage).reduce((a, u) => a + u.costUsd, 0)) : null, sinceLastResultUsd: now.sinceLastResultUsd,
+    streamInputUsd: round6(lead + workers), streamInputLeadUsd: round6(lead), streamInputWorkersUsd: round6(workers), unpricedMessages: unpriced,
   };
 }
 
 /**
- * Whether the steps' totals are each process's own or run on over the session. A resumed `claude -p` is a new
- * process, and its total_cost_usd should be its own; that is not documented, so it is read off the numbers: a
- * total below the one before it cannot be cumulative. When the totals never go down, both readings stay open
- * and the session's cost is given both ways.
+ * The session's cost: its steps' own costs added up. With every step a 'difference' on the one before, that is
+ * the last step's reported total ('running-total'); 'mixed' says a later step's total started again.
  */
-export function sessionCost(stepTotals: readonly number[]): { reading: 'per-step' | 'undecided'; sumUsd: number; lastUsd: number } {
-  const drops = stepTotals.some((c, i) => i > 0 && c < stepTotals[i - 1]!);
-  const round = (n: number) => Math.round(n * 1e6) / 1e6;
-  return { reading: drops || stepTotals.length < 2 ? 'per-step' : 'undecided', sumUsd: round(stepTotals.reduce((a, b) => a + b, 0)), lastUsd: round(stepTotals.at(-1) ?? 0) };
+export function sessionCost(steps: ReadonlyArray<Pick<StepCost, 'costUsd' | 'costBasis' | 'reportedTotalUsd' | 'usage' | 'sinceLastResultUsd'>>): {
+  costUsd: number; costReading: 'running-total' | 'mixed'; lastReportedTotalUsd: number; sinceLastResultUsd: number | null; usage: Record<string, ModelFigures>;
+} {
+  const usage: Record<string, ModelFigures> = {};
+  for (const s of steps) for (const [model, f] of Object.entries(s.usage ?? {})) {
+    const sum = usage[model] ??= { inputTokens: 0, outputTokens: 0, thinkingTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUsd: 0 };
+    for (const k of TOKEN_KEYS) sum[k] += f[k];
+    sum.costUsd = round6(sum.costUsd + f.costUsd);
+  }
+  return {
+    costUsd: round6(steps.reduce((a, s) => a + s.costUsd, 0)),
+    costReading: steps.some((s, i) => i > 0 && s.costBasis === 'own-total') ? 'mixed' : 'running-total',
+    lastReportedTotalUsd: round6(steps.findLast(s => s.costBasis !== 'none')?.reportedTotalUsd ?? 0),
+    sinceLastResultUsd: steps.every(s => s.sinceLastResultUsd !== null) && steps.length ? round6(steps.reduce((a, s) => a + s.sinceLastResultUsd!, 0)) : null,
+    usage,
+  };
+}
+
+/** Where a step's stream is kept under the output folder (`stepKey` is scenario|arrangement|rep|step). */
+export function streamFileOf(out: string, stepKey: string): string {
+  return path.join(out, 'streams', `${stepKey.replace(/[^A-Za-z0-9_.-]/g, '_')}.jsonl`);
 }
 
 /** The session id the process ran in, from its init line (a resume must stay in the session it was given). */

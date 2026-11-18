@@ -213,7 +213,9 @@ function routerRun(name: string, init: Record<string, unknown>, extra: string[] 
   fs.copyFileSync(path.join(BENCH, 'test', 'kpi-fake-claude.mjs'), fake);
   fs.writeFileSync(path.join(fakeDir, 'scenario.json'), JSON.stringify([
     { line: { type: 'system', subtype: 'init', ...init } },
-    { pauseMs: 50, line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 1, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 } } } },
+    // a router run writes a result line per turn of the lead: its first turn, then one when its background workers are done
+    { pauseMs: 50, line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 4, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 } } } },
+    { pauseMs: 20, line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 3, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 } } } },
   ]));
   const out = path.join(tmp, `out-${name}`);
   const safe = safeEnv(tmp, name, { BENCH_CLAUDE_BIN: fake });
@@ -249,6 +251,8 @@ test('measure107 router run: the plugin\'s MCP server is loaded as in a session,
   const [rec] = records(out);
   assert.deepEqual([rec!.routerMcp, rec!.mcp], [true, { seen: true, servers: ['plugin:do-it-all-claude-code:router (connected)'], routerTools: 2 }]);
   assert.equal(rec!.agentTool, undefined);
+  // the lead's round trips are added over the run's result lines (4 and 3); the cost is the last line's total, once
+  assert.deepEqual([rec!.leadCalls, rec!.costUsd], [7, 0.01]);
 });
 
 test('measure107 router run: --no-router-mcp is the earlier arrangement; a session with the wrong servers stops the measurement and leaves no record', () => {

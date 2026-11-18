@@ -35,7 +35,8 @@ All notable changes to this project are documented here. This project adheres to
   lead's model to the router as a session's environment would. Every run may now use `echo`, `pwd` and `wc`
   without a prompt, as a user at the terminal allows; earlier runs refused them. New:
   `scripts/measure-session.ts` puts the six requests of a scenario (`bench/tasks/sessions/taskboard-01`) to one
-  session, router on and off, and records each step's result and cost and how the lead's context grows.
+  session, router on and off, and records each step's result and cost and how the lead's context grows. A
+  resumed process reports the session's running total, so a step's cost is the difference from the step before.
 - **Parallel writers share the checkout.** When a change has independent parts, the lead now sends one coder
   for each part in one message, in the working tree, and the router runs the build and tests once, when the last
   of them stops. A subtask the architect's plan marks `after: none` is such a part. Before, the brief asked for a

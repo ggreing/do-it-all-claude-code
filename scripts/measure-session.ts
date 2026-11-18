@@ -7,6 +7,7 @@
 //        [--reps 3] [--lead sonnet] [--effort high] [--profile save|balanced|quality] [--reproduce-first on|observe|off]
 //        [--budget 30] [--cap-scale 1] [--out dir] [--work dir] [--only-plan] [--setup-only]
 //        [--direct-no-agent-tool] [--no-router-mcp] [--daemon-port <n>]
+//   node scripts/measure-session.ts --recompute --out dir
 //
 // - One step is one `claude -p` process: the first starts the session (--session-id <uuid>), every later one
 //   resumes it (--resume <uuid>). The router's daemon stays up for the whole session, and the session's requests
@@ -19,16 +20,23 @@
 // - A failed step does not stop the session: the next request goes to whatever state there is, as with a user
 //   who did not notice. Each step says whether it is the first failure or comes after one, and whether an
 //   earlier step's tests broke (a regression).
-// - Cost: each step records the result's total_cost_usd, the same result's per-model usage added up, and the
-//   input side of the step's own stream at list price. The stream cannot give the whole cost (its message
-//   lines carry the output count a message started with), but it is this process's alone, so it shows whether
-//   a resumed process reports its own total or the session's (bench/src/kpi/session.ts, sessionCost).
+// - Cost: a resumed process reports the session's running total (total_cost_usd and modelUsage go on from what
+//   the transcript saved), so a step's cost is its total minus the total of the step before, and its per-model
+//   tokens likewise; the session's cost is the last total. The budget and the ledger count the step's own cost.
+//   --max-budget-usd counts only what the process itself spent, so a step's cap is the step's. Beside it each
+//   step keeps the total as reported, what the process counted itself (model_usage_since_last_result over its
+//   result lines) and the input side of its own stream at list price (bench/src/kpi/session.ts, stepCost).
 // - The lead's context: per step, the tokens its first, last and largest call read, what the first call took
 //   from the cache, and compactions.
 // --daemon-port sets the port of each session's daemon. Left out, init picks the first free port from 47800 on
 // when the session is set up; two measurements set up at the same moment then pick the same one, and the second
 // daemon does not start. Sessions of one invocation come one after the other and can share a port.
 // --only-plan prints the plan and exits; --setup-only prepares the workspace and starts the daemon, no API call.
+// --arrangements direct (or auto) runs only those sessions; with the --out of an earlier measurement they are
+// added to its sessions.jsonl, and sessions already there are skipped. A session that was stopped is run again
+// from its first step; what its steps cost stays in the ledger.
+// --recompute rewrites an --out folder written while a step's reported total was counted as the step's cost
+// (bench/src/kpi/session-recompute.ts) and exits: no session is run.
 // Auth: an isolated CLAUDE_CONFIG_DIR per session and apiKeyHelper via --settings (the key never passes through
 // this script).
 // Output: <out>/{sessions.jsonl,ledger.jsonl,streams/}. A session is keyed by scenario, arrangement and rep.
@@ -45,7 +53,8 @@ import { claudeBin, runCaptured } from '../bench/src/kpi/capture.ts';
 import { analysePhases } from '../bench/src/kpi/phases.ts';
 import { mcpSeen, routerMcpReady } from '../bench/src/kpi/router-mcp.ts';
 import { ALLOWED_SINCE_222, claudeArgs } from '../bench/src/kpi/run-args.ts';
-import { gradeStep, leadContext, loadScenario, sessionCost, sessionIdSeen, snapshot, snapshotDiff, stepCost, stepStatus } from '../bench/src/kpi/session.ts';
+import { recompute } from '../bench/src/kpi/session-recompute.ts';
+import { gradeStep, leadContext, leadTurns, loadScenario, reported, sessionCost, sessionIdSeen, snapshot, snapshotDiff, stepCost, stepStatus, streamFileOf, type Reported, type StepCost } from '../bench/src/kpi/session.ts';
 import { DEFAULT_PROFILE, PROFILES, profileOf } from '../packages/core/src/profiles.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -55,6 +64,14 @@ const flag = (k: string) => argv.includes(`--${k}`);
 const fail = (msg: string): never => { console.error(msg); process.exit(2); };
 
 const OUT = path.resolve(arg('out', path.join(ROOT, 'bench', 'results', 'measure-session'))!);
+if (flag('recompute')) {
+  if (!fs.existsSync(path.join(OUT, 'sessions.jsonl')) && !fs.existsSync(path.join(OUT, 'ledger.jsonl'))) fail(`--recompute: no sessions.jsonl or ledger.jsonl in ${OUT} (pass --out)`);
+  const r = recompute(OUT);
+  for (const n of r.notes) console.log(`  ${n}`);
+  console.log(`recomputed ${r.sessions} session record(s) (${r.sessionsLeft} already had step costs) and ${r.ledgerEntries} ledger entries in ${OUT}: the ledger adds up to $${r.ledgerAfterUsd.toFixed(3)}, before $${r.ledgerBeforeUsd.toFixed(3)}`);
+  if (r.sessions || r.ledgerEntries) console.log('  the files as they were: sessions.jsonl.before-recompute, ledger.jsonl.before-recompute');
+  process.exit(0);
+}
 // short path: Windows MAX_PATH with worktrees
 const WORK = path.resolve(arg('work', path.join(path.parse(ROOT).root, 'ar-sess'))!);
 const SCENARIO = loadScenario(arg('scenario', 'taskboard-01')!) ?? fail(`unknown scenario: ${arg('scenario')} (bench/tasks/sessions/<id>/scenario.json)`);
@@ -174,6 +191,8 @@ for (const [a, rep] of order) {
   const sessionId = randomUUID();
   const steps: Array<Record<string, unknown>> = [];
   const passed: boolean[] = [];
+  // what the last step with a total reported: a resumed step's total goes on from it
+  let before: Reported | null = null;
   let stopped: string | undefined;
   let mcpLast: { seen: boolean; servers: string[]; routerTools: number } | undefined;
   console.log(`session ${key} (${sessionId})`);
@@ -182,7 +201,7 @@ for (const [a, rep] of order) {
     const cap = Math.min(CAP[step.level]!, remaining);
     if (cap < CAP[step.level]! / 2) { stopped = `budget stop before step ${step.id}: $${remaining.toFixed(2)} left`; break; }
     const stepKey = `${key}|${step.id}`;
-    const streamFile = path.join(OUT, 'streams', `${stepKey.replace(/[^A-Za-z0-9_.-]/g, '_')}.jsonl`);
+    const streamFile = streamFileOf(OUT, stepKey);
     const args = claudeArgs({ lead: LEAD, effort: EFFORT, capUsd: cap, settings: settings(), ...(a !== 'direct' ? { pluginDir: path.join(ROOT, 'plugin') } : {}),
       agentTool: a !== 'direct' || DIRECT_AGENT_TOOL, strictMcp: a === 'direct' || !ROUTER_MCP, session: { id: sessionId, resume: i > 0 } });
     // decision 218: the lead's model for the router's hooks, as in measure107
@@ -191,8 +210,10 @@ for (const [a, rep] of order) {
     console.log(`  step ${step.id} ${step.level} ${step.kind} (cap $${cap.toFixed(2)})`);
     const r = await runCaptured(bin.cmd, [...bin.prefix, ...args], { cwd: ws.repo, env, input: step.prompt, timeoutSec: step.limits.timeoutSec, streamFile });
     const endedAt = new Date().toISOString();
-    const cost = stepCost(r.lines, r.result);
-    fs.appendFileSync(ledgerFile, JSON.stringify({ key: stepKey, costUsd: cost.costUsd, at: endedAt }) + '\n');
+    const now = reported(r.lines, r.result);
+    const cost: StepCost = stepCost(r.lines, now, before);
+    if (cost.costBasis !== 'none') before = now;
+    fs.appendFileSync(ledgerFile, JSON.stringify({ key: stepKey, costUsd: cost.costUsd, costBasis: cost.costBasis, reportedTotalUsd: cost.reportedTotalUsd, sessionId, at: endedAt }) + '\n');
     // the arrangement asked for, in the session asked for: otherwise this is not the measurement (cost in the ledger, no record)
     const mcp = mcpSeen(r.lines, a !== 'direct' && ROUTER_MCP);
     const sawSession = sessionIdSeen(r.lines);
@@ -207,24 +228,24 @@ for (const [a, rep] of order) {
     passed.push(graded.pass);
     const context = leadContext(r.lines);
     const router = home ? routerStep(home, r.startedAt, endedAt) : null;
-    const out = r.result as { num_turns?: number; is_error?: boolean; subtype?: string; result?: string } | null;
+    const out = r.result as { is_error?: boolean; subtype?: string; result?: string } | null;
     steps.push({
       id: step.id, kind: step.kind, level: step.level, resumed: i > 0,
       passed: graded.pass, status: stepStatus(passed, i), ownPassed: graded.own.ok, regressions: graded.regressions, fixtureFail: graded.fixtureFail, grade: graded.detail,
-      ...cost, wallSeconds: Math.round(r.ms / 1000), leadTurns: out?.num_turns ?? null, context, ...diff,
+      ...cost, wallSeconds: Math.round(r.ms / 1000), leadTurns: leadTurns(r.lines), context, ...diff,
       ...(router ? { router } : {}),
       timedOut: r.timedOut, error: out?.is_error ? String(out.subtype ?? out.result ?? '').slice(0, 300) : (out ? undefined : r.stderr.slice(-300)),
       phases: analysePhases(r.lines, r.ms, null),
     });
     const routed = router ? ` ${router.requests.map(q => `${q.level} ${q.outcome ?? 'open'}`).join(' + ') || 'no request'} (lead ${router.requests[0]?.leadClass ?? '?'})` : '';
-    console.log(`    -> ${graded.pass ? 'PASS' : 'FAIL'} ${graded.detail} $${cost.costUsd.toFixed(3)} (stream input $${cost.streamInputUsd.toFixed(3)}) ${Math.round(r.ms / 1000)}s${routed}`);
+    const how = cost.costBasis === 'difference' ? `of the session's $${cost.reportedTotalUsd.toFixed(3)} so far` : cost.costBasis === 'own-total' ? 'its total did not go on from the step before' : cost.costBasis === 'none' ? 'no total reported' : 'the first total';
+    const check = cost.sinceLastResultUsd !== null && Math.abs(cost.sinceLastResultUsd - cost.costUsd) > 0.001 ? `; the process itself counted $${cost.sinceLastResultUsd.toFixed(3)}` : '';
+    console.log(`    -> ${graded.pass ? 'PASS' : 'FAIL'} ${graded.detail} $${cost.costUsd.toFixed(3)} (${how}${check}; stream input $${cost.streamInputUsd.toFixed(3)}) ${Math.round(r.ms / 1000)}s${routed}`);
     console.log(`       lead context: ${context.calls} calls, first ${context.firstTokens ?? '-'} (cache read ${context.firstCacheReadTokens ?? '-'}), last ${context.lastTokens ?? '-'}, max ${context.maxTokens ?? '-'} tokens${context.compactions ? `, ${context.compactions} compaction(s)` : ''}; spent $${spent().toFixed(2)} / $${BUDGET}`);
     if (!r.result && !r.lines.length) { stopped = `step ${step.id}: claude printed nothing (${r.stderr.slice(-200).trim() || `exit ${r.code}`})`; break; }
   }
   stopDaemon();
   if (stopped) { console.log(`session ${key} not recorded: ${stopped}`); if (/budget stop/.test(stopped)) break; continue; }
-  const totals = steps.map(s => Number(s.costUsd));
-  const cost = sessionCost(totals);
   const firstFailed = passed.indexOf(false);
   const ctx = steps.map(s => s.context as ReturnType<typeof leadContext>);
   const rec = {
@@ -233,8 +254,8 @@ for (const [a, rep] of order) {
     mcp: mcpLast,
     steps,
     totals: {
-      // the session's cost by the reading the step totals support; both figures are kept
-      costUsd: cost.reading === 'per-step' ? cost.sumUsd : null, costReading: cost.reading, sumOfStepTotalsUsd: cost.sumUsd, lastStepTotalUsd: cost.lastUsd,
+      // the steps' own costs added up: the last reported total, unless a step's total started again (costReading 'mixed')
+      ...sessionCost(steps as unknown as StepCost[]),
       streamInputUsd: Math.round(steps.reduce((s, x) => s + Number(x.streamInputUsd), 0) * 1e6) / 1e6,
       wallSeconds: steps.reduce((s, x) => s + Number(x.wallSeconds), 0),
       stepsPassed: passed.filter(Boolean).length, steps: steps.length,
@@ -250,7 +271,7 @@ for (const [a, rep] of order) {
   fs.appendFileSync(sessionsFile, JSON.stringify(rec) + '\n');
   const t = rec.totals;
   console.log(`  session ${key}: ${t.stepsPassed}/${t.steps} steps pass${t.firstFailedStep ? ` (first failure: step ${t.firstFailedStep})` : ''}, final state ${t.finalAllPass ? 'passes' : 'fails'}, ${t.wallSeconds}s`);
-  console.log(`    cost: step totals add up to $${t.sumOfStepTotalsUsd.toFixed(3)}${t.costReading === 'per-step' ? '' : `; the totals never went down, so they may run on over the session (then the session cost $${t.lastStepTotalUsd.toFixed(3)}): compare each step's costUsd with its streamInputUsd`}`);
+  console.log(`    cost: $${t.costUsd.toFixed(3)}${t.costReading === 'mixed' ? ` (a step's total did not go on from the step before; the last reported total is $${t.lastReportedTotalUsd.toFixed(3)})` : ''}${t.sinceLastResultUsd === null ? '' : `, the processes themselves counted $${t.sinceLastResultUsd.toFixed(3)}`}`);
   console.log(`    lead context after step 1: ${t.leadContextFirstStep ?? '-'} tokens, after the last step: ${t.leadContextLastStep ?? '-'}, largest call: ${t.leadContextMax ?? '-'}`);
 }
 console.log(`done. spent $${spent().toFixed(2)} of $${BUDGET}. sessions: ${sessionsFile}`);
