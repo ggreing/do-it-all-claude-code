@@ -1,0 +1,96 @@
+{
+  "id": "taskboard-01",
+  "fixture": "taskboard",
+  "title": "taskboard 한 세션: 기능, 버그 수정, 기능, 작은 확장, 확장, 리팩터",
+  "grade": {
+    "cmd": "node --test \"test/**/*.test.ts\" \".bench-hidden/*.test.ts\""
+  },
+  "steps": [
+    {
+      "id": "01",
+      "kind": "feature",
+      "level": "L1",
+      "title": "태스크 마감일(dueDate) 및 지연 태스크 조회 추가",
+      "prompt": "taskboard에 마감일 기능을 넣어 주세요.\n\n1. 태스크 생성 입력(`NewTaskInput`)에 선택 필드 `dueDate?: string | null` 추가 (`'YYYY-MM-DD'` 형식의 날짜 문자열). `Task`에도 `dueDate: string | null` 필드를 추가하고, 지정하지 않았거나 `null`이면 `null`로 저장합니다.\n2. 검증: `dueDate`가 주어졌는데 문자열이 아니거나, `YYYY-MM-DD` 형식(연 4자리, 월/일 2자리)이 아니거나, 존재하지 않는 날짜(`'2023-02-29'`, `'2024-13-01'`, `'2024-04-31'` 등)면 기존 검증 에러와 같은 방식으로 `ValidationError`를 던지고 `details`에 정확히 `'dueDate must be a valid date in YYYY-MM-DD format'`을 넣어 주세요. 그러면 `handlers.createTask`는 기존처럼 400 `{ error: 'Validation failed', details: [...] }`을 반환하게 됩니다. (`'2024-02-29'`처럼 윤년 날짜는 유효)\n3. `TaskService.listOverdueTasks(today: string): Task[]` 추가. `today`도 `'YYYY-MM-DD'`. `dueDate`가 있고 `dueDate < today`이며 status가 `done`/`cancelled`가 아닌 태스크만 반환합니다 (마감일이 오늘인 건 지연 아님). 정렬은 `dueDate` 오름차순, 같으면 생성 순. `today`가 유효한 날짜가 아니면 `ValidationError`, details는 `['today must be a valid date in YYYY-MM-DD format']`.\n4. 핸들러 `handlers.listOverdueTasks(req)` 추가: `req.query.today`를 받아서 200 `{ items: Task[] }`를 반환, `today`가 없거나 잘못되면 400 (위 ValidationError가 기존 에러 매핑을 그대로 탐).",
+      "hidden_tests": [
+        "steps/01/hidden/due-dates.test.ts"
+      ],
+      "oracle": "steps/01/oracle/",
+      "limits": {
+        "timeoutSec": 600
+      }
+    },
+    {
+      "id": "02",
+      "kind": "fix",
+      "level": "L1",
+      "title": "태스크 상태 전이(취소) 버그 수정",
+      "prompt": "taskboard 상태 전이 쪽 버그입니다. 태스크를 취소(`cancelled`)하려고 하면 todo든 in_progress든 항상 409가 나요. 그리고 지금 상태와 같은 상태로 바꾸는 요청(예: todo → todo)도 409가 나는데, 이건 에러 대신 그냥 아무 것도 안 하는 게 맞습니다.\n\n올바른 규칙 (`TaskService.changeStatus(taskId, status)`, `startTask` / `completeTask` / `cancelTask`, 그리고 `handlers.updateStatus({ params: { id }, body: { status } })` 모두 동일하게 적용):\n- todo → in_progress, cancelled 허용\n- in_progress → todo, done, cancelled 허용\n- done → in_progress 허용 (reopen)\n- cancelled → 어떤 상태로도 불가 (종료 상태)\n- 위에 없는 전이는 `ConflictError`, 메시지는 기존 형식 그대로 `Invalid status transition: <from> -> <to>` (예: `Invalid status transition: cancelled -> todo`). 핸들러 응답은 409, body `{ error: '<그 메시지>' }`.\n- 현재 상태와 같은 상태로의 요청은 에러 없이 현재 태스크를 그대로 반환하고, 저장도 하지 않아서 `updatedAt`이 바뀌면 안 됩니다. 핸들러는 200.\n\n알 수 없는 status 값에 대한 400 처리 등 나머지 동작은 그대로 두세요.",
+      "hidden_tests": [
+        "steps/02/hidden/status-transitions.test.ts"
+      ],
+      "oracle": "steps/02/oracle/",
+      "limits": {
+        "timeoutSec": 600
+      }
+    },
+    {
+      "id": "03",
+      "kind": "feature",
+      "level": "L2",
+      "title": "태스크 목록 필터링 + 페이지네이션 + 지연 필터",
+      "prompt": "taskboard 태스크 목록에 필터링과 페이지네이션을 넣어 주세요. 지금은 `handlers.listTasks`가 전체 태스크를 `{ items }`로 다 돌려줍니다. 계층에 맞게 나눠서 구현해 주세요 (필터링 자체는 repo, 검증·기본값은 service, 쿼리스트링 파싱은 handler).\n\n## Service\n`TaskService.queryTasks(query?: TaskQuery): TaskPage` 추가 (기존 `listTasks()`는 지금처럼 전체 배열 반환 유지).\n```ts\ninterface TaskQuery {\n  status?: TaskStatus[];       // 이 중 하나와 일치 (OR)\n  assigneeId?: string | null;  // 문자열이면 그 담당자, null이면 미배정 태스크만, 생략하면 필터 없음\n  priority?: Priority;\n  search?: string;             // title 부분 일치, 대소문자 무시\n  overdue?: string;            // 'YYYY-MM-DD'. 그 날짜 기준으로 지연된 태스크만 (아래 설명)\n  page?: number;               // 1부터 시작, 기본 1\n  pageSize?: number;           // 기본 20, 최대 100\n}\ninterface TaskPage {\n  items: Task[];\n  page: number;\n  pageSize: number;\n  total: number;       // 필터에 맞는 전체 개수 (페이지 적용 전)\n  totalPages: number;  // Math.ceil(total / pageSize), total이 0이면 0\n}\n```\n- 조건이 여러 개면 AND.\n- `overdue`는 앞에서 만든 지연 규칙을 그대로 씁니다: 마감일이 있고 `dueDate < overdue`이며 status가 `done`/`cancelled`가 아닌 태스크 (마감일이 그 날짜와 같으면 지연 아님). 정렬은 다른 조건과 마찬가지로 생성 순입니다.\n- 정렬은 생성 순 (먼저 만든 태스크가 먼저).\n- page가 마지막 페이지를 넘으면 에러가 아니라 `items: []` (total, totalPages는 정상 값).\n- 잘못된 값이면 `ValidationError` (details에 설명 문자열 1개 이상): status에 알 수 없는 값, 알 수 없는 priority, page가 1 이상의 정수가 아님, pageSize가 1~100 사이 정수가 아님, overdue가 유효한 `YYYY-MM-DD` 날짜가 아님.\n- `TaskQuery`, `TaskPage` 타입은 `src/index.ts`에서 export.\n\n## Handler\n`handlers.listTasks(req)`는 `req.query`(값은 전부 문자열)를 파싱해서 `queryTasks`로 넘기고 200 + `TaskPage`를 body로 반환합니다.\n- `status`: 쉼표 구분 목록 (`'todo,in_progress'`)\n- `assigneeId`: 사용자 id, 또는 `'none'`이면 미배정만\n- `priority`\n- `q`: title 검색어\n- `overdue`: `YYYY-MM-DD` 날짜\n- `page`, `pageSize`: 숫자 문자열. 정수가 아닌 값(`'abc'`, `'1.5'`)이나 범위를 벗어난 값은 400.\n\n쿼리가 없으면 `{ items: <처음 20개>, page: 1, pageSize: 20, total, totalPages }`. 잘못된 쿼리는 기존 에러 매핑대로 400 `{ error: 'Validation failed', details: [...] }`.",
+      "hidden_tests": [
+        "steps/03/hidden/list-filter-pagination.test.ts",
+        "steps/03/hidden/list-overdue-filter.test.ts"
+      ],
+      "oracle": "steps/03/oracle/",
+      "limits": {
+        "timeoutSec": 1200
+      }
+    },
+    {
+      "id": "04",
+      "kind": "extension",
+      "level": "L1",
+      "title": "태스크 목록 정렬 옵션",
+      "prompt": "방금 만든 목록 조회에 정렬 옵션을 넣어 주세요.\n\n`TaskQuery`에 선택 필드 두 개를 추가합니다.\n- `sort?: 'createdAt' | 'dueDate' | 'priority'` (기본 `createdAt`, 즉 지금처럼 생성 순)\n- `order?: 'asc' | 'desc'` (기본 `asc`)\n\n규칙:\n- `createdAt`: `asc`는 생성 순, `desc`는 그 반대.\n- `dueDate`: `asc`는 마감일이 이른 것부터, `desc`는 늦은 것부터. 마감일이 없는 태스크는 어느 방향이든 맨 뒤.\n- `priority`: `asc`는 low → medium → high, `desc`는 high → medium → low.\n- 정렬 값이 같은 태스크끼리는 방향과 상관없이 생성 순을 유지합니다 (마감일 없는 태스크끼리도).\n- 정렬은 필터를 적용한 결과에 하고, 그다음에 페이지를 자릅니다.\n- `sort`나 `order`가 위 값이 아니면 다른 잘못된 쿼리와 같이 `ValidationError` (details에 설명 문자열 1개 이상).\n\n`handlers.listTasks`는 쿼리스트링 `sort`, `order`를 그대로 넘깁니다 (잘못된 값이면 400). 두 옵션을 주지 않은 요청의 결과는 지금과 같아야 합니다.",
+      "hidden_tests": [
+        "steps/04/hidden/list-sort.test.ts"
+      ],
+      "oracle": "steps/04/oracle/",
+      "limits": {
+        "timeoutSec": 600
+      }
+    },
+    {
+      "id": "05",
+      "kind": "extension",
+      "level": "L2",
+      "title": "태스크 변경 이력(audit trail) + 마감일 변경",
+      "prompt": "taskboard에 태스크 변경 이력(audit trail)을 추가해 주세요. 누가 언제 무엇을 바꿨는지 태스크별로 조회할 수 있어야 합니다.\n\n## 이벤트 모델\n```ts\ntype AuditEventType = 'task.created' | 'task.assigned' | 'task.status_changed' | 'task.due_date_changed';\ninterface AuditEvent {\n  id: string;               // 이벤트마다 고유한 값\n  taskId: string;\n  type: AuditEventType;\n  actorId: string | null;   // 작업한 사용자 id, 모르면 null\n  at: string;               // ISO 8601. 그 변경으로 저장된 태스크의 updatedAt과 같은 값 (task.created는 createdAt)\n  changes: Record<string, { from: unknown; to: unknown }>;\n}\n```\n- `task.created`: `changes`는 `{}`\n- `task.assigned`: `{ assigneeId: { from: <이전 담당자 또는 null>, to: <새 담당자 또는 null> } }` (배정 해제도 이 이벤트)\n- `task.status_changed`: `{ status: { from: <이전 상태>, to: <새 상태> } }`\n- `task.due_date_changed`: `{ dueDate: { from: <이전 마감일 또는 null>, to: <새 마감일 또는 null> } }` (아래의 마감일 변경)\n- 실패한 작업(검증 에러, 404, 409 등)은 기록하지 않습니다.\n- 이미 같은 사람에게 배정된 태스크를 같은 사람에게 다시 배정하면 바뀌는 게 없으니 이벤트도 남기지 않습니다. 지금 상태와 같은 상태로 바꾸는 요청, 지금 마감일과 같은 마감일로 바꾸는 요청도 마찬가지입니다.\n- `AuditEvent`, `AuditEventType` 타입은 `src/index.ts`에서 export.\n\n## Service (`TaskService`)\n- 변경 메서드에 마지막 선택 인자 `actorId?: string | null` 추가 (생략하면 null): `createTask(input, actorId?)`, `assignTask(taskId, userId, actorId?)`, `changeStatus(taskId, status, actorId?)`, `startTask(taskId, actorId?)`, `completeTask(taskId, actorId?)`, `cancelTask(taskId, actorId?)`.\n- 마감일 변경 메서드 추가: `setDueDate(taskId: string, dueDate: string | null, actorId?: string | null): Task`. 지금은 마감일을 생성할 때만 정할 수 있는데, 이 메서드로 나중에 정하거나 바꾸거나(`null`이면 지움) 할 수 있게 합니다. `dueDate`가 `null`이 아닌데 유효한 `YYYY-MM-DD` 날짜가 아니면 생성 때와 같은 `ValidationError` (details는 정확히 `['dueDate must be a valid date in YYYY-MM-DD format']`), 없는 태스크면 `NotFoundError`. 값이 실제로 바뀌면 저장하고(`updatedAt` 갱신) `task.due_date_changed` 이벤트를 남기며, 같은 값이면 저장하지 않고 지금 태스크를 그대로 반환합니다.\n- `getTaskHistory(taskId: string): AuditEvent[]` 추가 — 그 태스크의 이벤트를 발생 순서대로 반환. 없는 태스크면 기존과 같은 `NotFoundError` (`Task not found: <id>`).\n- 이벤트 저장소는 태스크 repo와 분리된 in-memory audit log로 만들고 `createApp`에서 연결해 주세요. 시각은 `createApp({ now })`로 주입되는 같은 clock을 씁니다.\n\n## Handlers\n- 기존 `createTask`, `assignTask`, `updateStatus` 핸들러는 `req.userId`를 actorId로 넘깁니다 (없으면 null).\n- 새 핸들러 `handlers.setDueDate(req)`: `req.params.id`, body `{ dueDate: string | null }`, `req.userId`가 actorId. 200 + 바뀐 태스크를 반환합니다. body에 `dueDate`가 없거나 문자열/null이 아니거나 잘못된 날짜면 400 `{ error: 'Validation failed', details: ['dueDate must be a valid date in YYYY-MM-DD format'] }`, 없는 태스크면 404.\n- 새 핸들러 `handlers.getTaskHistory(req)`: `req.params.id`의 이력을 200 `{ items: AuditEvent[] }`로 반환, 없는 태스크면 404 `{ error: 'Task not found: <id>' }`.",
+      "hidden_tests": [
+        "steps/05/hidden/audit-trail.test.ts",
+        "steps/05/hidden/audit-due-date.test.ts"
+      ],
+      "oracle": "steps/05/oracle/",
+      "limits": {
+        "timeoutSec": 1200
+      }
+    },
+    {
+      "id": "06",
+      "kind": "refactor",
+      "level": "L2",
+      "title": "조회 로직을 TaskQueries로 분리",
+      "prompt": "`src/service/taskService.ts`가 많이 커졌습니다. 동작은 하나도 바꾸지 말고, 읽기 전용 조회를 따로 떼어 주세요.\n\n- 새 파일 `src/service/taskQueries.ts`에 `TaskQueries` 클래스를 만듭니다. `new TaskQueries(taskRepo)`처럼 태스크 repo 하나만 받고, 메서드는 `getTask(id)`, `listTasks()`, `queryTasks(query?)`, `listOverdueTasks(today)`입니다. 지금 `TaskService`의 같은 이름 메서드와 반환값·에러·검증 메시지가 완전히 같아야 합니다.\n- `TaskService`의 공개 메서드와 시그니처는 그대로 둡니다. 위 네 메서드는 직접 구현하지 않고, 호출될 때마다 자기 `TaskQueries` 인스턴스의 같은 이름 메서드를 부릅니다. 조회 로직이 두 곳에 있으면 안 됩니다.\n- 그 인스턴스는 `service.queries`로 읽을 수 있어야 하고, `createApp()`이 돌려주는 객체에도 `queries`로 넣습니다 (`app.queries === app.service.queries`).\n- `TaskQueries`를 `src/index.ts`에서 export합니다.\n- 핸들러, 변경 메서드, 이력 기록 등 나머지는 손대지 않아도 됩니다. 기존 테스트는 고치지 않고 전부 통과해야 합니다.",
+      "hidden_tests": [
+        "steps/06/hidden/task-queries.test.ts"
+      ],
+      "oracle": "steps/06/oracle/",
+      "limits": {
+        "timeoutSec": 1200
+      }
+    }
+  ]
+}

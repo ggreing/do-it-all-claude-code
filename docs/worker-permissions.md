@@ -64,17 +64,19 @@ If you want the coder to be able to run a single test file too, allow the target
 `"Bash(node --test *)"`, `"Bash(python -m pytest *)"` or `"Bash(npx vitest run *)"`. The same caution
 applies as above: the test file is a program the worker just wrote, and the router runs it as you.
 
-### When a project runs without worktree isolation
+### When workers share the checkout
 
-Worktree isolation (decision 192) is asked the first time the team is used in a project; until you turn it on
-(`do-it-all-claude-code project enable`), the team shares one checkout. In a shared checkout, a writer that
+Writers share one checkout by default, also when several run at the same time (decision 219). Worktree isolation
+(decision 192, asked the first time the team is used in a project, `do-it-all-claude-code project enable`) lets
+writers sent together each work in a git worktree instead, but only when none of them needs a file that is not
+committed, such as an architect's plan: a worktree starts from the last commit. In a shared checkout, a writer that
 finishes while another writer of the same request is still working gets its scope checked at once; the build
 and tests run when the last of them stops, on the whole tree. A failure there is recorded for that last
 writer, and the lead is told which other subtasks' changes the run also saw.
 
 Known limitation: a worker's out-of-scope changes are counted from its own edit-tool use, so a sibling that
 changes a file outside its scope with a Bash command (not an edit tool) is not counted as a scope violation
-for anyone. With isolation on, each worker has its own worktree and the question does not arise.
+for anyone. A worker in a worktree of its own has no siblings in its tree, so this does not come up there.
 
 ## What workers can't do, whatever you allow
 

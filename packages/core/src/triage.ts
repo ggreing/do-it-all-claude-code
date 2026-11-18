@@ -22,7 +22,7 @@
 // repository signals predicted the size of the fix (AUC 0.45-0.64), so stage 1 does not guess.
 import { DEFAULT_PRESETS } from './presets.ts';
 import { ladderStep } from './ladder.ts';
-import { ONE_FILE_DIRECT } from './tools.ts';
+import { SMALL_DIRECT } from './tools.ts';
 import type { Level, Role, TaskType, TeamPreset, TriageResult } from './types.ts';
 
 export interface TriageInput {
@@ -414,8 +414,9 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
   const l3 = 'roles' in escalation ? undefined : escalation.L3;
   // each role's model and effort are in its Agent call line below, so the team line gives the count and the step only
   const team = preset.roles.map(r => `${r.role} x${r.count} @${r.start}`).join('; ');
-  // Decision 83: a single writer works in the user's working tree (no merge step); only writers that
-  // run at the same time get their own worktree, and the lead merges those branches.
+  // Decision 83, narrowed by decision 219: writers work in the user's working tree (no merge step), also when
+  // several run at the same time with scopes that share no file (decision 192 verifies them once, at the last
+  // stop). A worktree each is the skill's exception, for a project with isolation on and no uncommitted input.
   const parallel = preset.roles.some(r => r.count > 1);
   const head = `[do-it-all-claude-code] level ${t.level} (source=${t.source}, confidence=${t.confidence.toFixed(2)}): ${t.rationale}`;
   if (preset.leadDirect) {
@@ -465,9 +466,12 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
   // public tasks, a Sonnet lead) the lead did 13 of the unclear requests itself, and the brief was a third of what
   // the router added to each of its calls. So each rule is said once, and what only parallel writers need is short.
   const order = '   What needs another subtask\'s result stays in order: an architect\'s plan first, a reviewer or tester after the writers.';
-  // decision 178 (다): in the measurement of decision 174 every L3 run had one writer at a time and whole-repo scopes
+  // decision 178 (다): in the measurement of decision 174 every L3 run had one writer at a time and whole-repo scopes.
+  // Decision 219: in the re-measure of decision 213 both L3 architects planned two coders "after: none" and the
+  // leads still sent them one after another; the parallel path then asked for a worktree each and a merge, and a
+  // worktree made from HEAD lacks the architect's uncommitted plan. Parallel writers now share the working tree.
   const writers = parallel
-    ? '   A writer that runs alone gets no isolation and edits the working tree directly. Independent parts that write different files or directories go to one coder subtask each, sent in one message so they run at the same time, each with a [scope: ...] no other subtask writes (a file several parts need belongs to one of them) and isolation "worktree"; then merge their branches (see the skill). The router refuses a writer whose scope overlaps one still running.'
+    ? '   Independent parts that write different files or directories go to one coder subtask each, sent in one message so they run at the same time, each with a [scope: ...] no other subtask writes (a file several parts need belongs to one of them). Subtasks an architect\'s plan marks "after: none" are such parts: send them together. Do not pass isolation: the writers share the working tree; the router checks each scope when its writer stops and runs the build and tests once, when the last one stops. The router refuses a writer whose scope overlaps one still running.'
     : '   Do not pass isolation: the subagent edits the working tree directly.';
   const result = `3. Wait for every subtask's <task-notification> (Agent calls finish in the background). The router runs build, typecheck, lint and tests for each subtask and sends you the result as a line that starts with "[do-it-all-claude-code] subtask <ID>". A report without that line is not verified yet: wait for the line, and do not run the build or the tests yourself. Then check with git diff --stat that the changes are in the working tree and answer the user. For verify blocks, step changes and HITL, follow the lead-orchestrator skill.`;
   if (uncertainTeam) {
@@ -476,15 +480,15 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
     return [
       head,
       `Routing is ON for this request (team preset ${preset.id}, budget $${t.budgetUsd}). You are the lead: keep your own work small (every call you make re-reads your whole context at the lead model's price).`,
-      'The router could not tell the size of this request from its wording, so you decide. To tell, you may open the one file you think it is.',
-      `- The whole change is in one file and about ${ONE_FILE_DIRECT.lines} changed lines or fewer: do not delegate. Call router_report_triage with kind "direct", level "L1", files 1, lines (your estimate) and confidence; when it answers leadDirect true, make the change yourself. A change that needs a second file (an export, a caller, a type) is not one file.`,
+      'The router could not tell the size of this request from its wording, so you decide. To tell, take one quick look at the file you suspect, then decide — one look to size it, not an exploration.',
+      `- The whole change fits in ${SMALL_DIRECT.files} files or fewer and about ${SMALL_DIRECT.lines} changed lines or fewer: do not delegate. Call router_report_triage with kind "direct", level "L1", files and lines (your estimates) and confidence; when it answers leadDirect true, make the change yourself.`,
       `- Otherwise delegate, and the staffing is yours: call only the roles the change needs. One coder subtask alone is right for a small change (fewer than ${TEAM_SIZE_RULE.files} files, one module). Use the rest of the team only when the change needs edits in ${TEAM_SIZE_RULE.files} or more files, or in ${TEAM_SIZE_RULE.dirs} or more modules or layers, or a design decision first (a new public API, schema or data model).`,
-      'When you delegate: Do not edit or write files yourself (unless the user explicitly asks you to), and do not open or read more source files to plan. Give the worker the user\'s request with the files and symbols it names; the worker investigates the code.',
+      'When you delegate: Do not edit or write files yourself (unless the user explicitly asks you to), and do not open or read more source files to plan. The router gives every worker the user\'s request as written, so do not copy it into a prompt: write the subtask (which part, the files and symbols it names, the acceptance check); the worker investigates the code.',
       'Call the Agent tool once per subtask (A, B, ...) with exactly these parameters:',
       ...agentCalls(preset),
       PROMPT_SHAPE,
       parallel
-        ? '   A writer that runs alone gets no isolation and edits the working tree directly. Two coders at the same time: parts that write different files, sent in one message, each with its own [scope: ...] and isolation "worktree"; then merge their branches (see the skill). An architect\'s plan comes first, a reviewer or tester after the writers.'
+        ? '   Do not pass isolation: writers edit the working tree directly. Two coders at the same time: parts that write different files, sent in one message, each with its own [scope: ...]; the router runs the build and tests once, when the last one stops. An architect\'s plan comes first, a reviewer or tester after the writers.'
         : writers,
       'Then wait for every subtask\'s <task-notification>. The router runs build, typecheck, lint and tests and sends you the result as a line that starts with "[do-it-all-claude-code] subtask <ID>". A report without that line is not verified yet: wait for the line, and do not run the build or the tests yourself. Then check git diff --stat and answer the user (verify blocks, step changes, HITL: the lead-orchestrator skill).',
       ...raise,
@@ -495,7 +499,8 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
     `team preset ${preset.id}: ${team}. budget $${t.budgetUsd}.`,
     'Routing is ON for this request. You are the lead: delegate, and keep your own work small (every call you make re-reads your whole context at the lead model\'s price).',
     'Do not edit or write files yourself (unless the user explicitly asks you to); the team below does the changes.',
-    'Do not open or read source files to plan: give the worker the user\'s request with the files and symbols it names; the worker investigates the code. At most one quick search if you cannot tell which files are involved.',
+    // Decision 219: both L3 architect briefs of decision 213 copied the user's request, 13 to 17 s of the lead's first look
+    'Do not open or read source files to plan. The router gives every worker the user\'s request as written, so do not copy it into a prompt: write the subtask (which part, the files and symbols it names, the acceptance check); the worker investigates the code. At most one quick search if you cannot tell which files are involved.',
     '1. Split the request into subtasks A, B, ... (a single subtask A is fine for a small change).',
     ...(parallel ? [order] : []),
     '2. Call the Agent tool once per subtask with exactly these parameters:',

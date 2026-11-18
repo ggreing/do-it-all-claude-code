@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as core from '@do-it-all-claude-code/core';
 import * as relayMod from '../../../plugin/hooks/relay.mjs';
+import { toRouterEvent } from '@do-it-all-claude-code/adapter-claude-code';
 import { sealedFake, type WireRecord } from '../../core/test/sealed-fake.ts';
 
 function tmpHome() { return fs.mkdtempSync(path.join(os.tmpdir(), 'ar-relay-')); }
@@ -168,6 +169,23 @@ test('other events do not carry routerClient or verifyEnv', async () => {
   const body = await bodyReceived('Stop', { hook_event_name: 'Stop', session_id: 's' });
   assert.equal('routerClient' in body, false);
   assert.equal('verifyEnv' in body, false);
+});
+
+test('decision 218: UserPromptSubmit carries ANTHROPIC_MODEL of the hook\'s environment as routerLaunchModel; no other event does', async () => {
+  const prompt = { hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'fix it' };
+  assert.equal((await bodyReceived('UserPromptSubmit', prompt, { ANTHROPIC_MODEL: 'claude-opus-5-5[1m]' })).routerLaunchModel, 'claude-opus-5-5[1m]');
+  assert.equal((await bodyReceived('UserPromptSubmit', prompt, { ANTHROPIC_MODEL: ' opus ' })).routerLaunchModel, 'opus');
+  // not set, or not a model name: nothing is added
+  assert.equal('routerLaunchModel' in await bodyReceived('UserPromptSubmit', prompt, { ANTHROPIC_MODEL: '' }), false);
+  assert.equal('routerLaunchModel' in await bodyReceived('UserPromptSubmit', prompt, { ANTHROPIC_MODEL: 'a model; rm -rf' }), false);
+  // a prompt inside a subagent, and any other event
+  assert.equal('routerLaunchModel' in await bodyReceived('UserPromptSubmit', { ...prompt, agent_id: 'a1' }, { ANTHROPIC_MODEL: 'opus' }), false);
+  assert.equal('routerLaunchModel' in await bodyReceived('Stop', { hook_event_name: 'Stop', session_id: 's' }, { ANTHROPIC_MODEL: 'opus' }), false);
+  assert.equal('routerLaunchModel' in await bodyReceived('SessionStart', { hook_event_name: 'SessionStart', session_id: 's', source: 'startup' }, { ANTHROPIC_MODEL: 'opus' }), false);
+  // the event the adapter builds from it; a hook input's own `model` stays apart
+  assert.equal(toRouterEvent({ ...prompt, routerLaunchModel: 'opus' }).launchModel, 'opus');
+  assert.equal(toRouterEvent({ ...prompt, routerLaunchModel: 'opus' }).leadModel, undefined);
+  assert.equal(toRouterEvent({ ...prompt, routerLaunchModel: 'not a model' }).launchModel, undefined);
 });
 
 test('VERIFY_ENV_PASSTHROUGH stays in sync with core', () => {

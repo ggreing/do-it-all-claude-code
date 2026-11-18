@@ -11,6 +11,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { costUsd, type Usage } from '@do-it-all-claude-code/core';
 import { relativeWithin } from './canonical.ts';
+import { promptKind } from './payload.ts';
 
 export const MAX_TRANSCRIPT_BYTES = 256 * 1024 * 1024;
 
@@ -226,8 +227,10 @@ const TAIL_BYTES = 256 * 1024;
 /**
  * Decision 117: the model of the main session's latest assistant message (the end of its transcript),
  * for a hook input that does not name the lead's model. Undefined when there is none yet.
+ * Decision 218: with the time of that message (its line's `timestamp`) when the line has one, so the caller
+ * can tell it from a later record of the session's model.
  */
-export function readLastModel(file: string | undefined): string | undefined {
+export function readLastModelAt(file: string | undefined): { model: string; at?: string } | undefined {
   if (!file || !path.isAbsolute(file) || path.extname(file) !== '.jsonl') return undefined;
   let tail: string;
   try {
@@ -246,12 +249,65 @@ export function readLastModel(file: string | undefined): string | undefined {
     const line = lines[i]!;
     if (!line.includes('"assistant"')) continue;
     try {
-      const o = JSON.parse(line) as { type?: unknown; isSidechain?: unknown; message?: { model?: unknown } };
+      const o = JSON.parse(line) as { type?: unknown; isSidechain?: unknown; timestamp?: unknown; message?: { model?: unknown } };
       const model = o.message?.model;
-      if (o.type === 'assistant' && o.isSidechain !== true && typeof model === 'string' && model !== '<synthetic>') return model;
+      if (o.type === 'assistant' && o.isSidechain !== true && typeof model === 'string' && model !== '<synthetic>') {
+        const ms = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
+        return Number.isFinite(ms) ? { model, at: new Date(ms).toISOString() } : { model };
+      }
     } catch { /* a line cut at the read limit */ }
   }
   return undefined;
+}
+
+/** Decision 219: user lines of a transcript that the user did not type: slash command records, `!` shell lines, notices. */
+const NOT_TYPED = /^\s*(?:<(?:command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat|bash-input|bash-stdout|bash-stderr|task-notification|cross-session-message)\b|\[Request interrupted)/;
+/** Decision 219: how far back from the end the user's prompts of the current request are looked for. */
+export const PROMPT_TAIL_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Decision 219: the last `count` prompts the user typed in the main session, oldest first, from the end of its
+ * transcript. Tool results, task notifications, slash command records, meta lines and subagent lines are not
+ * prompts. Undefined when the file cannot be read or holds fewer than `count` within PROMPT_TAIL_BYTES: the caller
+ * then has no request text, never a partial one. Nothing read here is kept: the text goes back to the caller only.
+ */
+export function readUserPrompts(file: string | undefined, count: number): string[] | undefined {
+  if (!file || !path.isAbsolute(file) || path.extname(file) !== '.jsonl' || !(count >= 1)) return undefined;
+  let tail: string;
+  let cut = false;
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      const len = Math.min(size, PROMPT_TAIL_BYTES);
+      cut = len < size;
+      const buf = Buffer.alloc(len);
+      tail = buf.subarray(0, fs.readSync(fd, buf, 0, len, size - len)).toString('utf8');
+    } finally { fs.closeSync(fd); }
+  } catch {
+    return undefined;
+  }
+  const lines = tail.split(/\r?\n/);
+  if (cut) lines.shift();   // the first line begins before the read window
+  const found: string[] = [];
+  for (let i = lines.length - 1; i >= 0 && found.length < count; i--) {
+    const line = lines[i]!;
+    if (!line.includes('"user"')) continue;
+    let o: { type?: unknown; isSidechain?: unknown; isMeta?: unknown; isCompactSummary?: unknown; message?: { content?: unknown } };
+    try { o = JSON.parse(line); } catch { continue; }
+    if (o.type !== 'user' || o.isSidechain === true || o.isMeta === true || o.isCompactSummary === true) continue;
+    const c = o.message?.content;
+    let text: string;
+    if (typeof c === 'string') text = c;
+    else if (Array.isArray(c)) {
+      if (c.some(b => (b as { type?: unknown })?.type === 'tool_result')) continue;
+      text = c.map(b => ((b as { type?: unknown; text?: unknown })?.type === 'text' && typeof (b as { text?: unknown }).text === 'string' ? (b as { text: string }).text : ''))
+        .filter(Boolean).join('\n');
+    } else continue;
+    if (!text.trim() || NOT_TYPED.test(text) || promptKind(text) !== 'user') continue;
+    found.push(text);
+  }
+  return found.length === count ? found.reverse() : undefined;
 }
 
 const TAG = /\[subtask:([A-Za-z0-9_-]+)\]/;

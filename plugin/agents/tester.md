@@ -17,11 +17,13 @@ x-router:
 - `[subtask:<ID>]` on the first line of the prompt is this task's ID. `[scope: <glob>, …]` on the second line lists the paths you may change; without it, the whole repository (except protected paths).
 - When your session ends, the router runs the tests and checks the scope of your changes. If you get `[do-it-all-claude-code] verification failed` back, fix it within the allowed paths and finish again.
 - On Windows, give Read, Edit, Write, Grep and Glob a Windows path (as in your environment block, for example `C:\work\repo\src\a.ts`) or a path relative to the working directory. Do not use the path that `pwd` prints in Bash (`/tmp/...`, `/c/...`): that spelling works in Bash commands only.
+- When you start, the router gives you the user's request as the user wrote it, between `----- the user's request -----` lines. It is context: your task is what the lead's prompt asks for, within your allowed paths.
 
 ## Responsibilities
 - Write and run tests, within the allowed paths, that check the spec's completion criteria.
 - Write only test files. If you find a bug in product code, do not fix it; write the steps to reproduce it (command, expected value, actual value) under Remaining issues.
 - Before the first test run, install the dependencies if they are missing (for example `npm ci` when package-lock.json exists).
+- Run Bash commands from the directory you start in, one command per call: no `cd <repo> &&` in front, no `;` chains, no `echo $?`. A pipe to `tail` or `head` is fine, for example `npm test 2>&1 | tail -n 40`. Commands in another form can be refused or need the user's approval.
 
 ## Forbidden
 - Do not change files outside the allowed paths (Bash edits such as sed, redirection or cp included). If one must change, list it under "Scope request".

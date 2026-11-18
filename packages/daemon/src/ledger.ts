@@ -862,6 +862,16 @@ export class Ledger {
     return { awaitingMs: n(r?.awaiting_ms), awaitingSince: sn(r?.awaiting_since), prompt: sn(r?.prompt_text) };
   }
 
+  /**
+   * Decision 219: how many prompts the user typed in a request (the one that opened it and the answers to the lead's
+   * questions): its prompt_submit events of the main session whose stored kind is "user". The kind is stored, the text
+   * is not, so the router reads the text back from the transcript.
+   */
+  userPromptCount(requestId: string): number {
+    const rows = this.db.prepare(`SELECT payload FROM events WHERE request_id = ? AND type = 'prompt_submit' AND agent_id IS NULL ORDER BY id`).all(requestId) as Row[];
+    return rows.filter(r => storedPromptKind(s(r.payload)) === 'user').length;
+  }
+
   /** The prompt_submit events of a request: their prompt_id and whether they were task notifications. */
   promptEvents(requestId: string): Array<{ promptId: string | null; notification: boolean }> {
     return (this.db.prepare(`SELECT payload FROM events WHERE request_id = ? AND type = 'prompt_submit' ORDER BY id`).all(requestId) as Row[]).map(r => {
@@ -1075,14 +1085,21 @@ export class Ledger {
 
   // ------------------------------------------------------------------ sessions (decision 117)
 
+  /** `at` is when the model was seen. A record seen later is kept (decision 218: an event replayed from the spool). */
   setSessionLeadModel(sessionId: string, model: string, at: string): void {
     this.db.prepare(`INSERT INTO sessions (session_id, lead_model, seen_at) VALUES (?, ?, ?)
-      ON CONFLICT (session_id) DO UPDATE SET lead_model = excluded.lead_model, seen_at = excluded.seen_at`).run(sessionId, model, at);
+      ON CONFLICT (session_id) DO UPDATE SET lead_model = excluded.lead_model, seen_at = excluded.seen_at
+      WHERE excluded.seen_at >= sessions.seen_at`).run(sessionId, model, at);
+  }
+
+  /** The session's model as last seen (SessionStart, the status line), with the time it was seen. */
+  sessionLead(sessionId: string): { model: string; seenAt: string } | undefined {
+    const r = this.db.prepare('SELECT lead_model, seen_at FROM sessions WHERE session_id = ?').get(sessionId) as Row | undefined;
+    return r && r.lead_model !== null && r.lead_model !== undefined ? { model: s(r.lead_model), seenAt: s(r.seen_at) } : undefined;
   }
 
   sessionLeadModel(sessionId: string): string | undefined {
-    const r = this.db.prepare('SELECT lead_model FROM sessions WHERE session_id = ?').get(sessionId) as Row | undefined;
-    return r && r.lead_model !== null && r.lead_model !== undefined ? s(r.lead_model) : undefined;
+    return this.sessionLead(sessionId)?.model;
   }
 
   // ------------------------------------------------------------------ clients (decision 97)

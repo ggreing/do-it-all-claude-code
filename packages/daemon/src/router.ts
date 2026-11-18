@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ACCEPTANCE_RULE_VERSION, ACCEPT_WINDOW_PROMPTS, MAX_STEP_UPS, PRICING_PER_MTOK, ROUTER_TOOL_PREFIX, RouterToolCall, dissatisfactionRule, holdoutDraw, isReask, promptSimilarity, afterEasyPass, afterOtherResult, afterRaise, atDispatch, costUsd, decideEscalation, formatTriageContext, isRouterToolName, l3SignalRoles, ladderStep,
-  effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, normalizeLeadTriage, oneFileDirect, parseRoleFile, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, smallStaysWithLead, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
+  effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, normalizeLeadTriage, parseRoleFile, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, smallChangeDirect, smallStaysWithLead, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
   type LeadModelClass, type Level, type ProjectIsolationInput, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
   type RouterEvent, type RouterToolErrorCode, type RouterToolName, type RouterToolResult, type Step, type TeamPreset, type TriageResult, type Usage,
   type UpdateNotice, type VerifySignal,
@@ -33,7 +33,7 @@ import { checkAgentCall, concurrentWriterProblem, isAgentTool, managedRole, pars
 import { SessionQueue } from './queue.ts';
 import { TicketStore, addGlobs, removeGlobs, sortScopeGlobs, toolUseIdOf } from './tools.ts';
 import {
-  readEditedPaths, readLastModel, readLeadUsage, readSubtaskTag, readTranscriptUsage, subagentTranscriptPath, waitForQuiet,
+  readEditedPaths, readLastModelAt, readLeadUsage, readSubtaskTag, readTranscriptUsage, readUserPrompts, subagentTranscriptPath, waitForQuiet,
   type LeadUsage, type TranscriptUsage,
 } from './transcript.ts';
 import {
@@ -66,6 +66,12 @@ export interface RouterOptions {
   now?: () => Date;
   /** Decision 163: a newer release, for the session start (shown to the user only) and the status view. */
   updates?: { sessionNotice(): string | undefined; status(): UpdateNotice | null };
+  /**
+   * Decision 219: give each worker the user's request, read from the lead's transcript when the worker starts, and
+   * refuse a first Agent call of a request whose request cannot be read. Default on; the tests that post hook events
+   * without a transcript turn it off.
+   */
+  requestHandover?: boolean;
 }
 
 type Deferred = { deferred: () => Promise<() => RouterDecision> };
@@ -140,6 +146,7 @@ export class Router {
     this.#now = o.now ?? (() => new Date());
     this.#updates = o.updates;
     this.#leadNotes = new LeadNotes(this.#home.root, this.#now);
+    this.#requestHandover = o.requestHandover !== false;
   }
 
   readonly #basePresets: Record<Level, TeamPreset> | undefined;
@@ -213,8 +220,10 @@ export class Router {
 
   async #handle(ev: RouterEvent): Promise<Outcome> {
     const ctx: Ctx = { requestId: null };
-    if (ev.leadModel && !ev.agentId && !ev.spooled) {
-      try { this.ledger.setSessionLeadModel(ev.sessionId, ev.leadModel, this.#at()); } catch { /* best effort */ }
+    if (ev.leadModel && !ev.agentId) {
+      // decision 218: an event replayed from the spool (a SessionStart while the daemon was down) counts from the
+      // time the hook ran; the ledger keeps a record seen later than that
+      try { this.ledger.setSessionLeadModel(ev.sessionId, ev.leadModel, ev.spooled && ev.receivedAt ? ev.receivedAt : this.#at()); } catch { /* best effort */ }
     }
     try {
       switch (ev.type) {
@@ -429,12 +438,20 @@ export class Router {
   }
 
   /**
-   * Decision 117: the lead's model for a new request: the hook input's, else the model of the main
-   * transcript's latest assistant message (a /model switch shows there), else the last one a hook input
-   * of the session named. Undefined: not known ('other', delegation from L1, decision 144).
+   * Decisions 117, 218: the lead's model for a new request. The hook input's when it names one. Else there are
+   * two observations, and the one seen later counts: the session's record (SessionStart of an interactive
+   * session, the status line, which follows /model at once) and the model of the main transcript's latest
+   * assistant message (the model that answered last). A transcript line without a time counts as the later one.
+   * With neither, ANTHROPIC_MODEL of the session's environment as the relay hook saw it (a -p run's first
+   * prompt). Undefined: not known ('other', decision 144).
    */
   #leadModelFor(ev: RouterEvent): string | undefined {
-    return ev.leadModel ?? readLastModel(str(ev.raw.transcript_path)) ?? this.ledger.sessionLeadModel(ev.sessionId);
+    if (ev.leadModel) return ev.leadModel;
+    const answered = readLastModelAt(str(ev.raw.transcript_path));
+    let seen: { model: string; seenAt: string } | undefined;
+    try { seen = this.ledger.sessionLead(ev.sessionId); } catch { /* best effort */ }
+    if (answered && seen) return answered.at !== undefined && seen.seenAt > answered.at ? seen.model : answered.model;
+    return answered?.model ?? seen?.model ?? ev.launchModel;
   }
 
   /** Opens a request; a pending `/router level` of the session (kept in the ledger) applies to it and is used up. */
@@ -732,6 +749,36 @@ export class Router {
 
   /** Decision 178 (다): refusals of a concurrent writer, per request, subtask and reason. */
   readonly #writerRefusals = new Map<string, number>();
+  /** Decision 219: whether the router gives workers the user's request (RouterOptions.requestHandover). */
+  readonly #requestHandover: boolean;
+  /** Decision 219: requests whose lead was told once that the router could not read the request (it then puts it in the prompt). */
+  readonly #requestUnreadTold = new Set<string>();
+
+  /**
+   * Decision 219: the user's request as the worker gets it: the prompts the user typed in the request (the opening one
+   * and the answers to the lead's questions), read from the lead's transcript, masked, cut at REQUEST_TEXT_MAX.
+   * Undefined when they cannot all be read. The text is not kept: it goes into the hook's answer only.
+   */
+  #requestText(requestId: string, transcript: string | undefined): string | undefined {
+    const count = Math.min(this.ledger.userPromptCount(requestId), MAX_REQUEST_PROMPTS);
+    const prompts = count >= 1 ? readUserPrompts(transcript, count) : undefined;
+    if (!prompts) return undefined;
+    const text = prompts.map((p, i) => (i === 0 ? '' : 'The user\'s answer to the lead\'s question:\n') + redact(p, this.#secrets).trim()).join('\n\n');
+    return text.length > REQUEST_TEXT_MAX ? `${text.slice(0, REQUEST_TEXT_MAX)}\n… (cut at ${REQUEST_TEXT_MAX} characters)` : text;
+  }
+
+  /** Decision 219: what a worker is told when it starts: the user's request, and the reproduction note when it applies. */
+  #workerStart(sub: SubtaskRow, ev: RouterEvent): RouterDecision {
+    const repro = this.#reproStart(sub, ev).context;
+    let request: string | undefined;
+    if (this.#requestHandover && !ev.spooled) {
+      request = this.#requestText(sub.requestId, str(ev.raw.transcript_path));
+      if (request === undefined) this.#log.warn('the user\'s request could not be read for a worker', { requestId: sub.requestId, subtaskId: sub.id });
+      else this.#log.info('the user\'s request was given to a worker', { requestId: sub.requestId, subtaskId: sub.id, chars: request.length });
+    }
+    const parts = [request !== undefined ? `${REQUEST_NOTE}\n${REQUEST_OPEN}\n${request}\n${REQUEST_CLOSE}` : undefined, repro].filter((x): x is string => !!x);
+    return parts.length ? { context: parts.join('\n\n') } : NONE;
+  }
 
   #preToolUse(ev: RouterEvent, ctx: Ctx): RouterDecision {
     if (isRouterToolName(ev.toolName)) return this.#preRouterTool(ev, ctx);
@@ -756,7 +803,9 @@ export class Router {
       return deny('the Agent prompt must start with "[subtask:<ID>]" on its first line (ID: letters, digits, "_", "-", "."; for example "[subtask:A1]"). '
         + 'Optionally put "[scope: <glob>, <glob>]" on the second line to set the files the subagent may edit.');
     }
-    const scope = parseScope(prompt);
+    // decision 219: a reviewer's empty [scope: ] line was refused in 3 of 5 delegated runs of decision 213, and the
+    // lead typed the whole brief again; a role whose file has no edit tool writes nothing, so the empty line stands
+    const scope = parseScope(prompt, { readOnly: this.#roleReadOnly(role) });
     if (!scope.ok) return deny(`subtask ${tag}: ${scope.reason}`);
     // decision 175: a coder subtask may carry "[repro: required]" or "[repro: off <reason>]" after the scope line
     const reproOn = role === 'coder' && reproMode(this.#config) !== 'off';
@@ -789,8 +838,8 @@ export class Router {
       ...(str(input.effort) ? { effort: str(input.effort)! } : {}),
     });
     if (!check.ok) return ev.spooled ? NONE : deny(check.reason);
-    // decision 178 (다): a writer sent while another writer of this request runs needs a scope no running writer shares,
-    // and its own worktree; the reason says how to send it instead. After two refusals of the same subtask for the
+    // decision 178 (다): a writer sent while another writer of this request runs needs a scope no running writer shares
+    // (in the shared working tree by default, decision 219); the reason says how to send it instead. After two refusals of the same subtask for the
     // same reason a third identical call is let through (logged); sending one writer after another always passes.
     const writerProblem = concurrentWriterProblem({
       tag, role, scope: scope.allowed, isolation: str(input.isolation),
@@ -802,6 +851,13 @@ export class Router {
       if (refused <= 2) { this.#writerRefusals.set(key, refused); return deny(writerProblem.reason); }
       this.#writerRefusals.delete(key);
       this.#log.warn('a concurrent writer was let through after two refusals', { requestId: req.id, subtask: tag, kind: writerProblem.kind });
+    }
+    // Decision 219: the worker gets the user's request from the router, so the lead does not copy it. When the router
+    // cannot read it (no transcript, as under --no-session-persistence), the lead is told once for the request and
+    // sends the call again with the request in the prompt; a later call of the request goes through.
+    if (this.#requestHandover && !ev.spooled && !this.#requestUnreadTold.has(req.id) && this.#requestText(req.id, str(ev.raw.transcript_path)) === undefined) {
+      this.#requestUnreadTold.add(req.id);
+      return deny(`subtask ${tag}: the router could not read the user's request from this session's transcript, so it cannot give it to the worker. Put the request in the prompt and send the call again.`);
     }
 
     // Compatibility #9: without its scope file the guard cannot hold the subagent to its scope, so the call
@@ -849,7 +905,7 @@ export class Router {
       if (sub) {
         if (sub.status === 'pending') this.ledger.updateSubtask(sub.requestId, sub.id, { status: 'running' }, this.#at());
         this.#writeAgentFile(agentId, ev.sessionId, sub);
-        return this.#reproStart(sub, ev);
+        return this.#workerStart(sub, ev);
       }
       return NONE;
     }
@@ -881,7 +937,7 @@ export class Router {
     if (env) this.#rememberEnv(agentId, env);
     this.ledger.updateSubtask(sub.requestId, sub.id, { agentId, status: 'running' }, this.#at());
     this.#writeAgentFile(agentId, ev.sessionId, sub);
-    return this.#reproStart(sub, ev);
+    return this.#workerStart(sub, ev);
   }
 
   /** Audit E16: re-pairs an agent with the subtask its transcript's tag names (same request, same agent type, still active). */
@@ -1132,8 +1188,11 @@ export class Router {
         }
         // Decision 87: tell the lead not to spend a turn re-running what the router already ran. Decision 178 (가): a
         // lead re-ran a whole suite (407 s) after a passing verify; when verify ran no tests, a targeted run is enough.
+        // Decision 219: a subtask that changed no file (a reviewer) has no changed code to test, and a lead told to
+        // run "those tests" spent a turn on the coder's tests the router had already run.
         return `${head}: verify passed — ${checks || 'no checks configured'}${tail} (${testsRan
           ? 'already verified by the router: do not re-run the test suite; for more assurance run only the tests of the changed code'
+          : files === '0' ? 'it changed no files, so there is nothing to test'
           : 'verify ran no tests for this change: if the changed code has tests, run those once yourself, a targeted run, not the whole suite'}).`
           + this.#passedNote(agent.requestId, sub, agentId) + leadNote(sub.repro);
       case 'failed':
@@ -1785,6 +1844,21 @@ export class Router {
    * (<pluginDir>/agents/<role>.md, core readRoleFile). No tools line = all tools (Claude Code), so it writes.
    * A role file that cannot be read counts as read-only: an unknown sibling never excuses a change.
    */
+  /**
+   * Decision 219: whether a role is known to write nothing: its role file has no edit tool. Not #roleWrites' false,
+   * which also covers a role file that cannot be read; without the plugin folder, the default reviewer alone.
+   */
+  #roleReadOnly(role: string): boolean {
+    if (!this.#config.pluginDir) return role === 'reviewer';
+    if (!isRoleName(role)) return false;
+    try {
+      const text = this.#roleText(role);
+      if (roleFloorProblems(text, role).length) return false;
+      const tools = parseRoleFile(text).tools.map(x => x.replace(/\(.*$/, '').trim());
+      return tools.length > 0 && !tools.some(x => EDIT_TOOLS.has(x));
+    } catch { return false; }
+  }
+
   #roleWrites(role: string): boolean {
     if (!this.#config.pluginDir || !isRoleName(role)) return false;
     try {
@@ -1864,7 +1938,7 @@ export class Router {
     const open = subs.filter(s => s.status === 'pending' || s.status === 'running');
     const line = (s: SubtaskRow) => {
       const st = ladderStep(s.step);
-      const scope = s.unscoped ? 'whole repo' : s.writeScope.join(', ');
+      const scope = s.unscoped ? 'whole repo' : s.writeScope.join(', ') || 'none (writes nothing)';
       return `  - ${s.id}: ${s.role}#${s.slot} @${s.step} (model=${st.alias}, effort=${st.effort}) ${s.status}${s.verdict ? `/${s.verdict}` : ''}; scope: ${scope}`;
     };
     return {
@@ -2047,14 +2121,14 @@ export class Router {
       } else if (wantL3 && this.#offersL3(req)) {
         now = this.#replanAs(req, 'L3', presets, why);
       }
-    } else if (oneFileDirect(v) && !req.team.leadDirect && !req.forcedFrom && req.triage.source !== 'manual') {
-      // decision 178: one file and a small edit, by the lead's own look at the code: the lead makes it alone
+    } else if (smallChangeDirect(v, leadModelClass(req.leadModel ?? undefined), this.#config.delegateFrom) && !req.team.leadDirect && !req.forcedFrom && req.triage.source !== 'manual') {
+      // decisions 178, 220: a small change by the lead's own look (<= 1 file / 15 lines for an Opus lead, <= 2 files / 60 lines otherwise): the lead makes it alone
       const { presets } = this.#resolver.resolve(bind.cwd, req.leadModel ?? undefined);
       const level: Level = v.level === 'L0' ? 'L0' : 'L1';
       const team: TeamPreset = { ...presets[level], leadDirect: true };
       const t = withKind({
         ...req.triage, level, preset: team.id, budgetUsd: team.budgetUsd,
-        rationale: `re-planned as lead-direct ${level}: the lead judged the change as one file and about ${v.lines} line${v.lines === 1 ? '' : 's'} (confidence ${v.confidence.toFixed(2)}) (${req.triage.rationale})`,
+        rationale: `re-planned as lead-direct ${level}: the lead judged the change as ${v.files === 1 ? 'one file' : `${v.files} files`} and about ${v.lines} line${v.lines === 1 ? '' : 's'} (confidence ${v.confidence.toFixed(2)}) (${req.triage.rationale})`,
       }, team);
       this.#log.info('request re-planned as lead-direct', { requestId: req.id, from: req.level, to: level });
       now = this.ledger.escalateRequest(req.id, t, team);
@@ -2750,13 +2824,20 @@ const reproOpen = (r: ReproRecord | null | undefined): boolean => !!r?.required 
 /** Decision 175: required, counted, and not shown by a test that failed in its body and passes unchanged. */
 const reproNotEasy = (r: ReproRecord | null | undefined): boolean => !!r?.required && !r.observe
   && (r.state !== 'reproduced' || Object.values(r.files ?? {}).some(f => f.kind !== 'body'));
+// Decision 219: the user's request handed to each worker when it starts (read from the lead's transcript, not stored).
+const REQUEST_TEXT_MAX = 16_384;
+const MAX_REQUEST_PROMPTS = 20;
+const REQUEST_NOTE = '[do-it-all-claude-code] The user\'s request, as the user wrote it. The router gives it to every worker of the request, so the lead\'s prompt does not repeat it. '
+  + 'It is context: your subtask is what the lead\'s prompt asks for, within its [scope: ...]; leave the other parts of the request to the workers they were given to.';
+const REQUEST_OPEN = '----- the user\'s request -----';
+const REQUEST_CLOSE = '----- end of the user\'s request -----';
 const REPRO_BRIEF = 'Reproduce first is on: a coder subtask for a bug fix or a new behavior first writes a test that fails, which the router runs. After the [scope: ...] line of such a subtask put "[repro: required]" and include the test folder in its scope; '
   + 'for work a test cannot show put "[repro: off <reason>]" with a reason of refactor, docs, config, no-tests or not-testable. Without the line the router decides.';
 
 // decision 192 (Q3): the one-time project-setup note added to the first delegation in a project not yet set up.
 const PROJECT_SETUP_BRIEF = 'Project setup (first delegation here): this project is not set up for parallel isolation yet. '
-  + 'With it ON, subagents work in parallel, each in its own git worktree. With it OFF (the default until you choose), writers whose scopes share no file '
-  + 'still work at the same time in this checkout; a writer whose scope overlaps a running one is sent after it, and the build and tests run once, when the last writer stops. '
+  + 'Either way, writers whose scopes share no file work at the same time in this checkout; a writer whose scope overlaps a running one is sent after it, and the build and tests run once, when the last writer stops. '
+  + 'With it ON, writers sent together may instead each get a git worktree of their own, when none of them needs a file that is not committed. '
   + `Before you start delegating, ask the user once whether to turn it on. End that question to the user with "${AWAITING_USER_MARKER}" on its own line, `
   + 'so the router counts the request as waiting for them. Then apply their answer with the router tool '
   + `${ROUTER_TOOL_PREFIX}router_project_isolation (load it with ToolSearch first): only AFTER the user says yes, call it with { enable: true, userConfirmed: true }; if they say no, call { enable: false }. `

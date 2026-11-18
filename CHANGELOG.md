@@ -5,6 +5,71 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **The lead's model on a session's first request.** Claude Code names the model to hooks only when an
+  interactive session starts, and the router planned a first request without one as if the lead were unknown:
+  an Opus lead then kept a small fix it should have delegated. Now a non-interactive run (`claude -p`) is read
+  from `ANTHROPIC_MODEL` when that is set, and a session that started while the router was down gets its model
+  when the router comes up. When two sources name different models, the one seen later counts, so the request
+  right after `/model` is planned for the new model. A `claude -p --model …` run without the variable still
+  starts as an unknown lead: Claude Code gives a hook nothing to read the flag from.
+- **Tests that cannot start, when pytest stops at the first error.** Run with `-x`, pytest ends a collection
+  error with exit 1, the code of a failed test, and the router counted it as a miss and moved the work up to a
+  stronger model. It is now read as "the tests did not start" like the same error with exit 2: by its
+  "ERROR collecting" header and a summary that counts errors and no test. A test that ran and failed, a test
+  whose setup raised, and an import the worker broke are failures as before.
+- **The bench and the end-to-end scripts no longer write your Claude Code settings.** `init --yes` installs the
+  generated plugin with `claude plugin marketplace add`, and these scripts ran it for a temporary router home:
+  since 0.5.0 each run left a `do-it-all-local` marketplace in your settings that pointed at a folder which was
+  then deleted (Claude Code warns that it cannot load it). `init` now takes `--no-plugin`, which registers
+  nothing, and the scripts pass it and give the router's CLI a config folder of the run. If you ran a bench or
+  end-to-end script from a 0.5.0 or 0.5.1 checkout, look at `claude plugin marketplace list`: when
+  `do-it-all-local` points at a temporary folder, remove both with
+  `claude plugin uninstall do-it-all-claude-code@do-it-all-local` and
+  `claude plugin marketplace remove do-it-all-local`.
+
+### Changed
+
+- **Bench.** `scripts/measure107.ts` takes `--profile save|balanced|quality` for the router runs, and passes the
+  lead's model to the router as a session's environment would. Every run may now use `echo`, `pwd` and `wc`
+  without a prompt, as a user at the terminal allows; earlier runs refused them. New:
+  `scripts/measure-session.ts` puts the six requests of a scenario (`bench/tasks/sessions/taskboard-01`) to one
+  session, router on and off, and records each step's result and cost and how the lead's context grows.
+- **Parallel writers share the checkout.** When a change has independent parts, the lead now sends one coder
+  for each part in one message, in the working tree, and the router runs the build and tests once, when the last
+  of them stops. A subtask the architect's plan marks `after: none` is such a part. Before, the brief asked for a
+  git worktree per writer and a merge, and in the fair re-measure the leads ran every planned pair one after
+  another: a worktree starts from the last commit, so it lacks the architect's uncommitted plan. A worktree per
+  writer is now only for a project with worktree isolation on, and only when no part needs an uncommitted file.
+  This narrows decision 83: turning isolation on no longer means that every parallel writer gets a worktree.
+  Details: [docs/design/team-speed.md](docs/design/team-speed.md).
+- **A reviewer may have an empty `[scope: ]` line.** It writes nothing, so the router takes the empty line as
+  that instead of refusing the call; a writer's empty line is still refused. In the re-measure a reviewer was
+  refused for it in three of five delegated runs, and the lead wrote the whole brief again.
+- **A reviewer's pass line no longer asks the lead to run tests.** It changed no file, so there is nothing to
+  test; the lead had spent a turn running the coder's tests, which the router had already run.
+- **Each worker gets the user's request from the router.** When a worker starts, the router reads the request
+  from the lead's session transcript (the prompt that opened it and the user's answers to the lead's questions)
+  and gives it to the worker, masked, so the lead writes only the subtask instead of copying the request into
+  every prompt. In the re-measure that copying was most of the lead's first look on the larger tasks. The text is
+  not stored: it reaches the worker and nothing else, not the ledger, the daemon's log, the team office or its
+  tabs. When there is no transcript to read (`claude -p --no-session-persistence`), the first worker call of a
+  request is refused once with a note to put the request in the prompt.
+- **Workers may check a tool's version before their tests.** `node --version`, `node -v`, `npm --version`,
+  `npm -v`, `python --version` and `python3 --version` are allowed exactly as written, with nothing after them;
+  in the re-measure two workers' test runs were refused for a version check in front of them. The coder and
+  tester roles also ask for one command per call from the folder they start in, without a `cd` in front, which
+  avoids most of Claude Code's own approval questions.
+- **A Sonnet lead keeps a change of up to two files.** After its first look, when the lead estimates the whole
+  change at two files or fewer and about 60 changed lines or fewer, the router keeps it with the lead rather than
+  a team; before, the bound was one file and about 15 lines (decision 178). An Opus lead keeps the one-file bound
+  (its workers are cheap against its own calls), and a `delegateFrom` the user set for the lead's class still
+  delegates these requests. The uncertain-team brief now tells the lead to take one quick look at the file it
+  suspects before deciding, rather than not to explore. The bound was fitted on one run of the 20 public
+  SWE-bench tasks — the four requests the lead delegated or took back there were all two files, and two cost far
+  more than the lead alone — so treat the exact numbers as provisional.
+
 ## [0.5.1] — 2026-11-18
 
 ### Fixed

@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { analysePhases, phaseReport, type LedgerTiming, type StreamLine } from '../src/kpi/phases.ts';
 import { runCaptured, TIMING_FLAGS } from '../src/kpi/capture.ts';
 import { ROUTER_TOOL_PREFIX, mcpSeen } from '../src/kpi/router-mcp.ts';
+import { freePort, noPluginCalls, safeEnv, type SafeEnv } from './kpi-safe-env.ts';
 
 const BENCH = fileURLToPath(new URL('..', import.meta.url));
 const ROOT = path.resolve(BENCH, '..');
@@ -139,19 +140,25 @@ test('measure107 smoke run with a fake claude: the timing flags are passed, the 
   ]));
   const out = path.join(tmp, 'out');
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--api-key-helper', 'not-a-real-helper', '--arrangements', 'direct', '--tasks', 'c-l1-01', '--lead', 'sonnet', '--out', out, '--work', path.join(tmp, 'work')], {
-    encoding: 'utf8', timeout: 240_000, env: { ...process.env, BENCH_CLAUDE_BIN: fake },
+    encoding: 'utf8', timeout: 240_000, env: safeEnv(tmp, 'direct', { BENCH_CLAUDE_BIN: fake }).env,
   });
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  const call = JSON.parse(fs.readFileSync(path.join(fakeDir, 'calls.jsonl'), 'utf8').trim().split('\n')[0]!) as { args: string[] };
+  const call = JSON.parse(fs.readFileSync(path.join(fakeDir, 'calls.jsonl'), 'utf8').trim().split('\n')[0]!) as { args: string[]; anthropicModel: string | null };
   for (const f of TIMING_FLAGS) assert.ok(call.args.includes(f), f);
+  // decision 218: the lead's model is also in the run's environment (the router's hooks read it there), same value as --model
+  assert.deepEqual([call.args[call.args.indexOf('--model') + 1], call.anthropicModel], ['sonnet', 'sonnet']);
   assert.ok(!call.args.includes('json') || call.args[call.args.indexOf('--output-format') + 1] === 'stream-json');
   // decision 213: router off has the Agent tool, as a user's session has, and no plugin; the record says so
   assert.equal(call.args[call.args.indexOf('--tools') + 1], 'Read,Edit,Write,Glob,Grep,Bash,Agent');
   assert.ok(!call.args.includes('--plugin-dir'));
   assert.match(call.args[call.args.indexOf('--append-system-prompt') + 1] ?? '', /wait until every subagent you started has finished/);
   assert.match(r.stdout, /direct runs with the Agent tool/);
-  const rec = JSON.parse(fs.readFileSync(path.join(out, 'runs.jsonl'), 'utf8').trim()) as { costUsd: number; leadCalls: number; agentTool: boolean; phases: { startupSeconds: number; leadToolCalls: number; notMeasured: string[] } };
-  assert.equal(rec.agentTool, true);
+  // decision 222: echo, pwd and wc are allowed without a prompt, in every arrangement; the plan and the record say so
+  const allowed = call.args.slice(call.args.indexOf('--allowedTools') + 1, call.args.indexOf('--append-system-prompt'));
+  for (const t of ['Agent', 'Bash(git diff*)', 'Bash(echo *)', 'Bash(pwd)', 'Bash(wc *)']) assert.ok(allowed.includes(t), t);
+  assert.match(r.stdout, /every run may also use Bash\(echo \*\), Bash\(pwd\), Bash\(wc \*\) without a prompt \(decision 222/);
+  const rec = JSON.parse(fs.readFileSync(path.join(out, 'runs.jsonl'), 'utf8').trim()) as { costUsd: number; leadCalls: number; agentTool: boolean; allowedSince222: boolean; phases: { startupSeconds: number; leadToolCalls: number; notMeasured: string[] } };
+  assert.deepEqual([rec.agentTool, rec.allowedSince222], [true, true]);
   assert.deepEqual([rec.costUsd, rec.leadCalls, rec.phases.leadToolCalls], [0.01, 2, 1]);
   assert.ok(rec.phases.startupSeconds >= 0 && rec.phases.notMeasured.some(n => /no daemon ledger/.test(n)));
   assert.ok(fs.existsSync(path.join(out, 'streams', 'c-l1-01_direct.jsonl')));
@@ -162,6 +169,15 @@ test('measure107 smoke run with a fake claude: the timing flags are passed, the 
   const old = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--only-plan', '--direct-no-agent-tool', '--arrangements', 'direct', '--tasks', 'c-l1-01', '--out', path.join(tmp, 'out-old'), '--work', path.join(tmp, 'work')], { encoding: 'utf8', timeout: 60_000 });
   assert.equal(old.status, 0, old.stdout + old.stderr);
   assert.match(old.stdout, /direct runs without the Agent tool/);
+  // --profile is the router's: a direct-only plan does not mention it, and a value that is no profile is refused
+  assert.doesNotMatch(old.stdout, /profile/);
+  const plan = (...extra: string[]) => spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--only-plan', '--tasks', 'c-l1-01', '--out', path.join(tmp, 'out-plan'), '--work', path.join(tmp, 'work'), ...extra], { encoding: 'utf8', timeout: 60_000 });
+  assert.match(plan('--arrangements', 'direct,auto', '--profile', 'save').stdout, /router runs with the router's MCP server, profile save$/m);
+  for (const bad of [['--profile', 'fast'], ['--profile']]) {
+    const r2 = plan('--arrangements', 'auto', ...bad);
+    assert.equal(r2.status, 2, r2.stdout + r2.stderr);
+    assert.match(r2.stderr, /--profile (must be one of|needs a value:) save, balanced, quality/);
+  }
 });
 
 // ---- decision 213: the router's MCP server in a router run
@@ -190,7 +206,7 @@ test('what a session loaded as MCP servers, against what the run asked for', () 
 });
 
 /** A measure107 run of one router arrangement with the fake claude, whose session starts with `init`. */
-function routerRun(name: string, init: Record<string, unknown>, extra: string[] = []): { r: ReturnType<typeof spawnSync>; args: string[]; out: string } {
+function routerRun(name: string, init: Record<string, unknown>, extra: string[] = []): { r: ReturnType<typeof spawnSync>; args: string[]; out: string; anthropicModel: string | null; work: string; claudeOnPath: ReturnType<SafeEnv['calls']> } {
   const fakeDir = path.join(tmp, `fake-${name}`);
   fs.mkdirSync(fakeDir);
   const fake = path.join(fakeDir, 'kpi-fake-claude.mjs');
@@ -200,18 +216,30 @@ function routerRun(name: string, init: Record<string, unknown>, extra: string[] 
     { pauseMs: 50, line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 1, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 } } } },
   ]));
   const out = path.join(tmp, `out-${name}`);
+  const safe = safeEnv(tmp, name, { BENCH_CLAUDE_BIN: fake });
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--api-key-helper', 'not-a-real-helper', '--arrangements', 'auto', '--tasks', 'c-l1-01', '--lead', 'sonnet',
-    '--out', out, '--work', path.join(tmp, `work-${name}`), ...extra], { encoding: 'utf8', timeout: 240_000, env: { ...process.env, BENCH_CLAUDE_BIN: fake } });
+    '--out', out, '--work', path.join(tmp, `work-${name}`), '--daemon-port', String(freePort()), ...extra], { encoding: 'utf8', timeout: 240_000, env: safe.env });
   const calls = path.join(fakeDir, 'calls.jsonl');
-  const args = fs.existsSync(calls) ? (JSON.parse(fs.readFileSync(calls, 'utf8').trim().split('\n')[0]!) as { args: string[] }).args : [];
-  return { r, args, out };
+  const first = fs.existsSync(calls) ? JSON.parse(fs.readFileSync(calls, 'utf8').trim().split('\n')[0]!) as { args: string[]; anthropicModel: string | null } : undefined;
+  return { r, args: first?.args ?? [], out, anthropicModel: first?.anthropicModel ?? null, work: path.join(tmp, `work-${name}`), claudeOnPath: safe.calls() };
 }
 const records = (out: string) => (fs.existsSync(path.join(out, 'runs.jsonl')) ? fs.readFileSync(path.join(out, 'runs.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as Record<string, any>) : []);
 
 test('measure107 router run: the plugin\'s MCP server is loaded as in a session, checked before and after the run, and recorded', () => {
   const tools = ['router_get_plan', 'router_report_triage'].map(t => `${ROUTER_TOOL_PREFIX}${t}`);
-  const { r, args, out } = routerRun('mcp', { mcp_servers: [ROUTER_SERVER], tools });
+  const { r, args, out, anthropicModel, work, claudeOnPath } = routerRun('mcp', { mcp_servers: [ROUTER_SERVER], tools });
   assert.equal(r.status, 0, String(r.stdout) + String(r.stderr));
+  // The user's Claude Code is never touched: the router's init registers no plugin (no `claude plugin ...` call),
+  // and whatever the router's CLI asks the claude on the PATH, it asks with a config folder of this run.
+  assert.equal(noPluginCalls(claudeOnPath), undefined);
+  assert.ok(claudeOnPath.length > 0, 'the recording claude on the PATH was reached (init asks for the version)');
+  for (const c of claudeOnPath) assert.equal(path.normalize(c.configDir), path.join(work, 'c-l1-01-auto', 'claude-init'), `claude ${c.args}`);
+  assert.ok(!fs.existsSync(path.join(work, 'c-l1-01-auto', 'router-home', 'plugin', '.claude-plugin', 'marketplace.json')), 'no local marketplace is written for a run');
+  // decision 218: the router's hooks learn the lead's model from the run's environment
+  assert.equal(anthropicModel, 'sonnet');
+  // no --profile: the router's default, and the plan and the record say which
+  assert.match(String(r.stdout), /router runs with the router's MCP server, profile balanced \(the router's default\)/);
+  assert.equal(records(out)[0]!.profile, 'balanced');
   // no --strict-mcp-config: the plugin's own declaration is what loads the server; the plugin is there
   assert.ok(!args.includes('--strict-mcp-config') && !args.includes('--mcp-config'), args.join(' '));
   assert.equal(args[args.indexOf('--plugin-dir') + 1], path.join(ROOT, 'plugin'));
@@ -224,10 +252,13 @@ test('measure107 router run: the plugin\'s MCP server is loaded as in a session,
 });
 
 test('measure107 router run: --no-router-mcp is the earlier arrangement; a session with the wrong servers stops the measurement and leaves no record', () => {
-  const old = routerRun('strict', { mcp_servers: [] }, ['--no-router-mcp']);
+  const old = routerRun('strict', { mcp_servers: [] }, ['--no-router-mcp', '--profile', 'quality']);
   assert.equal(old.r.status, 0, String(old.r.stdout) + String(old.r.stderr));
   assert.ok(old.args.includes('--strict-mcp-config'));
-  assert.match(String(old.r.stdout), /router runs without the router's MCP server/);
+  assert.match(String(old.r.stdout), /router runs without the router's MCP server, profile quality$/m);
+  // --profile: the run's router config has it, and the record says so
+  const cfg = JSON.parse(fs.readFileSync(path.join(old.work, 'c-l1-01-auto', 'router-home', 'config.json'), 'utf8')) as { profile?: string; holdoutRate?: number };
+  assert.deepEqual([cfg.profile, cfg.holdoutRate, records(old.out)[0]!.profile], ['quality', 0, 'quality']);
   assert.doesNotMatch(String(old.r.stdout), /router MCP server: /);
   assert.deepEqual([records(old.out)[0]!.routerMcp, records(old.out)[0]!.mcp.servers], [false, []]);
 
@@ -236,5 +267,48 @@ test('measure107 router run: --no-router-mcp is the earlier arrangement; a sessi
   assert.equal(missing.r.status, 3, String(missing.r.stdout) + String(missing.r.stderr));
   assert.match(String(missing.r.stderr), /stopped after c-l1-01\|auto \(\$0\.010 spent on it\): the router's MCP server is not in the session/);
   assert.deepEqual(records(missing.out), []);
+  // neither run registered a plugin in Claude Code
+  assert.deepEqual([noPluginCalls(old.claudeOnPath), noPluginCalls(missing.claudeOnPath)], [undefined, undefined]);
   assert.match(fs.readFileSync(path.join(missing.out, 'ledger.jsonl'), 'utf8'), /"costUsd":0\.01/);
+});
+
+// ---- the measurement scripts and the user's Claude Code settings
+//
+// `init --yes` installs the generated plugin: `claude plugin marketplace add <router home>/plugin --scope user`.
+// From a measurement script, whose router home is a temporary folder, that wrote the user's own settings. The
+// scripts now pass --no-plugin and give the CLI a config folder of the run; this pins both, and shows that the
+// recording `claude` of these tests does see the call when it is made.
+
+test('the router\'s init with --no-plugin asks Claude Code for nothing but its version; without the flag it registers a marketplace', () => {
+  const cli = path.join(ROOT, 'packages', 'cli', 'src', 'index.ts');
+  const init = (name: string, ...extra: string[]) => {
+    const safe = safeEnv(tmp, name, { DO_IT_ALL_CLAUDE_CODE_HOME: path.join(tmp, `home-${name}`) });
+    delete safe.env.AGENTIC_ROUTER_HOME;   // the previous release's home would be moved into the temp one
+    const r = spawnSync(process.execPath, [cli, 'init', '--yes', ...extra, '--claude-settings', path.join(tmp, `cs-${name}.json`), '--project', path.join(tmp, `project-${name}`)],
+      { encoding: 'utf8', timeout: 120_000, env: safe.env, cwd: tmp });
+    return { r, calls: safe.calls(), configDir: String(safe.env.CLAUDE_CONFIG_DIR), home: path.join(tmp, `home-${name}`) };
+  };
+  const quiet = init('quiet', '--no-plugin');
+  assert.equal(quiet.r.status, 0, quiet.r.stdout + quiet.r.stderr);
+  assert.equal(noPluginCalls(quiet.calls), undefined);
+  assert.deepEqual([...new Set(quiet.calls.map(c => c.args))], ['--version']);
+  assert.match(quiet.r.stdout, /Plugin not installed in Claude Code \(--no-plugin\)\. Load it with: claude --plugin-dir /);
+  assert.ok(fs.existsSync(path.join(quiet.home, 'plugin', 'hooks', 'hooks.json')), 'the plugin is still generated in the router home');
+  assert.ok(!fs.existsSync(path.join(quiet.home, 'plugin', '.claude-plugin', 'marketplace.json')), 'no local marketplace manifest');
+  // the control: the same call without the flag does go to `claude plugin ...`, here caught by the recording
+  // claude and pointed at this test's own config folder
+  const loud = init('loud');
+  assert.equal(loud.r.status, 0, loud.r.stdout + loud.r.stderr);
+  assert.match(noPluginCalls(loud.calls) ?? '', /^claude plugin marketplace add .*--scope user/);
+  for (const c of loud.calls) assert.equal(path.normalize(c.configDir), path.normalize(loud.configDir));
+});
+
+test('the measurement and end-to-end scripts never run the router\'s init without --no-plugin and a config folder of their own', () => {
+  for (const file of ['scripts/measure107.ts', 'scripts/measure-session.ts', 'scripts/e2e.ts', 'scripts/guard-e2e/run.mjs']) {
+    const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    const inits = text.split('\n').filter(l => /cli\((?:home, )?'init'/.test(l));
+    assert.ok(inits.length > 0, `${file}: an init call`);
+    for (const l of inits) assert.match(l, /'init', '--yes', '--no-plugin'/, `${file}: ${l.trim()}`);
+    assert.ok(/CLAUDE_CONFIG_DIR: path\.join\(.*'claude-init'\)/.test(text), `${file}: the CLI's own CLAUDE_CONFIG_DIR`);
+  }
 });

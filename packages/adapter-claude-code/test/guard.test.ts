@@ -29,6 +29,7 @@ test('guard policy constants equal core/security.ts', () => {
   assert.deepEqual(guard.NETWORK_COMMANDS, core.NETWORK_COMMANDS);
   assert.deepEqual(guard.PACKAGE_INSTALL_PREFIXES, core.PACKAGE_INSTALL_PREFIXES);
   assert.deepEqual(guard.ROUTER_BASH_ALLOW, core.ROUTER_BASH_ALLOW);
+  assert.deepEqual(guard.ROUTER_BASH_ALLOW_EXACT, core.ROUTER_BASH_ALLOW_EXACT);
   assert.deepEqual(guard.ROUTER_BASH_DENY_OPTIONS, core.ROUTER_BASH_DENY_OPTIONS);
   assert.deepEqual(guard.UNSCOPED_PROTECTED_PATHS, core.UNSCOPED_PROTECTED_PATHS);
   assert.deepEqual(guard.GUARD_EXTRA_DENY_OPTIONS, core.GUARD_EXTRA_DENY_OPTIONS);
@@ -107,6 +108,20 @@ test('Bash allowlist: ordinary dev commands pass', () => {
 });
 test('Bash allowlist: everything off the list and every bypass is denied', () => {
   for (const c of bashDeny) assert.ok(guard.classifyBash(c), `deny: ${c}`);
+});
+// decision 222: in the re-measure of decision 213 two workers' test runs were refused for a `node --version` before them
+test('decision 222: a version query passes exactly as written, and nothing more', () => {
+  for (const c of core.ROUTER_BASH_ALLOW_EXACT) assert.equal(guard.classifyBash(c), null, `allow: ${c}`);
+  for (const c of ['node.exe --version', 'node "--version"', 'cd packages/web && node --version && npm test 2>&1 | tail -n 12', 'node -v && node --test test/a.test.ts'])
+    assert.equal(guard.classifyBash(c), null, `allow: ${c}`);
+  for (const c of [
+    'node --version && rm x', 'node -v -e "fetch()"', 'node --version --eval "fetch()"', 'node -v script.js', 'node --version -p 1',
+    'npm --version run x', 'npm -v exec x', 'python --version -c "import os"', 'python3 --version x.py', 'node', 'node -V', 'NODE_OPTIONS=x node -v',
+    '/usr/bin/node --version',
+  ]) assert.ok(guard.classifyBash(c), `deny: ${c}`);
+  // the prefix entries keep their prefix behaviour; the exact list adds no prefix entry
+  assert.equal(guard.classifyBash('node --test --test-reporter=spec test/a.test.ts'), null);
+  assert.ok(!core.ROUTER_BASH_ALLOW.some(e => core.ROUTER_BASH_ALLOW_EXACT.includes(e)));
 });
 test('bare set dumps the env (deny); set with options is allowed', () => {
   assert.ok(guard.classifyBash('set'));

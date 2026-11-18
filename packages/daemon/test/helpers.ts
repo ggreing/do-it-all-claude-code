@@ -102,9 +102,13 @@ export const claudeAdapter: ClientAdapter = await loadClaudeCodeAdapter();
 
 export interface TestDaemon extends Daemon { home: string }
 
+/**
+ * A daemon on a temp home. Decision 219: the hook events of most tests name a transcript that does not exist, so the
+ * router's request handover is off unless a test turns it on (`requestHandover: true`) and writes the transcript.
+ */
 export async function startTestDaemon(opts: DaemonOptions & { config?: Record<string, unknown> } = {}): Promise<TestDaemon> {
   const home = opts.home ?? makeHome(opts.config);
-  const d = await createDaemon({ adapter: claudeAdapter, port: 0, ...opts, home });
+  const d = await createDaemon({ adapter: claudeAdapter, port: 0, requestHandover: false, ...opts, home });
   return Object.assign(d, { home });
 }
 

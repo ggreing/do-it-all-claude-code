@@ -223,7 +223,7 @@ export async function officeSettingsView(ctx: OfficeSettingsContext, sessionId?:
     const { worktree } = project;
     text.push({
       key: 'project.worktree', title: 'Work trees for parallel writers in this project',
-      value: worktree === 'on' ? 'on: each parallel writer gets a work tree of its own' : worktree === 'off' ? 'off: writers share the checkout, and overlapping edits take turns' : 'not decided: the lead asks once, at the first delegation in this project',
+      value: worktree === 'on' ? 'on: writers sent together may each get a work tree of their own' : worktree === 'off' ? 'off: writers share the checkout, and overlapping edits take turns' : 'not decided: the lead asks once, at the first delegation in this project',
       command: 'do-it-all-claude-code project enable',
     });
   }

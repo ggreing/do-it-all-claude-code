@@ -1,0 +1,18 @@
+export { createApp } from './app.ts';
+export type { App, AppOptions } from './app.ts';
+export { TaskService } from './service/taskService.ts';
+export type { TaskServiceOptions } from './service/taskService.ts';
+export { TaskQueries } from './service/taskQueries.ts';
+export { TRANSITIONS, canTransition } from './service/transitions.ts';
+export { InMemoryTaskRepo } from './repo/taskRepo.ts';
+export { InMemoryUserRepo } from './repo/userRepo.ts';
+export { InMemoryAuditLog } from './repo/auditRepo.ts';
+export type { AuditEvent, AuditEventType, FieldChange } from './models/audit.ts';
+export { createTaskHandlers } from './handlers/taskHandlers.ts';
+export type { TaskHandlers } from './handlers/taskHandlers.ts';
+export type { Handler, Request, Response } from './handlers/http.ts';
+export { AppError, ConflictError, NotFoundError, ValidationError } from './errors.ts';
+export * from './models/task.ts';
+export { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from './models/query.ts';
+export type { SortOrder, TaskFilter, TaskPage, TaskQuery, TaskSortKey } from './models/query.ts';
+export type { User } from './models/user.ts';

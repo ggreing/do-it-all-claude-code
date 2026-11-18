@@ -34,7 +34,7 @@ function compact(v: unknown, depth: number): unknown {
 
 export const MINIMAL_MARK = '_min';
 const KEEP = ['hook_event_name', 'session_id', 'agent_id', 'agent_type', 'prompt_id', 'tool_name', 'tool_use_id', 'permission_mode', 'cwd',
-  'transcript_path', 'agent_transcript_path', 'source', 'model', 'trigger', 'stop_hook_active', 'routerClient'] as const;
+  'transcript_path', 'agent_transcript_path', 'source', 'model', 'trigger', 'stop_hook_active', 'routerClient', 'routerLaunchModel'] as const;
 const AGENT_INPUT = ['subagent_type', 'model', 'effort', 'isolation', 'run_in_background'] as const;
 const AGENT_RESPONSE = ['status', 'agentId', 'agentType', 'resolvedModel', 'isAsync', 'totalTokens', 'totalDurationMs', 'totalToolUseCount',
   'worktreePath', 'worktreeBranch', 'outputFile', 'usage'] as const;

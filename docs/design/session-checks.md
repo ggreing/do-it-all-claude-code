@@ -139,6 +139,10 @@ If it was given none: the role text alone does not start the order (it says "if 
 start"), so the note has to travel another way, for example in the lead's prompt for the subtask. Decide that
 before the measurement with `on`.
 
+**Passed on 2026-11-17**: the coder's report began with the reproduction note, so `SubagentStart` context
+reaches the worker. The user's request that the router hands to every worker travels the same way (decision 219,
+[team-speed.md](team-speed.md)).
+
 **C5. A coder on the first step follows the order** (reproduce first, open point 3). In the coder's rows:
 
 1. the first file written is a test;
@@ -353,8 +357,9 @@ answer, and no permission prompt and no `!` command are needed; the tool's resul
 (`worktree.baseRef` in `.claude/settings.local.json` and a `.claude/worktrees/` line in `.gitignore`), and
 `git status` in that repository shows exactly those. A call before the answer, or without `userConfirmed`,
 is answered `needs_user` and changes nothing. The Office tab's line no longer says isolation is off; the settings view's "Work trees for parallel
-writers" line reads on; with two parallel coders each Agent result names a branch to merge, and each coder
-is verified when it stops.
+writers" line reads on. With two parallel coders the lead still sends them into the checkout by default
+(decision 219); only when no part needs an uncommitted file may it give each a work tree, and then each Agent
+result names a branch to merge, and each coder is verified when it stops.
 
 Afterwards: `config set forceLevel default`.
 

@@ -161,6 +161,13 @@ async function init(f: Record<string, string | boolean>) {
     // L1: a running supervisor restarts the proxy when its TLS setting changed (as mode api does)
     if (api && realReload()) console.log('The supervisor applies the new API-key settings to the running proxy.');
   }
+  // --no-plugin: nothing is registered in Claude Code (no `claude plugin` call at all). For a caller that loads the
+  // generated folder itself with --plugin-dir: the bench and the end-to-end scripts, whose router home is a
+  // temporary folder that must never become a marketplace in the user's Claude Code settings.
+  if (f['no-plugin'] === true) {
+    console.log(`\nPlugin not installed in Claude Code (--no-plugin). Load it with: claude --plugin-dir "${pluginDir}"`);
+    return;
+  }
   // Install the generated plugin as a local marketplace from the router home: no --plugin-dir, and the user's
   // role edits survive plugin updates (the local directory loads in place).
   writeHomeMarketplace(routerHome());

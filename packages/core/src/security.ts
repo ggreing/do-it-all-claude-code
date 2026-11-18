@@ -93,6 +93,12 @@ export const ROUTER_BASH_ALLOW = [
 ];
 
 /**
+ * Commands allowed only exactly as written, with no further argument (decision 222): version queries a worker
+ * puts before its test run. The entries above allow further arguments, and `node` with any argument runs code.
+ */
+export const ROUTER_BASH_ALLOW_EXACT = ['node --version', 'node -v', 'npm --version', 'npm -v', 'python --version', 'python3 --version'];
+
+/**
  * Options that turn an allowlisted helper into a program runner or a file writer (env audit #3).
  * A command whose first words match the key is refused when any argument equals one of these or
  * starts with one followed by "=" (or, for single-letter options, is glued to its value: -Oprog).

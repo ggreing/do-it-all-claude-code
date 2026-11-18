@@ -85,13 +85,18 @@ export function toRouterEvent(hookInput: unknown, opts: ToRouterEventOptions = {
   if (cwd) ev.cwd = cwd;
   const transcriptPath = str(hookInput.transcript_path);
   if (transcriptPath) ev.transcriptPath = transcriptPath;
-  // Main-session model (decisions 117, 144). Claude Code 2.1.322 (contract spike, -p runs) sends no `model`
-  // in SessionStart (cwd, hook_event_name, session_id, source, transcript_path, sometimes context_tokens) nor in
-  // UserPromptSubmit or any other hook event. It is read generically here in case a build does send one; the
-  // daemon learns the model from the status line (its input has model.id) and from the main transcript
+  // Main-session model (decisions 117, 144, 218). Claude Code 2.1.326 puts the resolved model id in SessionStart
+  // as `model` when an interactive session starts, is resumed or is compacted. A -p run's SessionStart has none
+  // (cwd, hook_event_name, session_id, source, transcript_path, sometimes context_tokens; the 2.1.322 contract
+  // spike), nor has the one after /clear, UserPromptSubmit or any other hook event. Beyond SessionStart the daemon
+  // learns the model from the status line (its input has model.id) and from the main transcript
   // (leadModelFromTranscript below), which follows a /model switch.
   const leadModel = str(hookInput.model);
   if (leadModel) ev.leadModel = leadModel;
+  // Decision 218: what the relay hook saw as ANTHROPIC_MODEL in the session's environment. A -p run has no other
+  // source on its first prompt. Not the model for certain (--model wins over it), so it is used last.
+  const launchModel = str(hookInput.routerLaunchModel);
+  if (launchModel && /^[A-Za-z0-9._:\[\]-]{1,128}$/.test(launchModel) && !agentId) ev.launchModel = launchModel;
 
   switch (type) {
     case 'prompt_submit': {
@@ -354,8 +359,8 @@ export function subtaskTagFromTranscript(agentTranscriptPath: string | undefined
 /**
  * The main session's current model id, read from the LAST `assistant` line of the MAIN transcript
  * (`RouterEvent.transcriptPath`) as `message.model`. Only the model id is taken; message content is
- * never inspected. This is the per-request fallback for RouterEvent.leadModel: no hook event carries the
- * model in Claude Code 2.1.322 (decision 144), and one that did would go stale after a /model switch, so the daemon
+ * never inspected. This is the per-request fallback for RouterEvent.leadModel: only an interactive session's
+ * SessionStart carries the model (decisions 144, 218), and that value goes stale after a /model switch, so the daemon
  * resolves the lead model at each request from here (core's leadModelClass maps the id to a tier).
  * Scans from the end so a mid-session switch is reflected. Returns null when the path is missing,
  * unreadable, or has no assistant line with a model yet (e.g. before the first reply).

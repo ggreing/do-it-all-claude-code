@@ -10,7 +10,7 @@
   },
   {
     "name": "router_report_triage",
-    "description": "Do It All Claude Code, lead only. Reports your own judgement of the request size before the first subtask is dispatched: direct (L0 trivial, L1 small fix) or team (L2 module-level, L3 new service or architecture change), the number of files you expect to change, and your confidence. The router records it and, when you judge a request larger than planned, re-plans it and returns the team and the Agent call values to use.",
+    "description": "Do It All Claude Code, lead only. Reports your own judgement of the request size before the first subtask is dispatched: direct (L0 trivial, L1 small fix) or team (L2 module-level, L3 new service or architecture change), the files you expect to change, your line estimate and your confidence. When you judge it larger than planned the router re-plans it and returns the team and Agent call values. When you report direct and the change is small — up to 2 files and ~60 lines for a Sonnet or unknown-model lead, 1 file and ~15 lines for an Opus lead — the router keeps it with you (no team).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -191,7 +191,7 @@
   },
   {
     "name": "router_project_isolation",
-    "description": "Do It All Claude Code, lead only. Turns git-worktree isolation on or off for THIS project after the user agrees (enable: true/false). On, subagents work in parallel, each in its own git worktree; off, the team shares one checkout and overlapping edits take turns. Writes worktree.baseRef in .claude/settings.local.json and a \".claude/worktrees/\" line in .gitignore, and records the choice; the answer names the files changed. Applies from the next subtask dispatched; running subtasks keep their worktree. Use this instead of asking the user to run a terminal command.",
+    "description": "Do It All Claude Code, lead only. Turns git-worktree isolation on or off for THIS project after the user agrees (enable: true/false). Writers share one checkout either way; on, writers sent together may each get a git worktree when none needs an uncommitted file. Writes worktree.baseRef in .claude/settings.local.json and a \".claude/worktrees/\" line in .gitignore, and records the choice; the answer names the files changed. Applies from the next subtask dispatched; running subtasks keep their worktree. Use this instead of asking the user to run a terminal command.",
     "inputSchema": {
       "type": "object",
       "properties": {

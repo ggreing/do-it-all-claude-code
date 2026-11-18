@@ -49,6 +49,25 @@ export function mcpSeen(lines: readonly StreamLine[], wantRouter: boolean): McpS
 
 export interface Preflight { tools: string[]; daemonAnswered: boolean; reply: string }
 
+export interface Ready { ok: boolean; tools: string[]; reply: string; attempts: number }
+
+/**
+ * The preflight until it holds: the server lists router_report_triage and reached the daemon. On a busy machine
+ * the first try can time out, or come before the daemon answers; that is not the arrangement being wrong, so it
+ * is tried again (three tries, 30 s each) before the measurement is stopped.
+ */
+export async function routerMcpReady(serverFile: string, env: Record<string, string | undefined>, o: { attempts?: number; timeoutMs?: number; pauseMs?: number } = {}): Promise<Ready> {
+  const attempts = o.attempts ?? 3;
+  let last: Preflight = { tools: [], daemonAnswered: false, reply: '' };
+  for (let n = 1; n <= attempts; n++) {
+    last = await routerMcpPreflight(serverFile, env, o.timeoutMs ?? 30_000)
+      .catch((e: unknown) => ({ tools: [] as string[], daemonAnswered: false, reply: String((e as Error)?.message ?? e) }));
+    if (last.tools.includes('router_report_triage') && last.daemonAnswered) return { ok: true, tools: last.tools, reply: last.reply, attempts: n };
+    if (n < attempts) await new Promise(r => setTimeout(r, o.pauseMs ?? 1_000));
+  }
+  return { ok: false, tools: last.tools, reply: last.reply || 'router_report_triage is not among its tools', attempts };
+}
+
 /**
  * Starts the plugin's MCP server as a session would (node <serverFile>, the run's environment), asks for its
  * tools and makes one read-only call without a session (router_get_plan). The daemon refuses that call, and

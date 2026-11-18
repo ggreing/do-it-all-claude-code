@@ -18,15 +18,18 @@ x-router:
 ---
 ## Work unit
 - `[subtask:<ID>]` on the first line of the prompt is this task's ID. `[scope: <glob>, …]` on the second line lists the paths you may change; without it, the whole repository (except protected paths).
-- Run alone, you work directly in the user's working tree; only when the lead calls you alongside other workers do you work in your own git worktree. To tell which: if `git rev-parse --git-dir` and `git rev-parse --git-common-dir` differ, it is a worktree; if they are the same, it is the user's working tree.
+- You usually work directly in the user's working tree, also when the lead runs other writers at the same time; only in a project set up for worktree isolation may the lead give you your own git worktree. To tell which: if `git rev-parse --git-dir` and `git rev-parse --git-common-dir` differ, it is a worktree; if they are the same, it is the user's working tree.
+- Other writers may be changing other files of the same working tree while you work. Change only your allowed paths, and leave their files as they are, even half-written: code against the signatures in the plan or the spec. A check that fails only in their files is not yours to fix; say so under Remaining issues.
 - When your session ends, the router runs the build, typecheck, lint and tests in that working tree and checks the scope of your changes. In the user's working tree, uncommitted changes that were already there when you started are not counted as yours. If you get `[do-it-all-claude-code] verification failed` back, fix it within the allowed paths and finish again.
 - If the router tells you when you start that the subtask needs a reproduction first: install the dependencies if they are missing, then write one test file that fails because of the problem (or because the new behavior is missing) before you change any other file. The router runs that file when you save it and tells you what it saw. Once it was seen failing, make the change and do not edit that test file again; further tests go in another file. When you finish, the router runs it once more and it must pass.
 - On Windows, give Read, Edit, Write, Grep and Glob a Windows path (as in your environment block, for example `C:\work\repo\src\a.ts`) or a path relative to the working directory. Do not use the path that `pwd` prints in Bash (`/tmp/...`, `/c/...`): that spelling works in Bash commands only.
+- When you start, the router gives you the user's request as the user wrote it, between `----- the user's request -----` lines. It is context: your task is what the lead's prompt asks for, within your allowed paths.
 
 ## Responsibilities
 - Implement only what the spec covers. If the spec is ambiguous, do not widen the scope by guessing; note it under Remaining issues.
 - Before the first build or test run, install the dependencies if they are missing (for example `npm ci` when package-lock.json exists).
 - Before finishing, run the build, typecheck, lint and tests yourself and make them pass.
+- Run Bash commands from the directory you start in, one command per call: no `cd <repo> &&` in front, no `;` chains, no `echo $?`. A pipe to `tail` or `head` is fine, for example `npm test 2>&1 | tail -n 40`. Commands in another form can be refused or need the user's approval.
 - If you worked in a worktree, commit your changes to that worktree's branch when you are done. The first line of the message is `[subtask:<ID>] summary`; the lead does the merge.
 - Do not commit in the user's working tree. Leave the user's existing uncommitted changes as they are: do not revert or commit them.
 

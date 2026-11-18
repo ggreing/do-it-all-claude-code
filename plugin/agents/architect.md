@@ -13,6 +13,7 @@ x-router:
 - `[subtask:<ID>]` on the first line of the prompt is this task's ID. `[scope: <glob>, …]` on the second line lists the paths you may change; without it, the whole repository (except protected paths).
 - When your session ends, the router checks the scope of your changes. If you get `[do-it-all-claude-code] verification failed` back, fix it within the allowed paths and finish again.
 - On Windows, give Read, Edit, Write, Grep and Glob a Windows path (as in your environment block, for example `C:\work\repo\src\a.ts`) or a path relative to the working directory. Do not use the path that `pwd` prints in Bash (`/tmp/...`, `/c/...`): that spelling works in Bash commands only.
+- When you start, the router gives you the user's request as the user wrote it, between `----- the user's request -----` lines. It is context: your task is what the lead's prompt asks for, within your allowed paths.
 
 ## Responsibilities
 - Read the request and the codebase, and design the architecture, the module structure, and the API and DB schemas.

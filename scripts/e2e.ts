@@ -39,7 +39,11 @@ function noHoldout(): void {
   fs.writeFileSync(f, `${JSON.stringify(c, null, 2)}\n`, { mode: 0o600 });
 }
 for (const k of Object.keys(env)) if (/^(CLAUDECODE|CLAUDE_CODE_(CHILD_SESSION|SESSION_ID|MESSAGING_\w+|SESSION_ATTENDED|ENTRYPOINT|EXECPATH)|CLAUDE_PID|CLAUDE_EFFORT)$/.test(k)) delete env[k];
-const cli = (...a: string[]) => execFileSync(process.execPath, [path.join(ROOT, 'packages/cli/src/index.ts'), ...a], { env, encoding: 'utf8', cwd: TMP });
+// The router's CLI gets a Claude Code config folder of this run (the claude runs below keep the user's, for the
+// login), and init gets --no-plugin: the runs load the plugin with --plugin-dir, and this temporary router home
+// must never be registered as a marketplace in the user's Claude Code settings.
+const cliEnv = { ...env, CLAUDE_CONFIG_DIR: path.join(TMP, 'claude-init') };
+const cli = (...a: string[]) => execFileSync(process.execPath, [path.join(ROOT, 'packages/cli/src/index.ts'), ...a], { env: cliEnv, encoding: 'utf8', cwd: TMP });
 
 function repoFrom(fixture: string, name: string): string {
   const dir = path.join(TMP, name);
@@ -247,7 +251,7 @@ if (DRY) {
 
 if (ROUND5) {
   printAllowPolicy(log);
-  cli('init', '--yes', '--claude-settings', path.join(TMP, 'claude-settings.json'), '--project', TMP);
+  cli('init', '--yes', '--no-plugin', '--claude-settings', path.join(TMP, 'claude-settings.json'), '--project', TMP);
   noHoldout();
   log(cli('start').trim());
   const port = (() => { try { return Number(JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8')).daemonPort); } catch { return 0; } })();
@@ -281,7 +285,7 @@ if (ROUND5) {
   fs.writeFileSync(path.join(TMP, 'e2e-report.txt'), report.join('\n'));
   console.log(`\nreport: ${path.join(TMP, 'e2e-report.txt')}\nsummaries: ${TMP}`);
 } else {
-cli('init', '--yes', '--claude-settings', path.join(TMP, 'claude-settings.json'), '--project', TMP);
+cli('init', '--yes', '--no-plugin', '--claude-settings', path.join(TMP, 'claude-settings.json'), '--project', TMP);
 noHoldout();
 log(cli('start').trim());
 

@@ -106,13 +106,17 @@ test('a question about a failure is a debugging task, not an L0 question (review
   assert.equal(triage({ prompt: 'What does the slugify helper return for empty strings?' }).taskType, 'question');
 });
 
-test('worktree isolation is only asked for when writers run in parallel (decision 83)', () => {
+test('no brief asks for worktree isolation: parallel writers share the working tree (decisions 83, 219)', () => {
   const brief = (level: 'L0' | 'L1' | 'L2' | 'L3') => {
     const p = TEAM[level];
     return formatTriageContext({ level, confidence: 0.9, source: 'rule', taskType: 'feature', preset: p.id, budgetUsd: p.budgetUsd, rationale: 'x' }, p);
   };
-  assert.match(brief('L1'), /Do not pass isolation/); assert.doesNotMatch(brief('L1'), /isolation "worktree"/);
-  for (const l of ['L2', 'L3'] as const) assert.match(brief(l), /isolation "worktree"/);
+  assert.match(brief('L1'), /Do not pass isolation/);
+  for (const l of ['L1', 'L2', 'L3'] as const) assert.doesNotMatch(brief(l), /isolation "worktree"|merge their branches/);
+  for (const l of ['L2', 'L3'] as const) {
+    assert.match(brief(l), /Do not pass isolation: the writers share the working tree/);
+    assert.match(brief(l), /runs the build and tests once, when the last one stops/);
+  }
   assert.match(brief('L1'), /task-notification/);
 });
 

@@ -70,6 +70,9 @@ export const ROUTER_BASH_ALLOW = [
   'diff', 'sort', 'uniq', 'cut', 'tr', 'which', 'where', 'true', 'false', 'test',
 ];
 
+/** Commands allowed only exactly as written, with no further argument (decision 222). Must equal core ROUTER_BASH_ALLOW_EXACT. */
+export const ROUTER_BASH_ALLOW_EXACT = ['node --version', 'node -v', 'npm --version', 'npm -v', 'python --version', 'python3 --version'];
+
 export const PACKAGE_INSTALL_PREFIXES = [
   'npm install', 'npm i ', 'npm ci', 'pnpm install', 'pnpm add', 'yarn install', 'yarn add',
   'pip install', 'pip3 install', 'python -m pip install', 'uv pip install', 'poetry install',
@@ -593,6 +596,11 @@ function entryMatches(words, entry) {
   }
   return true;
 }
+/** Is the command exactly one ROUTER_BASH_ALLOW_EXACT entry, word for word, with nothing after it? */
+function exactMatches(words, entry) {
+  const ew = entry.split(/\s+/);
+  return words.length === ew.length && baseName(words[0]) === ew[0] && ew.every((w, i) => i === 0 || stripOuterQuotes(words[i]) === w);
+}
 
 /** An argument that looks like a filesystem path (not a message/pattern/flag value). */
 function pathLikeArg(raw) {
@@ -833,7 +841,8 @@ export function classifyBash(command, opts = {}) {
     let entry;
     if (cmd0 === 'set') {
       if (!(words.length >= 2 && /^[-+]/.test(stripOuterQuotes(words[1])))) return DENY_NOT_ALLOWED;   // bare `set` dumps env
-    } else if (!(entry = allow.find(e => entryMatches(words, e)))) {
+    } else if (!(entry = allow.find(e => entryMatches(words, e))) && !ROUTER_BASH_ALLOW_EXACT.some(e => exactMatches(words, e))) {
+      // decision 222: a version query only as written; "node -v -e …" is not one
       return DENY_NOT_ALLOWED;
     }
 

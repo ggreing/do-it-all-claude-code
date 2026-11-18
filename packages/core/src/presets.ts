@@ -89,8 +89,9 @@ export function leadModelClass(modelId?: string): LeadModelClass {
  * First level that is delegated, per lead model tier (decisions 117, 124). Below it the lead handles the
  * request itself. L0 is always lead-direct. Unknown lead model -> 'other', which delegates from L1 as well
  * (decision 144): both measured lead classes do, a Haiku main session is rare, and being wrong for one costs
- * little. Claude Code 2.1.322 sends no model in SessionStart or UserPromptSubmit, so the first prompt of a
- * session often has no lead model yet.
+ * little. Claude Code names the model in SessionStart only for an interactive session (2.1.326) and in no
+ * other hook input, so a first prompt can still come without one: a -p run without ANTHROPIC_MODEL, a session
+ * after /clear before its status line ran (decision 218).
  * Decision-107 measurement: delegating L1 cost 49% less with an Opus lead at the same speed, and 42% less
  * with a Sonnet lead (about 20 s slower per request), so both delegate from L1. A Haiku lead is not
  * measured: its workers would run the same model, so it keeps L1 itself.
@@ -102,8 +103,8 @@ export const DEFAULT_DELEGATE_FROM: Record<LeadModelClass, Level> = { opus: 'L1'
  * or option request, or a short one with a log) stays with the lead for these lead classes, although L1 is a
  * delegated level for them. Quality baseline (20 SWE-bench Verified tasks, a Sonnet lead): the seven such requests
  * cost 72% more delegated than done by the lead and passed one task fewer. The lead works out the fix to brief
- * the worker, so the hand-off saves nothing. The first prompt of a session comes with no model ('other'), so it
- * follows Sonnet. An Opus-class lead is not measured on these requests and keeps delegating them.
+ * the worker, so the hand-off saves nothing. A lead whose model is not known ('other') follows
+ * Sonnet. An Opus-class lead is not measured on these requests and keeps delegating them.
  * A request of unclear size is not touched: it goes to the L2 team, where the lead staffs it and keeps a one-file
  * change (decisions 121, 178). That path is where delegating paid off on the bench's own tasks.
  */

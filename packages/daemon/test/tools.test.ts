@@ -499,14 +499,16 @@ test('the request record keeps the lead\'s judgement and the reviews; a v7 ledge
   } finally { rmrf(dir); }
 });
 
-// decision 178 (나): the lead's own look at the code says one file and a small edit: the lead makes it alone
-test('decision 178: a direct report of one file and a few lines re-plans a team request as lead-direct; anything else stays a team', () => withDaemon(async (d, repo) => {
-  const team = async (sid: string) => {
+// decisions 178, 220: the lead's own look says a small change: the lead makes it alone. The bound is 1 file / 15
+// lines for an Opus lead (decision 178), widened to 2 files / 60 lines for a Sonnet or unknown-model lead (decision 220).
+test('decisions 178, 220: a direct report within the keep-direct bound re-plans a team request as lead-direct; over it stays a team; the bound widens for a non-Opus lead', () => withDaemon(async (d, repo) => {
+  const team = async (sid: string, model?: string) => {
     const s = session(d, sid, repo);
-    await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+    await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT, ...(model ? { routerLaunchModel: model } : {}) });
     assert.equal(rows(d, `SELECT level FROM requests WHERE session_id = '${sid}'`)[0]!.level, 'L2');
     return s;
   };
+  // default lead (no model -> class "other"): one file, a few lines -> kept, with the decision-178 wording
   const s = await team('one-file');
   const r = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 8, confidence: 0.8 });
   assert.deepEqual([r.ok, r.result?.replanned, r.result?.level, r.result?.leadDirect], [true, true, 'L1', true]);
@@ -518,18 +520,48 @@ test('decision 178: a direct report of one file and a few lines re-plans a team 
   // the lead may still change its mind: its first Agent call re-plans the request as a team again
   assert.deepEqual(await s.post(s.call('A', 'coder', 'haiku', 'low')), {});
   assert.equal(rows(d, "SELECT level FROM requests WHERE session_id = 'one-file'")[0]!.level, 'L2');
-  // not one file, not small, not sure, no line estimate: the team stays
+  // decision 220: the wider bound for a non-Opus lead -> up to 2 files / 60 lines is kept, and the rationale names the file count
   for (const [i, input] of [
+    { kind: 'direct', level: 'L1', files: 2, lines: 60, confidence: 0.8 },   // the file and line edges, both kept
     { kind: 'direct', level: 'L1', files: 2, lines: 8, confidence: 0.9 },
     { kind: 'direct', level: 'L1', files: 1, lines: 40, confidence: 0.9 },
+  ].entries()) {
+    const t = await team(`keep-${i}`);
+    const k = await t.tool('router_report_triage', input);
+    assert.deepEqual([k.ok, k.result?.replanned, k.result?.level, k.result?.leadDirect], [true, true, 'L1', true], JSON.stringify(input));
+    assert.match(JSON.parse(String(rows(d, `SELECT triage FROM requests WHERE session_id = 'keep-${i}'`)[0]!.triage)).rationale,
+      new RegExp(`as ${input.files === 1 ? 'one file' : `${input.files} files`} and about ${input.lines} lines`));
+  }
+  // over the bound, or not sure, or no line estimate, or a team judgement: the team stays
+  for (const [i, input] of [
+    { kind: 'direct', level: 'L1', files: 3, lines: 10, confidence: 0.9 },   // decision 220: 3 files -> delegated
+    { kind: 'direct', level: 'L1', files: 2, lines: 61, confidence: 0.9 },   // decision 220: 61 lines -> delegated
     { kind: 'direct', level: 'L1', files: 1, lines: 5, confidence: 0.4 },
     { kind: 'direct', level: 'L1', files: 1, confidence: 0.9 },
     { kind: 'team', level: 'L2', files: 1, lines: 5, confidence: 0.9 },
   ].entries()) {
-    const t = await team(`keep-${i}`);
+    const t = await team(`stay-${i}`);
     const k = await t.tool('router_report_triage', input);
     assert.deepEqual([k.ok, k.result?.replanned, k.result?.leadDirect], [true, false, false], JSON.stringify(input));
   }
+  // decisions 220 / 211: an Opus lead keeps the narrow 1-file bound -> 2 files is delegated, one file / 15 lines is kept
+  const opus2 = await team('opus-2', 'claude-opus-5-5');
+  assert.deepEqual((k => [k.result?.replanned, k.result?.leadDirect])(await opus2.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 2, lines: 10, confidence: 0.9 })), [false, false], 'opus: 2 files delegated');
+  const opus1 = await team('opus-1', 'claude-opus-5-5');
+  assert.deepEqual((k => [k.result?.replanned, k.result?.leadDirect])(await opus1.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 12, confidence: 0.9 })), [true, true], 'opus: one file kept');
+  // a Sonnet lead gets the wide bound -> 2 files kept
+  const sonnet = await team('sonnet-2', 'claude-sonnet-5-5');
+  assert.deepEqual((k => [k.result?.replanned, k.result?.leadDirect])(await sonnet.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 2, lines: 50, confidence: 0.9 })), [true, true], 'sonnet: 2 files kept');
+}, { config: { delegateFrom: undefined } }));   // the real default: an unknown-model lead ("other") gets the wide bound (decisions 144, 220)
+
+// decision 220: a delegateFrom the user set for the lead's class wins — the narrow decision-178 bound stays for it.
+test('decision 220: a user-set delegateFrom for the lead class keeps the narrow 1-file bound', () => withDaemon(async (d, repo) => {
+  // the test daemon's own config sets delegateFrom.other = L2, so an unknown-model ("other") lead keeps the narrow bound
+  const s = session(d, 'cfg', repo);
+  await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+  assert.equal(rows(d, "SELECT level FROM requests WHERE session_id = 'cfg'")[0]!.level, 'L2');
+  const two = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 2, lines: 20, confidence: 0.9 });
+  assert.deepEqual([two.result?.replanned, two.result?.leadDirect], [false, false], '2 files delegated under a user-set delegateFrom');
 }));
 
 test('decision 178: a level set by forceLevel is not re-planned down by the lead\'s report', () => withDaemon(async (d, repo) => {
@@ -572,6 +604,19 @@ test('decision 178: concurrent writers with disjoint scopes pass, with or withou
   const rows2 = () => rows(d, "SELECT id FROM subtasks ORDER BY id").map(r => r.id);
   assert.deepEqual(rows2(), ['A', 'B', 'R']);
 }, {}));
+
+// decision 219: a reviewer's empty scope line was refused and the lead typed the whole brief again
+for (const [label, pluginDir] of [['the plugin\'s role files', path.resolve(import.meta.dirname, '../../../plugin')], ['no plugin folder', undefined]] as const) {
+  test(`decision 219: an empty [scope: ] line passes for a reviewer (it writes nothing) and stays refused for a writer (${label})`, () => withDaemon(async (d, repo) => {
+    const s = session(d, `empty-${pluginDir ? 'p' : 'n'}`, repo);
+    await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+    assert.match(denied(await s.post(s.call('A', 'coder', 'haiku', 'low', ''))), /subtask A: the \[scope: \.\.\.\] line is empty/);
+    assert.match(denied(await s.post(s.call('T', 'tester', 'haiku', 'low', ''))), /subtask T: the \[scope: \.\.\.\] line is empty/);
+    assert.deepEqual(await s.post(s.call('R', 'reviewer', 'sonnet', 'medium', '')), {});
+    const [r] = rows(d, "SELECT write_scope, unscoped FROM subtasks WHERE id = 'R'");
+    assert.deepEqual([JSON.parse(String(r!.write_scope)), r!.unscoped], [[], 0], 'nothing writable, not the whole repository');
+  }, pluginDir ? { config: { pluginDir } } : {}));
+}
 
 test('decision 178: an overlapping writer is refused twice with what to do, then let through; one sent after the other finished always passes', () => withDaemon(async (d, repo) => {
   const s = session(d, 'ovl', repo);

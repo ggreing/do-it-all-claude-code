@@ -4,6 +4,8 @@
 // HITL marker via RouterEvent.lastAssistantMessage, and the plain-text PreCompact output.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { startDaemon } from '../src/index.ts';
 import type { StatusView } from '../src/router.ts';
 import { AWAITING_USER_MARKER } from '../src/continuation.ts';
@@ -17,7 +19,10 @@ test('startDaemon + real adapter: brief, deny, block then pass on spike s2, HITL
   try {
     const d = await startDaemon({ home, port: 0 });
     try {
-      const inputs = retarget(loadSpike('s2'), repo);
+      // decision 219: the router reads the user's request from the lead's transcript, which the recorded session's path
+      // does not reach here; the test keeps one as Claude Code does, with each prompt the user types
+      const transcript = path.join(home, 'lead-transcript.jsonl');
+      const inputs = retarget(loadSpike('s2'), repo).map(h => ({ ...h, transcript_path: transcript }));
       const sid = String(inputs[0]!.session_id);
       const post = async (h: HookInput) => {
         const r = await postHook(d.port, h);
@@ -30,6 +35,7 @@ test('startDaemon + real adapter: brief, deny, block then pass on spike s2, HITL
       for (const h of inputs) {
         if (h.hook_event_name === 'UserPromptSubmit') {
           h.prompt = 'Fix the bug where parse() fails on empty input in src/parse.ts';
+          fs.appendFileSync(transcript, JSON.stringify({ type: 'user', message: { role: 'user', content: h.prompt } }) + '\n');
           const o = (await post(h)).body as Out;
           assert.equal(o.hookSpecificOutput?.hookEventName, 'UserPromptSubmit');
           assert.match(o.hookSpecificOutput?.additionalContext ?? '', /^\[do-it-all-claude-code\] level L1/);

@@ -54,12 +54,17 @@ export function parseTag(prompt: string | undefined): string | undefined {
 
 export type ScopeParse = { ok: true; allowed: string[]; unscoped: boolean } | { ok: false; reason: string };
 
-/** Decision Q5: second prompt line `[scope: a/**, b/**]`; without it the whole repository is allowed. */
-export function parseScope(prompt: string | undefined): ScopeParse {
+/**
+ * Decision Q5: second prompt line `[scope: a/**, b/**]`; without it the whole repository is allowed.
+ * Decision 219: an empty line on a role that cannot write (`readOnly`, a reviewer) means it writes nothing. A writer's
+ * empty line stays refused: a writer that may change no file would spend its whole run on refusals.
+ */
+export function parseScope(prompt: string | undefined, opts: { readOnly?: boolean } = {}): ScopeParse {
   const second = (prompt ?? '').split(/\r?\n/)[1] ?? '';
   const m = SCOPE.exec(second);
   if (!m) return { ok: true, allowed: ['**'], unscoped: true };
   const globs = m[1]!.split(',').map(g => g.trim().replace(/\\/g, '/').replace(/^\.\//, '')).filter(Boolean);
+  if (!globs.length && opts.readOnly) return { ok: true, allowed: [], unscoped: false };
   if (!globs.length) return { ok: false, reason: 'the [scope: ...] line is empty: list repo-relative globs, or remove the line to allow the whole repository' };
   const bad = globs.filter(g => g.startsWith('/') || /^[A-Za-z]:/.test(g) || g.split('/').includes('..') || g.startsWith('~'));
   if (bad.length) return { ok: false, reason: `scope globs must be repo-relative (no absolute paths, "~" or ".."): ${bad.join(', ')}` };

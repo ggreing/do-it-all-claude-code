@@ -43,6 +43,8 @@ export interface DaemonOptions extends StartOptions {
   socket?: boolean;
   /** Decision 163, tests: the update check's request and timer (it runs only while config.updateCheck is "on"). */
   updateCheck?: Pick<UpdateWatcherOptions, 'check' | 'tickMs' | 'firstTickMs'>;
+  /** Decision 219, tests: false stops the router from handing the user's request to workers (default on). */
+  requestHandover?: boolean;
 }
 
 export interface Daemon extends DaemonHandle {
@@ -91,6 +93,7 @@ export async function createDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       ...(opts.presets ? { presets: opts.presets } : {}),
       ...(opts.verify ? { verify: opts.verify } : {}),
       ...(opts.now ? { now: opts.now } : {}),
+      ...(opts.requestHandover === false ? { requestHandover: false } : {}),
     });
     // decision 168: the effective plugin regenerated from the templates and the overrides, the role floor checked
     const settings = new SettingsService({ home, router, logger, ...(opts.now ? { now: opts.now } : {}) });

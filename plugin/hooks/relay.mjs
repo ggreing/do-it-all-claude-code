@@ -169,6 +169,17 @@ export function buildVerifyEnv(env = process.env, extraNames = acceptedVerifyEnv
   return out;
 }
 
+// ---------------------------------------------------------------- launch model (decision 218)
+// Claude Code names the session's model in SessionStart only for an interactive session, and in no other hook
+// input; a -p run has no status line either. A hook inherits the session's environment, so ANTHROPIC_MODEL is
+// visible here when the user (or a script) set it. It is sent with each prompt as a hint: --model wins over the
+// variable in Claude Code, so the daemon uses it only while nothing else names the model.
+const LAUNCH_MODEL = /^[A-Za-z0-9._:\[\]-]{1,128}$/;   // an id or an alias: claude-opus-5-5, opus, sonnet[1m]
+export function launchModel(env = process.env) {
+  const m = typeof env.ANTHROPIC_MODEL === 'string' ? env.ANTHROPIC_MODEL.trim() : '';
+  return LAUNCH_MODEL.test(m) ? m : undefined;
+}
+
 /** Diagnostics the daemon's doctor/status compares against its own (decision 97). */
 function routerClientInfo(home, port) {
   return { node: process.execPath, nodeVersion: process.versions.node, routerHome: home, port };
@@ -192,7 +203,7 @@ function readToken(home) {
 const MINIMAL_MARK = '_min';
 const AWAITING_USER_MARKER = '[router:awaiting-user]';
 const KEEP = ['hook_event_name', 'session_id', 'agent_id', 'agent_type', 'prompt_id', 'tool_name', 'tool_use_id', 'permission_mode', 'cwd',
-  'transcript_path', 'agent_transcript_path', 'source', 'model', 'trigger', 'stop_hook_active', 'routerClient'];
+  'transcript_path', 'agent_transcript_path', 'source', 'model', 'trigger', 'stop_hook_active', 'routerClient', 'routerLaunchModel'];
 const AGENT_INPUT = ['subagent_type', 'model', 'effort', 'isolation', 'run_in_background'];
 const AGENT_RESPONSE = ['status', 'agentId', 'agentType', 'resolvedModel', 'isAsync', 'totalTokens', 'totalDurationMs', 'totalToolUseCount',
   'worktreePath', 'worktreeBranch', 'outputFile', 'usage'];
@@ -380,10 +391,14 @@ export async function relay(raw, { home = routerHome(), write = s => process.std
     return;
   }
 
-  // Augment the body for two events (the daemon reads these from the raw input; spool keeps them too).
+  // Augment the body for three events (the daemon reads these from the raw input; spool keeps them too).
   if (isRecord(input)) {
     if (EVENT === 'SessionStart') input.routerClient = routerClientInfo(home, port);   // D2: doctor/status compare
     else if (EVENT === 'SubagentStart') input.verifyEnv = buildVerifyEnv();            // D4: verify env passthrough
+    else if (eventName === 'UserPromptSubmit' && !input.agent_id) {                    // decision 218: the lead model of a -p run
+      const model = launchModel();
+      if (model) input.routerLaunchModel = model;
+    }
   }
 
   const timeoutMs = subagentEdit ? REPRO_EDIT_TIMEOUT : TIMEOUTS[EVENT] ?? DEFAULT_TIMEOUT;

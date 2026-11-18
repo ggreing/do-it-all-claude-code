@@ -263,7 +263,9 @@ test('decision 168 review L5: init refuses a --plugin-dir inside the router home
   const cli = fileURLToPath(new URL('../src/index.ts', import.meta.url));
   for (const dir of [path.join(fresh, 'plugin'), fresh]) {
     const r = spawnSync(process.execPath, [cli, 'init', '--yes', '--plugin-dir', dir, '--claude-settings', path.join(tmp, 'settings.json')], {
-      env: { ...process.env, DO_IT_ALL_CLAUDE_CODE_HOME: fresh }, encoding: 'utf8', timeout: 60_000,
+      // CLAUDE_CONFIG_DIR isolates `claude plugin`: this init exits 2 at argument checking today, but a temp config
+      // dir keeps it off the user's real ~/.claude even if the order of checks ever changes (control, decision 220).
+      env: { ...process.env, DO_IT_ALL_CLAUDE_CODE_HOME: fresh, CLAUDE_CONFIG_DIR: path.join(tmp, 'claude-config') }, encoding: 'utf8', timeout: 60_000,
     });
     assert.equal(r.status, 2, r.stderr);
     assert.match(r.stderr, /may not be inside the router home/);

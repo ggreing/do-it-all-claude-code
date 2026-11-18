@@ -26,6 +26,11 @@ test('scope line: second line, repo-relative globs; missing means the whole repo
   assert.deepEqual(parseScope('[subtask:A] x\n[scope: .\\src\\b.ts]'), { ok: true, allowed: ['src/b.ts'], unscoped: false });
   assert.deepEqual(parseScope('[subtask:A] x\nplain text'), { ok: true, allowed: ['**'], unscoped: true });
   assert.equal(parseScope('[subtask:A]\n[scope: ]').ok, false);
+  // decision 219: on a role that cannot write, an empty line means it writes nothing
+  assert.deepEqual(parseScope('[subtask:R]\n[scope: ]', { readOnly: true }), { ok: true, allowed: [], unscoped: false });
+  assert.deepEqual(parseScope('[subtask:R]\n[scope:  , ]', { readOnly: true }), { ok: true, allowed: [], unscoped: false });
+  assert.equal(parseScope('[subtask:A]\n[scope: ]', { readOnly: false }).ok, false);
+  assert.equal(parseScope('[subtask:R]\n[scope: ../x/**]', { readOnly: true }).ok, false, 'a bad glob stays refused');
   assert.equal(parseScope('[subtask:A]\n[scope: ../outside/**]').ok, false);
   assert.equal(parseScope('[subtask:A]\n[scope: /etc/**]').ok, false);
   assert.equal(parseScope('[subtask:A]\n[scope: C:/x/**]').ok, false);

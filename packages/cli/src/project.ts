@@ -39,7 +39,7 @@ async function confirmAndApply(root: string, enable: boolean, home: string, d: P
   if (!go) { d.out('Nothing changed.'); return 1; }
   setProjectWorktree(root, enable, home);
   d.out(enable
-    ? 'Worktree isolation on: subagents work in parallel, each in its own git worktree.'
+    ? 'Worktree isolation on: writers sent together may each get a git worktree when none needs an uncommitted file (writers share one checkout either way).'
     : 'Worktree isolation off: the team still works here, but edits to the shared tree take turns.');
   return 0;
 }
@@ -61,7 +61,7 @@ export async function projectCommand(sub: string | undefined, d: ProjectDeps): P
     const w = getProjectWorktree(home, root);
     d.out(`project: ${root}`);
     d.out(w === 'on'
-      ? 'worktree isolation: on (subagents work in parallel, each in its own git worktree)'
+      ? 'worktree isolation: on (writers sent together may each get a git worktree when none needs an uncommitted file; writers share one checkout either way)'
       : w === 'off'
         ? 'worktree isolation: off (the team still works here; edits to the shared tree take turns)'
         : state

@@ -118,6 +118,16 @@ test('a reviewer\'s accept with margin easy is recorded for the writer it review
   assert.ok(rows(d, "SELECT kind FROM signals WHERE subtask_id = 'A' AND kind = 'review'").length === 1, 'the review signal is written as for the tool');
 }));
 
+// decision 219: a lead told to run "the changed code's tests" after a reviewer ran the coder's tests again
+test('decision 219: a reviewer\'s pass line does not ask the lead to run tests; a writer\'s untested change still does', () => withDaemon(async (_d, s) => {
+  await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+  const coderLine = await s.run('A', 'coder', WRITER_REPORT, 'x.ts');
+  assert.match(coderLine, /verify ran no tests for this change: if the changed code has tests, run those once yourself/);
+  const line = await s.run('R', 'reviewer', 'Verdict: accept\nMargin: normal\n- Review: fit 5/5, findings: none\n- Changed files: none');
+  assert.match(line, /subtask R \(reviewer .*verify passed — .*\(0 file\(s\)[^)]*\)[^(]*\(it changed no files, so there is nothing to test\)\./);
+  assert.ok(!line.includes('run those once yourself'), line);
+}));
+
 test('a reject is recorded as a failure of the writer: the second one in a row raises the slot', () => withDaemon(async (d, s) => {
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
   await s.run('A', 'coder', WRITER_REPORT, 'x.ts');

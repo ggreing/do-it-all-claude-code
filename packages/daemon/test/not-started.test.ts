@@ -98,6 +98,47 @@ ERROR pkg/tests/test_variable.py
 1 error in 0.11s
 `;
 
+/**
+ * What pytest -x prints for the same removed alias: it stops at the first collection error and ends with exit 1,
+ * the code of a failed test, without the "errors during collection" line (the fair re-measure, on Windows).
+ */
+const STOPPED_AT_FIRST = `
+=================================== ERRORS ====================================
+________________ ERROR collecting pkg/tests/test_dataset.py ________________
+C:\\Python\\Lib\\site-packages\\_pytest\\python.py:528: in importtestmodule
+    mod = import_path(
+pkg\\__init__.py:9: in <module>
+    from .core.alignment import align, broadcast
+pkg\\core\\alignment.py:10: in <module>
+    from . import dtypes, utils
+pkg\\core\\dtypes.py:41: in <module>
+    {np.bytes_, np.unicode_},  # numpy promotes to unicode
+     ^^^^^^^^^^^
+C:\\Python\\Lib\\site-packages\\numpy\\__init__.py:778: in __getattr__
+    raise AttributeError(
+E   AttributeError: \`np.unicode_\` was removed in the NumPy 2.0 release. Use \`np.str_\` instead.
+============================== warnings summary ===============================
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+ERROR pkg/tests/test_dataset.py - AttributeError: \`np.unicode_\` was remove...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+13 warnings, 1 error in 2.44s
+`;
+
+/** A fixture that raises: exit 1 and "1 error" too, but a test was reached, so this is an ordinary failure. */
+const SETUP_ERROR = `
+E
+==================================== ERRORS ====================================
+_________________________ ERROR at setup of test_copy _________________________
+pkg/tests/conftest.py:9: in dataset
+    raise RuntimeError("no fixture data")
+E   RuntimeError: no fixture data
+=========================== short test summary info ===========================
+ERROR pkg/tests/test_variable.py::test_copy - RuntimeError: no fixture data
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+1 error in 0.08s
+`;
+
 const TESTS_FAILED = `
 F.
 =================================== FAILURES ===================================
@@ -124,7 +165,20 @@ test('which ends count as "the tests did not start": pytest exit 2 on collection
   // exit 2 without a collection error (interrupted by hand), and a collection error next to tests that ran
   assert.equal(testsDidNotStart(PYTEST, '!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!\n', 2, none), undefined);
   assert.equal(testsDidNotStart(PYTEST, '3 passed, 1 error in 0.50s\n!!! Interrupted: 1 error during collection !!!\n', 2, none), undefined);
+  // pytest -x stops at the first collection error with exit 1: still "did not start", by an error outside the change
+  assert.deepEqual(testsDidNotStart(PYTEST, STOPPED_AT_FIRST, 1, ['pkg/core/variable.py', 'pkg/core/dataset.py']),
+    { what: 'pytest: collection error', error: 'pkg/tests/test_dataset.py - AttributeError: `np.unicode_` was remove...', inChanged: [] });
+  // the same end when the import breaks in a file the subagent changed: its failure (the signal is then an ordinary one)
+  assert.deepEqual(testsDidNotStart(PYTEST, STOPPED_AT_FIRST, 1, ['pkg/core/dtypes.py'])?.inChanged, ['pkg/core/dtypes.py']);
+  // exit 1 in every other shape stays an ordinary failure: a test ran and failed, a test's setup raised,
+  // a collection error next to tests that ran, an error count without the collection header
+  assert.equal(testsDidNotStart(PYTEST, SETUP_ERROR, 1, none), undefined);
+  assert.equal(testsDidNotStart(PYTEST, STOPPED_AT_FIRST.replace('13 warnings, 1 error', '2 passed, 13 warnings, 1 error'), 1, none), undefined);
+  assert.equal(testsDidNotStart(PYTEST, STOPPED_AT_FIRST.replace('13 warnings, 1 error', '1 failed, 1 error'), 1, none), undefined);
+  assert.equal(testsDidNotStart(PYTEST, '1 error in 0.10s\n', 1, none), undefined);
+  assert.equal(testsDidNotStart(PYTEST, STOPPED_AT_FIRST, 0, none), undefined);
   // another runner with the same exit code is not read
+  assert.equal(testsDidNotStart('npm test', STOPPED_AT_FIRST, 1, none), undefined);
   assert.equal(testsDidNotStart('npm test', REMOVED_ALIAS, 2, none), undefined);
   assert.equal(testsDidNotStart('node --test', 'ℹ tests 1\nℹ fail 1\n', 1, none), undefined);
   // color codes do not hide the summary

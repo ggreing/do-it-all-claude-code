@@ -4,7 +4,8 @@
 //
 //   node scripts/measure107.ts --api-key-helper "<keychain cmd>" [--tasks id,id] [--arrangements direct,team-L2,team-L3,auto]
 //        [--lead opus] [--effort high] [--budget 50] [--cap-scale 1] [--out dir] [--work dir] [--dry-run] [--setup-only] [--only-plan]
-//        [--reproduce-first on|observe|off] [--direct-no-agent-tool] [--no-router-mcp]
+//        [--reproduce-first on|observe|off] [--profile save|balanced|quality] [--direct-no-agent-tool] [--no-router-mcp]
+//        [--daemon-port <n>]
 //
 // - direct   : plain Claude Code, no plugin (the lead does the work alone) = router OFF. It has the Agent tool, as
 //              a user's session has (decision 213): the tool's definition is in every call of a session with or
@@ -23,6 +24,17 @@
 // the server is started once on its own and asked for its tools and one call to the daemon (no model call).
 // --reproduce-first sets the router's reproduceFirst in every router arrangement (the quality baseline, decisions
 // 175 and 177); left out, the router's default.
+// --profile sets the router's profile (save, balanced or quality) in every router arrangement; left out, the
+// router's default. A direct run has no router, so the flag does not touch it. Each router record says which
+// profile ran (`profile`). A run is keyed by task and arrangement only: give a second profile its own --out.
+// Decision 222: every run, router on or off, may use `echo`, `pwd` and `wc` in Bash without a prompt. Workers ask
+// for them, a -p run refused them (a refused call costs a turn), and a user at the terminal allows such commands.
+// The measurements before decision 222 ran without the three; each record says so (`allowedSince222`).
+// The lead's model reaches the router through ANTHROPIC_MODEL, set to the value of --model (decision 218): a -p
+// run has no other way to name it on the first prompt, and without it the router plans for an unknown lead.
+// --daemon-port sets the port of each run's daemon. Left out, init picks the first free port from 47800 on when
+// the run is set up; two measurements set up at the same moment then pick the same one, and the second daemon
+// does not start. Runs of one invocation come one after the other and can share a port.
 // --dry-run prints the plan and a cost and time estimate from the earlier measurements of the same lead
 // (bench/results/measure107-sonnet for Sonnet, decision 123; measure107 for Opus, decision 107) and exits:
 // no workspace, no daemon, no API call. --setup-only prepares the workspaces and starts the daemons, no API call.
@@ -42,9 +54,11 @@ import { gradeSwebench, workspacePatch } from '../bench/src/graders/swebench.ts'
 import { childEnv, CREDENTIAL_DENY } from '../bench/src/secrets.ts';
 import { loadPublicManifest } from '../bench/src/tasks.ts';
 import type { Task } from '../bench/src/types.ts';
-import { claudeBin, runCaptured, TIMING_FLAGS } from '../bench/src/kpi/capture.ts';
+import { claudeBin, runCaptured } from '../bench/src/kpi/capture.ts';
+import { ALLOWED_SINCE_222, claudeArgs } from '../bench/src/kpi/run-args.ts';
 import { analysePhases, type LedgerTiming, type StreamLine } from '../bench/src/kpi/phases.ts';
-import { mcpSeen, routerMcpPreflight } from '../bench/src/kpi/router-mcp.ts';
+import { mcpSeen, routerMcpReady } from '../bench/src/kpi/router-mcp.ts';
+import { DEFAULT_PROFILE, PROFILES, profileOf } from '../packages/core/src/profiles.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -75,6 +89,11 @@ const DIRECT_AGENT_TOOL = !flag('direct-no-agent-tool');
 const ROUTER_MCP = !flag('no-router-mcp');
 const REPRO = arg('reproduce-first');
 if (REPRO !== undefined && !['on', 'observe', 'off'].includes(REPRO)) { console.error(`--reproduce-first must be on, observe or off, not ${REPRO}`); process.exit(2); }
+const DAEMON_PORT = arg('daemon-port') === undefined ? undefined : Number(arg('daemon-port'));
+if (flag('daemon-port') && !(Number.isInteger(DAEMON_PORT) && DAEMON_PORT! >= 1024 && DAEMON_PORT! <= 65535)) { console.error('--daemon-port must be a port number from 1024 to 65535'); process.exit(2); }
+const PROFILE = arg('profile');
+if (flag('profile') && PROFILE === undefined) { console.error(`--profile needs a value: ${PROFILES.join(', ')}`); process.exit(2); }
+if (PROFILE !== undefined && !(PROFILES as readonly string[]).includes(PROFILE)) { console.error(`--profile must be one of ${PROFILES.join(', ')}, not ${PROFILE}`); process.exit(2); }
 const CAP: Record<string, number> = Object.fromEntries(Object.entries({ L1: 2, L2: 5, L3: 10 }).map(([k, v]) => [k, v * CAP_SCALE]));
 type Arrangement = 'direct' | 'team-L2' | 'team-L3' | 'auto';
 const KNOWN: Arrangement[] = ['direct', 'team-L2', 'team-L3', 'auto'];
@@ -99,7 +118,8 @@ if (arrangements.includes('team-L3')) for (const lv of ['L3', 'L2', 'L1']) for (
 
 console.log(`plan: ${order.length} runs, lead ${LEAD}/${EFFORT}, budget $${BUDGET} (spent so far $${spent().toFixed(2)}), out ${OUT}`);
 if (arrangements.includes('direct')) console.log(`  direct runs ${DIRECT_AGENT_TOOL ? 'with' : 'without'} the Agent tool`);
-if (arrangements.some(a => a !== 'direct')) console.log(`  router runs ${ROUTER_MCP ? 'with' : 'without'} the router's MCP server`);
+if (arrangements.some(a => a !== 'direct')) console.log(`  router runs ${ROUTER_MCP ? 'with' : 'without'} the router's MCP server, profile ${PROFILE ?? `${DEFAULT_PROFILE} (the router's default)`}`);
+console.log(`  every run may also use ${ALLOWED_SINCE_222.join(', ')} without a prompt (decision 222; runs before it could not)`);
 for (const [t, a] of order) console.log(`  ${t.id.padEnd(32)} ${t.level} ${a.padEnd(8)} cap $${CAP[t.level]}${doneKeys.has(`${t.id}|${a}`) ? '  (done)' : ''}`);
 if (flag('only-plan')) process.exit(0);
 if (flag('dry-run')) { printEstimate(); process.exit(0); }
@@ -108,8 +128,13 @@ if (!HELPER && !flag('setup-only')) { console.error('pass --api-key-helper "<com
 
 // AGENTIC_ROUTER_HOME (the previous release) is left out: with it, init would move that folder into the temp home
 const { AGENTIC_ROUTER_HOME: _previousHome, ...inherited } = process.env;
+// The router's CLI never runs against the user's Claude Code settings: its CLAUDE_CONFIG_DIR is a folder of this
+// run, beside the router home, and init gets --no-plugin (the run loads the plugin with --plugin-dir). Either one
+// alone keeps `claude plugin marketplace add` away from the user's settings; without them init registered each
+// run's temporary router home there as a marketplace.
+const cliEnv = (home: string) => ({ ...inherited, DO_IT_ALL_CLAUDE_CODE_HOME: home, CLAUDE_CONFIG_DIR: path.join(path.dirname(home), 'claude-init') });
 const cli = (home: string, ...a: string[]) => execFileSync(process.execPath, [path.join(ROOT, 'packages/cli/src/index.ts'), ...a],
-  { env: { ...inherited, DO_IT_ALL_CLAUDE_CODE_HOME: home }, encoding: 'utf8' });
+  { env: cliEnv(home), encoding: 'utf8' });
 const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8', maxBuffer: 64 << 20 });
 
 function settingsFor(): string {
@@ -123,21 +148,14 @@ async function runClaude(repo: string, configDir: string, prompt: string, a: Arr
   // --strict-mcp-config loads no MCP server at all, the plugin's own included. A router run with ROUTER_MCP leaves
   // it out, so the plugin's declaration is loaded as in a user's session; the session's server list is checked
   // after the run (mcpSeen).
-  const strict = a === 'direct' || !ROUTER_MCP;
-  const args = ['-p', ...TIMING_FLAGS, '--model', LEAD, '--effort', EFFORT, '--max-budget-usd', String(capUsd),
-    '--permission-mode', 'acceptEdits', ...(strict ? ['--strict-mcp-config'] : []), '--setting-sources', 'project,local', '--settings', settingsFor(),
-    '--tools', a === 'direct' && !DIRECT_AGENT_TOOL ? 'Read,Edit,Write,Glob,Grep,Bash' : 'Read,Edit,Write,Glob,Grep,Bash,Agent',
-    '--allowedTools', 'Agent', 'Bash(npm *)', 'Bash(node *)', 'Bash(npx tsc *)', 'Bash(git status*)', 'Bash(git diff*)', 'Bash(git log*)',
-    'Bash(git show*)', 'Bash(git add*)', 'Bash(git commit*)', 'Bash(git merge*)', 'Bash(git worktree*)', 'Bash(git branch*)',
-    'Bash(ls *)', 'Bash(cat *)', 'Bash(head *)', 'Bash(tail *)', 'Bash(grep *)', 'Bash(cd *)', 'Bash(python *)', 'Bash(pytest *)'];
-  if (a !== 'direct') args.splice(1, 0, '--plugin-dir', path.join(ROOT, 'plugin'));
-  if (a !== 'direct' || DIRECT_AGENT_TOOL) {
-    // -p ends the session when the lead's turn ends; in the first measurement one lead ended 2 s after
-    // launching a background worker, which was then cut off. Interactive sessions do not have this problem.
-    // Every run that has the Agent tool gets the line, so both sides of a comparison carry the same text.
-    args.push('--append-system-prompt', 'This is a non-interactive run: before you give your final answer, wait until every subagent you started has finished and you have read its result.');
-  }
-  const env = { ...childEnv(configDir, { kind: 'api-key-helper' } as never), ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
+  // The command line itself is bench/src/kpi/run-args.ts, shared with scripts/measure-session.ts (what a run may
+  // do without a prompt is there too, decision 222).
+  const args = claudeArgs({ lead: LEAD, effort: EFFORT, capUsd, settings: settingsFor(), ...(a !== 'direct' ? { pluginDir: path.join(ROOT, 'plugin') } : {}),
+    agentTool: a !== 'direct' || DIRECT_AGENT_TOOL, strictMcp: a === 'direct' || !ROUTER_MCP });
+  // decision 218: Claude Code names the model to the hooks of an interactive session only (SessionStart), so a
+  // -p run tells the router through ANTHROPIC_MODEL, which the relay hook passes on with the prompt. It is the
+  // value of --model, so the run itself is the same; every arrangement gets it, router off included.
+  const env = { ...childEnv(configDir, { kind: 'api-key-helper' } as never), ANTHROPIC_MODEL: LEAD, ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
   const bin = claudeBin();
   const c = await runCaptured(bin.cmd, [...bin.prefix, ...args], { cwd: repo, env, input: prompt, timeoutSec, streamFile });
   return { code: c.code, out: c.result, ms: c.ms, timedOut: c.timedOut, stderr: c.stderr, lines: c.lines, startedAt: c.startedAt };
@@ -245,9 +263,10 @@ for (const [task, a] of order) {
   // Harness files stay out of the diff: router project settings, worktrees, hidden tests.
   fs.appendFileSync(path.join(ws.repo, '.git', 'info', 'exclude'), '\n.claude/\n.bench-hidden/\n');
   let home: string | undefined;
+  let ranProfile: string | undefined;   // the profile in the run's router config (router arrangements only)
   if (a !== 'direct') {
     home = path.join(root, 'router-home');
-    cli(home, 'init', '--yes', '--claude-settings', path.join(root, 'cs.json'), '--project', root);
+    cli(home, 'init', '--yes', '--no-plugin', '--claude-settings', path.join(root, 'cs.json'), '--project', root);
     const cfgFile = path.join(home, 'config.json');
     const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
     if (a === 'auto') {
@@ -259,16 +278,18 @@ for (const [task, a] of order) {
       cfg.budgetsUsd = { L0: cap, L1: cap, L2: cap, L3: cap };
     }
     if (REPRO) cfg.reproduceFirst = REPRO;
+    if (PROFILE) cfg.profile = PROFILE;
+    if (DAEMON_PORT) cfg.daemonPort = DAEMON_PORT;
+    ranProfile = profileOf(cfg);
     fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
     fs.mkdirSync(path.join(ws.repo, '.claude'), { recursive: true });
     fs.writeFileSync(path.join(ws.repo, '.claude', 'settings.local.json'), JSON.stringify({ worktree: { baseRef: 'head' } }, null, 2));
     console.log(cli(home, 'start').trim());
     if (ROUTER_MCP) {
       // before any model call: the server starts, lists the tool the brief names, and reaches this run's daemon
-      const pre = await routerMcpPreflight(path.join(ROOT, 'plugin', 'mcp', 'server.mjs'), { ...inherited, DO_IT_ALL_CLAUDE_CODE_HOME: home })
-        .catch((e: unknown) => ({ tools: [] as string[], daemonAnswered: false, reply: String((e as Error)?.message ?? e) }));
-      const ok = pre.tools.includes('router_report_triage') && pre.daemonAnswered;
-      console.log(`router MCP server: ${pre.tools.length} tools${ok ? ', the daemon answered' : ` — NOT READY (${pre.reply || 'router_report_triage is not among its tools'})`}`);
+      const pre = await routerMcpReady(path.join(ROOT, 'plugin', 'mcp', 'server.mjs'), cliEnv(home));
+      const ok = pre.ok;
+      console.log(`router MCP server: ${pre.tools.length} tools${ok ? ', the daemon answered' : ` — NOT READY after ${pre.attempts} tries (${pre.reply})`}`);
       if (!ok) { cli(home, 'stop'); console.error(`stopped before ${key}: the router's MCP server is not ready; fix it, or pass --no-router-mcp for the earlier arrangement`); process.exit(3); }
     }
   }
@@ -292,10 +313,10 @@ for (const [task, a] of order) {
   else graded = await gradeSwebench(task, manifest!.dataset, manifest!.split, await workspacePatch(ws.repo, base), path.join(root, 'grade'), `m107-${task.id}-${a}`);
   const models = Object.entries(r.out?.modelUsage ?? {}).map(([m, u]: [string, any]) => ({ model: m, costUsd: Number(u.costUSD ?? 0) }));
   const rec = {
-    taskId: task.id, arrangement: a, level: task.level, leadModel: LEAD, leadEffort: EFFORT, rep: 1,
+    taskId: task.id, arrangement: a, level: task.level, leadModel: LEAD, leadEffort: EFFORT, rep: 1, allowedSince222: true,
     passed: graded.pass, grade: graded.detail, costUsd, wallSeconds: Math.round(r.ms / 1000),
     costLeadUsd: a === 'direct' ? costUsd : (facts as any).costLeadUsd, costSubagentsUsd: a === 'direct' ? 0 : (facts as any).costSubagentsUsd,
-    leadCalls: r.out?.num_turns ?? null, models, ...stats, ...(a === 'direct' ? { outcome: 'router-off', levelChosen: null, agentTool: DIRECT_AGENT_TOOL } : { routerMcp: ROUTER_MCP }), ...facts,
+    leadCalls: r.out?.num_turns ?? null, models, ...stats, ...(a === 'direct' ? { outcome: 'router-off', levelChosen: null, agentTool: DIRECT_AGENT_TOOL } : { routerMcp: ROUTER_MCP, profile: ranProfile }), ...facts,
     mcp: { seen: mcp.seen, servers: mcp.servers.map(s => `${s.name} (${s.status})`), routerTools: mcp.routerTools },
     timedOut: r.timedOut, error: r.out?.is_error ? String(r.out?.subtype ?? r.out?.result ?? '').slice(0, 300) : (r.out ? undefined : r.stderr.slice(-300)),
     phases,

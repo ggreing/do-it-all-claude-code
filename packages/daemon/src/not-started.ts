@@ -2,7 +2,8 @@
 //
 // pytest ends with exit code 2 when it could not collect the tests (an import fails), 3 on an internal error (a
 // plugin that does not load) and 4 on a usage error (a conftest that does not import, a bad option). None of
-// these says a test failed. On the quality baseline five of seven delegated subtasks ended this way because of
+// these says a test failed. Run with -x it ends a collection error with exit 1 instead, like a failed test; the
+// output still says which it was (the fair re-measure: one such end was counted as a miss and raised a slot). On the quality baseline five of seven delegated subtasks ended this way because of
 // the machine's Python (a removed numpy alias, a pytest plugin that does not load on the installed Python), not
 // because of the change; counted as misses, they raised the slot step after step.
 //
@@ -35,14 +36,19 @@ const slashes = (s: string) => s.replace(/\\/g, '/');
 
 /**
  * What kept the tests from starting, or undefined when the command is not pytest, when it ended in another way
- * (0: passed, 1: tests failed, 5: nothing collected), or when its summary counts a test that ran.
+ * (0: passed, 1: tests failed or a test's setup failed, 5: nothing collected), or when its summary counts a test
+ * that ran. Exit 1 counts only as a collection error pytest stopped at (-x).
  * `changed` holds the repository-relative paths of the files the subagent changed.
  */
 export function testsDidNotStart(command: string, output: string, code: number | null, changed: readonly string[] = []): NotStarted | undefined {
   if (!/\b(?:pytest|py\.test)\b/.test(command)) return undefined;
   const text = output.replace(ANSI, '');
   if (/\b[1-9]\d* (?:passed|failed|xfailed|xpassed)\b/.test(text)) return undefined;   // tests ran: an ordinary result
-  const what = code === 2 && /\b\d+ errors? during collection\b/.test(text) ? 'pytest: collection error'
+  // With -x (or --maxfail) pytest stops at the first collection error and ends with exit 1, the code of a failed
+  // test, and without its "errors during collection" line. What tells it apart: the "ERROR collecting <file>"
+  // header, and a summary that counts errors and no test (an error in a test's setup has another header).
+  const stoppedCollecting = code === 1 && /^\s*_* ?ERROR collecting \S/m.test(text) && /\b[1-9]\d* errors? in [\d.]+ ?s\b/.test(text);
+  const what = (code === 2 && /\b\d+ errors? during collection\b/.test(text)) || stoppedCollecting ? 'pytest: collection error'
     : code === 3 ? 'pytest: internal error'
       : code === 4 ? 'pytest: usage error' : undefined;
   if (!what) return undefined;

@@ -66,12 +66,18 @@ test('skill is brief-driven (decision 87/88): handle-yourself vs delegate, no ha
   assert.match(body, /git diff --stat/);
 });
 
-test('skill encodes the decision-83 isolation rule and the worktree merge procedure', () => {
+test('skill encodes the isolation rule of decisions 83 and 219 and the worktree merge procedure', () => {
   const body = read('skills/lead-orchestrator/SKILL.md');
-  assert.match(body, /isolation:\s*"worktree"/);              // the Agent param
+  assert.match(body, /isolation:\s*"worktree"/);              // the Agent param, for the exception
   assert.match(body, /runs alone|writer that ran alone|alone gets no/i); // lone writer: no isolation
-  assert.match(body, /two or more/i);                         // only concurrent writers isolate
-  // merge only concurrent worktree writers, with concrete commands
+  assert.match(body, /two or more/i);
+  // decision 219: writers sent together share the working tree; a worktree each only with project isolation on
+  // and no uncommitted input, since a worktree starts from the last commit
+  assert.match(body, /share the working tree/);
+  assert.match(body, /after: none/);
+  assert.match(body, /turned on worktree isolation for this project and\s+no part needs a file that is not committed/);
+  assert.doesNotMatch(body, /snapshot-commit/);
+  // merge only worktree writers, with concrete commands
   assert.match(body, /git merge --no-ff/);
   assert.match(body, /git worktree remove/);
   assert.match(body, /worktree-agent-<agentId>/);
@@ -121,7 +127,7 @@ test('skill covers the uncertain-size escalation and shares the brief\'s rubric/
   assert.match(brief, /\b2 or more\b/);
   assert.match(body, /4 or more files/);
   assert.match(body, /2 or more/);
-  assert.match(body, /do not explore just to decide|Don't explore just to decide/i);
+  assert.match(body, /take one quick look, then decide/i);   // decision 220: the rubric flip, consistent with the uncertain-team brief
 
   // the L3 escalation threshold + signs come from core, so this follows if the provisional values change
   assert.ok(brief.includes(`${L3_SIZE_RULE.files} or more files`), 'brief states the L3 file threshold');

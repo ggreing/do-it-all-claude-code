@@ -362,7 +362,10 @@ async function runSquatter(ctx, d) {
 
 function daemon(tmp) {
   const home = path.join(tmp, 'home');
-  const env = cleanEnv(process.env, { DO_IT_ALL_CLAUDE_CODE_HOME: home });
+  // The router's CLI gets a Claude Code config folder of this run, and init gets --no-plugin below: the runs load
+  // the plugin with --plugin-dir, and this temporary router home must never be registered as a marketplace in
+  // the user's Claude Code settings.
+  const env = cleanEnv(process.env, { DO_IT_ALL_CLAUDE_CODE_HOME: home, CLAUDE_CONFIG_DIR: path.join(tmp, 'claude-init') });
   const cli = (...a) => execFileSync(process.execPath, [path.join(REPO, 'packages', 'cli', 'src', 'index.ts'), ...a], { env, encoding: 'utf8', cwd: tmp, timeout: 60_000 });
   return { home, cli };
 }
@@ -375,7 +378,7 @@ async function selftest() {
   const fx = fixtureRepo(tmp, 'repo');
   assert(fs.existsSync(path.join(fx.dir, '.env')) && execFileSync('git', ['status', '--short'], { cwd: fx.dir, encoding: 'utf8' }).includes('.env'), 'fixture: .env exists and git does not ignore it');
   const d = daemon(tmp);
-  d.cli('init', '--yes', '--claude-settings', path.join(tmp, 'claude-settings.json'), '--project', tmp);
+  d.cli('init', '--yes', '--no-plugin', '--claude-settings', path.join(tmp, 'claude-settings.json'), '--project', tmp);
   console.log('    ' + d.cli('start').trim().split('\n')[0]);
   assert(fs.existsSync(path.join(d.home, 'config.json')), 'daemon: started in the temp home');
   const list = steps(fx, d.home, false);
@@ -467,7 +470,7 @@ async function main() {
   fs.mkdirSync(configDir);
   fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({ apiKeyHelper: `node "${posix(path.join(HERE, 'key-helper.mjs'))}"` }, null, 2) + '\n');
   const d = daemon(tmp);
-  d.cli('init', '--yes', '--claude-settings', path.join(tmp, 'claude-settings.json'), '--project', tmp);
+  d.cli('init', '--yes', '--no-plugin', '--claude-settings', path.join(tmp, 'claude-settings.json'), '--project', tmp);
   console.log(d.cli('start').trim());
   const fake = await startFake();
   console.log(`fake upstream on 127.0.0.1:${fake.port}; temp dir ${tmp}`);

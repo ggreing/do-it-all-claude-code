@@ -8,6 +8,7 @@
 // JSON file; the daemon validates every call again with the schemas here.
 import { z } from 'zod';
 import { crossesTier, stepUp } from './ladder.ts';
+import type { LeadModelClass } from './presets.ts';
 import type { Level, Step } from './types.ts';
 
 // ------------------------------------------------------------------ names
@@ -82,12 +83,37 @@ export const ReportTriageInput = z.strictObject({
  * Decision 178 (나): a change the lead, after a look at the code, judges to be one file and a small edit is
  * handled by the lead alone. Delegating it costs a fixed 15 to 25 s (the brief, the worker's start, reading its
  * result; decision 174), more than the fix: one-file public L2 issues took 12 and 20 s direct, 38 and 49 s
- * delegated. Multi-file changes (the c-l1 tasks that touch 2 or 3 files) stay delegated: there the worker saves
- * the lead's tokens.
+ * delegated. This is the narrow bound: an Opus lead keeps it, and so does any class whose delegateFrom the user
+ * set (SMALL_DIRECT widens it for the rest; decision 220).
  */
 export const ONE_FILE_DIRECT = { files: 1, lines: 15, confidence: 0.6 } as const;
 
-/** Whether a lead's size report says "one file, a small edit" (and is sure enough to act on). */
+/**
+ * Decision 220: a Sonnet lead, or a lead whose model is not known, keeps a change its first look estimates at
+ * two files or fewer AND about 60 changed lines or fewer — wider than decision 178's one file / ~15 lines. On
+ * one run of the 20 public SWE-bench tasks the four requests the lead delegated or took back were all 2 files,
+ * and two of them cost far more than the lead alone ($0.15 vs $0.06, $0.13 vs $0.07); the paying delegations on
+ * the same run were 4+ files or 75+ lines. An Opus lead keeps ONE_FILE_DIRECT (its workers are cheap against its
+ * own calls; not measured here, decision 211). Fitted on one run — see the CHANGELOG.
+ */
+export const SMALL_DIRECT = { files: 2, lines: 60, confidence: 0.6 } as const;
+
+/**
+ * The keep-it-yourself bound for a lead of this class: the wide one (decision 220) for a non-Opus lead whose
+ * delegateFrom the user did not set, else the narrow decision-178 bound. Mirrors smallStaysWithLead's gate: a
+ * delegateFrom the user set for the class wins, so those requests are delegated as the user asked.
+ */
+export function smallDirectBound(leadClass: LeadModelClass, own: Partial<Record<LeadModelClass, Level>> = {}): { files: number; lines: number; confidence: number } {
+  return leadClass !== 'opus' && own[leadClass] === undefined ? SMALL_DIRECT : ONE_FILE_DIRECT;
+}
+
+/** Whether a lead's size report is within the keep-it-yourself bound for its class (decisions 178, 220). */
+export function smallChangeDirect(v: ReportTriageInput, leadClass: LeadModelClass, own: Partial<Record<LeadModelClass, Level>> = {}): boolean {
+  const b = smallDirectBound(leadClass, own);
+  return v.kind === 'direct' && v.files <= b.files && v.lines !== undefined && v.lines <= b.lines && v.confidence >= b.confidence;
+}
+
+/** Whether a lead's size report says "one file, a small edit" (the narrow decision-178 bound; and sure enough to act on). */
 export function oneFileDirect(v: ReportTriageInput): boolean {
   return v.kind === 'direct' && v.files <= ONE_FILE_DIRECT.files && v.lines !== undefined && v.lines <= ONE_FILE_DIRECT.lines && v.confidence >= ONE_FILE_DIRECT.confidence;
 }
@@ -157,7 +183,7 @@ export const ROUTER_TOOLS: readonly RouterToolDef[] = [
   },
   {
     name: 'router_report_triage', input: ReportTriageInput,
-    description: 'Do It All Claude Code, lead only. Reports your own judgement of the request size before the first subtask is dispatched: direct (L0 trivial, L1 small fix) or team (L2 module-level, L3 new service or architecture change), the number of files you expect to change, and your confidence. The router records it and, when you judge a request larger than planned, re-plans it and returns the team and the Agent call values to use.',
+    description: 'Do It All Claude Code, lead only. Reports your own judgement of the request size before the first subtask is dispatched: direct (L0 trivial, L1 small fix) or team (L2 module-level, L3 new service or architecture change), the files you expect to change, your line estimate and your confidence. When you judge it larger than planned the router re-plans it and returns the team and Agent call values. When you report direct and the change is small — up to 2 files and ~60 lines for a Sonnet or unknown-model lead, 1 file and ~15 lines for an Opus lead — the router keeps it with you (no team).',
   },
   {
     name: 'router_report_result', input: ReportResultInput,
@@ -173,7 +199,7 @@ export const ROUTER_TOOLS: readonly RouterToolDef[] = [
   },
   {
     name: 'router_project_isolation', input: ProjectIsolationInput,
-    description: 'Do It All Claude Code, lead only. Turns git-worktree isolation on or off for THIS project after the user agrees (enable: true/false). On, subagents work in parallel, each in its own git worktree; off, the team shares one checkout and overlapping edits take turns. Writes worktree.baseRef in .claude/settings.local.json and a ".claude/worktrees/" line in .gitignore, and records the choice; the answer names the files changed. Applies from the next subtask dispatched; running subtasks keep their worktree. Use this instead of asking the user to run a terminal command.',
+    description: 'Do It All Claude Code, lead only. Turns git-worktree isolation on or off for THIS project after the user agrees (enable: true/false). Writers share one checkout either way; on, writers sent together may each get a git worktree when none needs an uncommitted file. Writes worktree.baseRef in .claude/settings.local.json and a ".claude/worktrees/" line in .gitignore, and records the choice; the answer names the files changed. Applies from the next subtask dispatched; running subtasks keep their worktree. Use this instead of asking the user to run a terminal command.',
   },
 ];
 
