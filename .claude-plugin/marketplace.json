@@ -6,7 +6,7 @@
     {
       "name": "do-it-all-claude-code",
       "description": "Router plugin: hooks, agents, skills and the router MCP server. After installing, run /do-it-all-setup once to install the daemon and start it.",
-      "source": { "source": "git-subdir", "url": "ggreing/do-it-all-claude-code", "path": "plugin", "ref": "v0.5.0", "sha": "c6e34d287badef6aaa1525112133a83fbb04958d" }
+      "source": { "source": "git-subdir", "url": "https://github.com/ggreing/do-it-all-claude-code.git", "path": "plugin", "ref": "v0.5.0", "sha": "c6e34d287badef6aaa1525112133a83fbb04958d" }
     }
   ]
 }
