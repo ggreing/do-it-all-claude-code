@@ -7,7 +7,7 @@ Status: design note, not implemented. Written for decision 225 and its extension
 The router's job is to match **model and effort** to each task — up as well as down. It is not
 "use something cheaper than the lead". Changes are judged by **pass rate first, cost second**.
 
-Two gaps, from the Opus-lead re-measure (`C:/ar-m3-tree/bench/results/op1`):
+Two gaps, from the Opus-lead re-measure ([decision 225 measurements](../measurements/decision225-opus-quality-session.md)):
 
 1. **Start cell encodes size, not difficulty.** A slot's start is fixed per level by the preset
    (`packages/core/src/presets.ts`; `startStep()` at `policy.ts:36` just reads `role.start`).
