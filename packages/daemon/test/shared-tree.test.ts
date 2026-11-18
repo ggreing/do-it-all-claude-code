@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { git, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
+import { pinRoutine, git, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
 
 const L1_PROMPT = 'Fix the bug where parse() fails on empty input in src/parse.ts';
 type Out = { decision?: string; reason?: string };
@@ -29,6 +29,7 @@ async function dispatch(d: TestDaemon, cwd: string, sid: string, agentId: string
     return r.body as Out;
   };
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  pinRoutine(d);
   await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent',
     tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] fix parse\n[scope: src/**]', model: 'haiku', effort: 'low' } });
   await post({ hook_event_name: 'SubagentStart', agent_id: agentId, agent_type: 'do-it-all-claude-code:coder' });
@@ -96,6 +97,7 @@ async function asyncLaunch(d: TestDaemon, cwd: string, sid: string, agentId: str
   };
   const prompt = '[subtask:A] fix parse\n[scope: src/**]';
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  pinRoutine(d);
   await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt, model: 'haiku', effort: 'low' } });
   await post({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt, model: 'haiku', effort: 'low' },
     tool_response: { isAsync: true, status: 'async_launched', agentId, prompt, resolvedModel: 'claude-haiku-5-5' } });

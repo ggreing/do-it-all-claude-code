@@ -10,7 +10,7 @@ import { AWAITING_USER_MARKER } from '../src/continuation.ts';
 import type { StatusView } from '../src/router.ts';
 import {
   TEAM_L0_PRESETS, TEAM_L1_PRESETS, claudeAdapter,
-  FIXTURE_CALLS, copyTranscript, editAgentPrompt, getStatus, git, loadSpike, makeRepo, postHook, retarget, rmrf, rows, startTestDaemon, tmpDir, write,
+  FIXTURE_CALLS, copyTranscript, editAgentPrompt, getStatus, git, loadSpike, makeRepo, pinRoutine, postHook, retarget, rmrf, rows, startTestDaemon, tmpDir, write,
   type HookInput, type TestDaemon,
 } from './helpers.ts';
 
@@ -38,6 +38,10 @@ const out = async (d: TestDaemon, h: HookInput): Promise<Out> => {
   return r.body as Out;
 };
 const subagentStop = (h: HookInput, stopHookActive: boolean): HookInput => ({ ...h, stop_hook_active: stopHookActive });
+/** Decision 226: mark the open request routine so the coder starts at s1 (haiku·low) — what these flow fixtures and
+ *  dispatches were recorded against. Difficulty is the lever that sets the start cell now; the behaviour these tests
+ *  check (pairing, scope, verify, step mechanics) is difficulty-independent. */
+const setRoutine = (d: TestDaemon, sid: string): void => pinRoutine(d, sid);
 
 // ------------------------------------------------------------------ decision 192 (Q3): first-delegation note
 
@@ -97,6 +101,7 @@ test('s1: brief injected, B denied (wrong step), A paired by order, verified, us
         h.agent_transcript_path = copyTranscript(d.home, A);
       }
       outs.push([`${String(h.hook_event_name)}${h.tool_name ? `:${String(h.tool_name)}` : ''}${isB ? ':B' : ''}`, await out(d, h)]);
+      if (h.hook_event_name === 'UserPromptSubmit') setRoutine(d, sessionId);
     }
     const by = (k: string) => outs.find(([n]) => n === k)?.[1];
 
@@ -154,7 +159,8 @@ test('s1 variant: an edit outside the scope blocks once, then the second failure
     editAgentPrompt(inputs, '[subtask:A]', p => `${p}\n[scope: allowed/**]`);
     const A = 'a6bfb50a2449d77bb';
     const upTo = inputs.findIndex(h => h.hook_event_name === 'SubagentStart' && h.agent_id === A);
-    for (const h of inputs.slice(0, upTo + 1)) if (!agentPromptOf(h).includes('[subtask:B]')) await out(d, h);
+    const sessionId = String(inputs[0]!.session_id);
+    for (const h of inputs.slice(0, upTo + 1)) { if (agentPromptOf(h).includes('[subtask:B]')) continue; await out(d, h); if (h.hook_event_name === 'UserPromptSubmit') setRoutine(d, sessionId); }
     const stop = inputs.find(h => h.hook_event_name === 'SubagentStop' && h.agent_id === A)!;
     write(repo, 'allowed/a.txt', 'A');
     write(repo, 'forbidden/x.txt', 'X');               // e.g. written through Bash, which the guard does not see
@@ -188,6 +194,7 @@ test('s2: failing verify blocks the first stop; the same subagent fixes it and p
     for (const h of inputs) {
       if (h.hook_event_name === 'SubagentStop') write(repo, 'allowed/c.txt', stops++ === 0 ? 'C\n' : 'C\nVERIFIED\n');
       const o = await out(d, h);
+      if (h.hook_event_name === 'UserPromptSubmit') setRoutine(d, String(inputs[0]!.session_id));
       if (h.hook_event_name === 'SubagentStop') outs.push(o);
     }
     assert.equal(outs.length, 2);
@@ -229,6 +236,7 @@ test('s5: worktree subagent: committed change outside scope is caught; branch an
         continue;
       }
       const o = await out(d, h);
+      if (h.hook_event_name === 'UserPromptSubmit') setRoutine(d, String(inputs[0]!.session_id));
       if (h.hook_event_name === 'PreToolUse' && h.tool_name === 'Agent') assert.deepEqual(o, {});
     }
     assert.equal(stopOut?.decision, 'block');
@@ -260,6 +268,7 @@ const reasonOf = (o: Out) => o.hookSpecificOutput?.permissionDecision === 'deny'
 test('Agent call rules: tag, role, managed types only, fixed L0 team, budget', () => withDaemon(async d => {
   const cwd = d.home;
   await out(d, prompt('rules', cwd, L0_PROMPT));
+  setRoutine(d, 'rules');   // decision 226: coder starts at s1 (haiku·low) under routine
   assert.equal(rows(d, 'SELECT level FROM requests')[0]!.level, 'L0');
   assert.match(reasonOf(await out(d, agentCall('rules', cwd, { prompt: 'no tag here', model: 'haiku', effort: 'low' }))), /must start with "\[subtask:<ID>\]"/);
   assert.match(reasonOf(await out(d, agentCall('rules', cwd, { type: 'do-it-all-claude-code:lead', prompt: '[subtask:A] x', model: 'haiku', effort: 'low' }))), /unknown router agent type/);
@@ -289,6 +298,7 @@ test('pairing by order is repaired from PostToolUse(Agent) when subagents start 
   const cwd = d.home;
   const sid = 'pairs';
   await out(d, prompt(sid, cwd, L1_PROMPT));
+  setRoutine(d, sid);   // decision 226: coders start at s1 (haiku·low) under routine
   // two coders at once need disjoint scopes (decision 178)
   assert.deepEqual(await out(d, agentCall(sid, cwd, { prompt: '[subtask:A] a\n[scope: src/a/**]', model: 'haiku', effort: 'low' })), {});
   assert.deepEqual(await out(d, agentCall(sid, cwd, { prompt: '[subtask:B] b\n[scope: src/b/**]', model: 'haiku', effort: 'low' })), {});   // L1: lead may add a 2nd coder (slot 1)
@@ -360,6 +370,7 @@ test('session_start after compact or resume re-injects the ledger summary', () =
   const start = (source: string): HookInput => ({ ...base(sid, cwd), hook_event_name: 'SessionStart', source });
   assert.deepEqual(await out(d, start('startup')), {});
   await out(d, prompt(sid, cwd, L1_PROMPT));
+  setRoutine(d, sid);   // decision 226: coder starts at s1 (haiku·low) under routine, as the summary asserts
   await out(d, agentCall(sid, cwd, { prompt: '[subtask:A] a\n[scope: src/**]', model: 'haiku', effort: 'low' }));
   const ctx = (await out(d, start('compact'))).hookSpecificOutput?.additionalContext ?? '';
   assert.match(ctx, /^\[do-it-all-claude-code\] level L1/);
@@ -371,7 +382,8 @@ test('session_start after compact or resume re-injects the ledger summary', () =
 
 test('without a prompt seen this turn, an Agent call opens a default request instead of failing', () => withDaemon(async d => {
   const cwd = d.home;
-  assert.deepEqual(await out(d, agentCall('late', cwd, { prompt: '[subtask:A] x', model: 'haiku', effort: 'low' })), {});
+  // decision 226: no prompt to set difficulty, so the coder dispatches at its moderate-default cell s3 (sonnet·medium)
+  assert.deepEqual(await out(d, agentCall('late', cwd, { prompt: '[subtask:A] x', model: 'sonnet', effort: 'medium' })), {});
   const [r] = rows(d, 'SELECT level, triage, replanned_from FROM requests');
   // the default request is lead-direct L1; the lead calling a router subagent re-plans it at L2 (T6)
   assert.equal(r!.level, 'L2');

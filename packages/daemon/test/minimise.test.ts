@@ -12,7 +12,7 @@ import { pruneEvents, scrubProse } from '../src/data.ts';
 import { minimalPayload } from '../src/payload.ts';
 import { homeLayout } from '../src/home.ts';
 import { Ledger, SCHEMA_VERSION } from '../src/ledger.ts';
-import { makeHome, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, type HookInput, type TestDaemon } from './helpers.ts';
+import { pinRoutine, makeHome, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, type HookInput, type TestDaemon } from './helpers.ts';
 
 const MARK = 'ZQX-private-7781';
 const L2_PROMPT = `Refactor the validation module across multiple files and add an audit log. ${MARK}`;
@@ -32,6 +32,7 @@ async function fullFlow(config: Record<string, unknown>): Promise<{ db: string; 
     assert.equal(r.status, 200, r.text);
   };
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT, prompt_id: 'p-1' });
+  pinRoutine(d);
   await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_1',
     tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:A] add the audit log ${MARK}\n[scope: src/**]\nThe spec: ${MARK}`, model: 'haiku', effort: 'low' } });
   await post({ hook_event_name: 'SubagentStart', agent_id: 'a1', agent_type: 'do-it-all-claude-code:coder' });

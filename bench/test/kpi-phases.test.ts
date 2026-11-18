@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { analysePhases, phaseReport, type LedgerTiming, type StreamLine } from '../src/kpi/phases.ts';
 import { runCaptured, TIMING_FLAGS } from '../src/kpi/capture.ts';
 import { ROUTER_TOOL_PREFIX, mcpSeen } from '../src/kpi/router-mcp.ts';
+import { projectFolderName, projectFolderOf, transcriptsLine } from '../src/kpi/subscription.ts';
 import { freePort, noPluginCalls, safeEnv, type SafeEnv } from './kpi-safe-env.ts';
 
 const BENCH = fileURLToPath(new URL('..', import.meta.url));
@@ -159,6 +160,11 @@ test('measure107 smoke run with a fake claude: the timing flags are passed, the 
   assert.match(r.stdout, /every run may also use Bash\(echo \*\), Bash\(pwd\), Bash\(wc \*\) without a prompt \(decision 222/);
   const rec = JSON.parse(fs.readFileSync(path.join(out, 'runs.jsonl'), 'utf8').trim()) as { costUsd: number; leadCalls: number; agentTool: boolean; allowedSince222: boolean; phases: { startupSeconds: number; leadToolCalls: number; notMeasured: string[] } };
   assert.deepEqual([rec.agentTool, rec.allowedSince222], [true, true]);
+  // the grade is a real one (the test's environment does not make `node --test` a nested run that runs nothing):
+  // the fake session changed no file, so the task's hidden tests fail and the fixture's own tests pass
+  const graded = rec as unknown as { passed: boolean; grade: string };
+  assert.equal(graded.passed, false, graded.grade);
+  assert.match(graded.grade, /^tests pass=[1-9]\d* fail=[1-9]\d*$/);
   assert.deepEqual([rec.costUsd, rec.leadCalls, rec.phases.leadToolCalls], [0.01, 2, 1]);
   assert.ok(rec.phases.startupSeconds >= 0 && rec.phases.notMeasured.some(n => /no daemon ledger/.test(n)));
   assert.ok(fs.existsSync(path.join(out, 'streams', 'c-l1-01_direct.jsonl')));
@@ -315,4 +321,148 @@ test('the measurement and end-to-end scripts never run the router\'s init withou
     for (const l of inits) assert.match(l, /'init', '--yes', '--no-plugin'/, `${file}: ${l.trim()}`);
     assert.ok(/CLAUDE_CONFIG_DIR: path\.join\(.*'claude-init'\)/.test(text), `${file}: the CLI's own CLAUDE_CONFIG_DIR`);
   }
+});
+
+// ---- decision 226: a measurement on the subscription login instead of an API key
+
+const usageSteps = (weekly: number, init: Record<string, unknown> = {}) => [
+  { line: { type: 'system', subtype: 'init', apiKeySource: 'none', claude_code_version: '2.1.326', plugins: [], mcp_servers: [], ...init } },
+  { line: { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'usage' }] },
+    usage_report: { rate_limits: { limits: [{ kind: 'weekly_all', group: 'weekly', percent: weekly, resets_at: '2026-11-22T00:00:00Z', severity: 'normal', is_active: false }], extra_usage: { is_enabled: false } } } } },
+  { line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0, num_turns: 1, modelUsage: {} } },
+];
+const runSteps = (init: Record<string, unknown> = {}, limit: Record<string, unknown> = { status: 'allowed', rateLimitType: 'seven_day', utilization: 0.1 }) => [
+  { line: { type: 'system', subtype: 'init', apiKeySource: 'none', claude_code_version: '2.1.326', plugins: [{ name: 'cc-plugin-agents-md', path: 'builtin', source: 'cc-plugin-agents-md@builtin' }], mcp_servers: [], ...init } },
+  { pauseMs: 30, line: { type: 'rate_limit_event', rate_limit_info: limit } },
+  { pauseMs: 30, line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 2, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 } } } },
+];
+interface FakeCall { args: string[]; cwd: string; usage: boolean; env: string[]; configDir: string | null; anthropicModel: string | null }
+
+/** A measure107 run on the subscription login with the fake claude; the parent's environment holds credential variables. */
+function subRun(name: string, scenario: { calls: unknown[][]; usage?: unknown[][] }, extra: string[] = [], arrangement = 'direct') {
+  const fakeDir = path.join(tmp, `fake-${name}`);
+  fs.mkdirSync(fakeDir, { recursive: true });
+  const fake = path.join(fakeDir, 'kpi-fake-claude.mjs');
+  fs.copyFileSync(path.join(BENCH, 'test', 'kpi-fake-claude.mjs'), fake);
+  fs.writeFileSync(path.join(fakeDir, 'scenario.json'), JSON.stringify(scenario));
+  const out = path.join(tmp, `out-${name}`), work = path.join(tmp, `work-${name}`);
+  const safe = safeEnv(tmp, name, { BENCH_CLAUDE_BIN: fake, ANTHROPIC_API_KEY: 'not-a-real-key', ANTHROPIC_AUTH_TOKEN: 'not-a-real-token', CLAUDE_CODE_OAUTH_TOKEN: 'not-a-real-token', CLAUDE_CODE_USE_BEDROCK: '1' });
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--subscription', '--arrangements', arrangement, '--tasks', 'c-l1-01', '--lead', 'sonnet', '--out', out, '--work', work,
+    ...(arrangement === 'direct' ? [] : ['--daemon-port', String(freePort())]), ...extra], { encoding: 'utf8', timeout: 240_000, env: safe.env });
+  const file = path.join(fakeDir, 'calls.jsonl');
+  const calls = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as FakeCall) : [];
+  const ledger = fs.existsSync(path.join(out, 'ledger.jsonl')) ? fs.readFileSync(path.join(out, 'ledger.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as Record<string, unknown>) : [];
+  return { r, out, work, calls, runs: calls.filter(c => !c.usage), readings: calls.filter(c => c.usage), ledger, userConfigDir: String(safe.env.CLAUDE_CONFIG_DIR), text: String(r.stdout) + String(r.stderr) };
+}
+
+test('measure107 --subscription: the run gets no key, no credential variable and no config folder of the run; it is recorded as a subscription run', () => {
+  const s = subRun('sub', { calls: [runSteps()], usage: [usageSteps(10), usageSteps(12)] });
+  assert.equal(s.r.status, 0, s.text);
+  assert.deepEqual(s.calls.map(c => c.usage), [true, false, true], 'a reading before the run and one after it');
+  const run = s.runs[0]!;
+  // no key helper in --settings: the credential deny rules only
+  const settings = JSON.parse(run.args[run.args.indexOf('--settings') + 1]!) as { apiKeyHelper?: string; permissions: { deny: string[] }; autoMemoryEnabled?: boolean };
+  assert.deepEqual([settings.apiKeyHelper, settings.autoMemoryEnabled, settings.permissions.deny.includes('Read(~/.claude/**)')], [undefined, false, true]);
+  // nothing that names a credential or another provider reaches the run, in the run or in a reading
+  for (const c of s.calls) for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'BENCH_CLAUDE_BIN']) assert.ok(!c.env.includes(k), `${k} reached ${c.usage ? 'a reading' : 'the run'}`);
+  for (const k of ['CLAUDE_CODE_DISABLE_CLAUDE_MDS', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', 'ENABLE_CLAUDEAI_MCP_SERVERS', 'DISABLE_AUTOUPDATER', 'ANTHROPIC_MODEL']) assert.ok(run.env.includes(k), k);
+  // the config folder is the caller's own (here the test's), never a folder of the run: Claude Code reads its own login
+  for (const c of s.calls) assert.equal(path.normalize(String(c.configDir)), path.normalize(s.userConfigDir));
+  // the user's settings are not loaded, no MCP server, and a direct run writes no transcript
+  assert.equal(run.args[run.args.indexOf('--setting-sources') + 1], 'project,local');
+  assert.ok(run.args.includes('--strict-mcp-config') && run.args.includes('--no-session-persistence') && !run.args.includes('--bare'), run.args.join(' '));
+  // one workspace folder for the run and the readings
+  const ws = fs.realpathSync(path.join(s.work, 'sub-ws', 'repo'));
+  for (const c of s.calls) assert.equal(fs.realpathSync(c.cwd), ws);
+  assert.deepEqual(s.readings[0]!.args.slice(0, 2), ['-p', '/usage']);
+  const [rec] = records(s.out);
+  assert.deepEqual([rec!.subscription, rec!.apiKeySource, rec!.claudeVersion, rec!.transcript, rec!.costUsd], [true, 'none', '2.1.326', false, 0.01]);
+  // graded for real in the shared workspace: nothing was changed there, so the hidden tests fail
+  assert.equal(rec!.passed, false);
+  assert.match(String(rec!.grade), /^tests pass=[1-9]\d* fail=[1-9]\d*$/);
+  assert.deepEqual(rec!.meters, { weekly_all: { from: 10, to: 12, delta: 2, valid: true } });
+  assert.deepEqual(rec!.limitEvents, [{ status: 'allowed', type: 'seven_day', utilization: 0.1, resetsAt: null, usingOverage: false }]);
+  assert.deepEqual(s.ledger.map(e => [e.costUsd, e.subscription]), [[0.01, true]]);
+  assert.ok(fs.existsSync(path.join(s.out, 'patches', 'c-l1-01_direct.diff')), 'the changes made in the shared workspace are kept');
+  assert.equal(fs.readFileSync(path.join(s.out, 'readings.jsonl'), 'utf8').trim().split('\n').length, 2);
+  assert.match(s.text, /on the subscription login of this machine's Claude Code, no API key/);
+  assert.match(s.text, /\/usage is read before each run: no run starts with a meter at 80% or more/);
+  assert.match(s.text, /^\/usage: weekly_all 10%$/m);
+  // a folder holds runs paid for one way; and the two ways do not mix on one command line
+  const key = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--api-key-helper', 'not-a-real-helper', '--only-plan', '--arrangements', 'direct', '--tasks', 'c-l1-02', '--out', s.out, '--work', s.work], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(key.status, 2, key.stdout + key.stderr);
+  assert.match(key.stderr, /holds runs made on the subscription login: give the API-key runs an --out of their own/);
+  const both = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--subscription', '--api-key-helper', 'not-a-real-helper', '--only-plan', '--out', path.join(tmp, 'out-both'), '--work', s.work], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(both.status, 2, both.stdout + both.stderr);
+  assert.match(both.stderr, /--subscription and --api-key-helper are two ways to pay for a run/);
+});
+
+test('measure107 --subscription stops: a meter at the guard or a reading off the login before any run; a key, a limit or paid extra usage after one', () => {
+  // the meter is at the guard: nothing is started, nothing is counted
+  const high = subRun('high', { calls: [runSteps()], usage: [usageSteps(85)] });
+  assert.equal(high.r.status, 3, high.text);
+  assert.match(high.text, /stopped before c-l1-01\|direct: weekly_all is at 85%: no run starts at 80% or more/);
+  assert.deepEqual([high.runs.length, high.ledger.length, records(high.out).length], [0, 0, 0]);
+  // --max-percent moves the guard
+  assert.match(subRun('low', { calls: [runSteps()], usage: [usageSteps(10)] }, ['--max-percent', '5']).text, /weekly_all is at 10%: no run starts at 5% or more/);
+  // the reading itself ran on a key: no run follows
+  const keyed = subRun('keyed', { calls: [runSteps()], usage: [usageSteps(10, { apiKeySource: 'ANTHROPIC_API_KEY' })] });
+  assert.equal(keyed.r.status, 3, keyed.text);
+  assert.match(keyed.text, /stopped before c-l1-01\|direct: the \/usage reading is not usable: apiKeySource is "ANTHROPIC_API_KEY"/);
+  assert.equal(keyed.runs.length, 0);
+  // the run shows a key: counted in the ledger, no record (it is run again), the measurement stops
+  const off = subRun('off', { calls: [runSteps({ apiKeySource: 'apiKeyHelper' })] }, ['--no-meter']);
+  assert.equal(off.r.status, 3, off.text);
+  assert.match(off.text, /stopped after c-l1-01\|direct \(\$0\.010 counted for it\): apiKeySource is "apiKeyHelper": the run did not use the subscription login/);
+  assert.deepEqual([off.readings.length, records(off.out).length, off.ledger.map(e => e.subscription)], [0, 0, [true]]);
+  assert.match(off.text, /no \/usage readings \(--no-meter\)/);
+  // a plugin of the user's in the session: the same
+  assert.match(subRun('plug', { calls: [runSteps({ plugins: [{ name: 'someone-elses', path: '/plugins/someone-elses' }] })] }, ['--no-meter']).text, /stopped after .*other plugins are loaded: someone-elses/);
+  // the login reached a limit during the run: it may have been cut short, so no record
+  const limited = subRun('limited', { calls: [runSteps({}, { status: 'rejected', rateLimitType: 'five_hour', utilization: 1, resetsAt: 1795000000 })] }, ['--no-meter']);
+  assert.equal(limited.r.status, 3, limited.text);
+  assert.match(limited.text, /stopped after c-l1-01\|direct \(\$0\.010 counted for it\): the login reached a limit \(five_hour at 100%, resets 2026-11-\d\dT/);
+  assert.equal(records(limited.out).length, 0);
+  // paid extra usage was drawn on: the run was served and is recorded, and nothing more starts
+  const over = subRun('over', { calls: [runSteps({}, { status: 'allowed', rateLimitType: 'overage', isUsingOverage: true })] }, ['--no-meter', '--tasks', 'c-l1-01,c-l1-02']);
+  assert.equal(over.r.status, 3, over.text);
+  assert.match(over.text, /stopped after c-l1-01\|direct \(recorded\): paid extra usage was drawn on \(overage\)/);
+  assert.deepEqual([records(over.out).map(x => x.taskId), over.runs.length, records(over.out)[0]!.meters], [['c-l1-01'], 1, null]);
+});
+
+test('measure107 --subscription, a router run: the plugin and its transcript as in a session of the user, a router home of the run, still no key', () => {
+  const tools = ['router_get_plan', 'router_report_triage'].map(t => `${ROUTER_TOOL_PREFIX}${t}`);
+  const init = { mcp_servers: [ROUTER_SERVER], tools, plugins: [{ name: 'do-it-all-claude-code', path: path.join(ROOT, 'plugin') }] };
+  const s = subRun('subrouter', { calls: [runSteps(init)], usage: [usageSteps(10)] }, [], 'auto');
+  assert.equal(s.r.status, 0, s.text);
+  const run = s.runs[0]!;
+  assert.equal(run.args[run.args.indexOf('--plugin-dir') + 1], path.join(ROOT, 'plugin'));
+  // the daemon reads the transcript, so this run keeps one; other MCP servers stay out by the switch, not by --strict-mcp-config
+  assert.ok(!run.args.includes('--no-session-persistence') && !run.args.includes('--strict-mcp-config'), run.args.join(' '));
+  assert.ok(run.env.includes('DO_IT_ALL_CLAUDE_CODE_HOME') && run.env.includes('ENABLE_CLAUDEAI_MCP_SERVERS') && !run.env.includes('ANTHROPIC_API_KEY'));
+  assert.equal(path.normalize(String(run.configDir)), path.normalize(s.userConfigDir));
+  assert.match(s.text, /router runs keep their transcript \(the daemon reads it\), in Claude Code's own projects folder/);
+  const [rec] = records(s.out);
+  assert.deepEqual([rec!.subscription, rec!.transcript, rec!.routerMcp, rec!.apiKeySource], [true, true, true, 'none']);
+  // the router's own files are in the run's folder, the workspace is the shared one
+  assert.ok(fs.existsSync(path.join(s.work, 'c-l1-01-auto', 'router-home', 'config.json')));
+  assert.equal(fs.realpathSync(run.cwd), fs.realpathSync(path.join(s.work, 'sub-ws', 'repo')));
+  // the last line names the folder the transcripts are in, for the user to remove: here by Claude Code's naming
+  // rule (the fake session started no worker, so the router was given no path); a later invocation with nothing
+  // left to run says it again
+  const name = fs.realpathSync.native(path.join(s.work, 'sub-ws', 'repo')).replace(/[^a-zA-Z0-9]/g, '-');
+  const last = (text: string) => text.trim().split('\n').at(-1)!.trim();
+  assert.ok(last(String(s.r.stdout)).startsWith(`transcripts of the router runs: projects${path.sep}${name} in Claude Code's config folder`), last(String(s.r.stdout)));
+  const again = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--subscription', '--arrangements', 'auto', '--tasks', 'c-l1-01', '--lead', 'sonnet', '--out', s.out, '--work', s.work], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.ok(last(again.stdout).startsWith(`transcripts of the router runs: projects${path.sep}${name} `), last(again.stdout));
+  // a path Claude Code gave the router is used as given; a name over 200 characters is cut by Claude Code
+  assert.equal(projectFolderOf('/home/u/.claude/projects/-work-sub-ws-repo/0f1e/subagents/agent-a1.jsonl'), ['', 'home', 'u', '.claude', 'projects', '-work-sub-ws-repo'].join(path.sep));
+  assert.equal(projectFolderOf('/somewhere/else/agent-a1.jsonl'), null);
+  assert.match(transcriptsLine('/work/sub-ws/repo', ['C:\\Users\\u\\.claude\\projects\\C--work-sub-ws-repo\\0f1e\\subagents\\agent-a1.jsonl']), /^transcripts of the router runs: C:.Users.u.\.claude.projects.C--work-sub-ws-repo \(the folder Claude Code named to the router/);
+  assert.deepEqual(projectFolderName('C:\\ar dc1\\sub-ws\\repo'), { name: 'C--ar-dc1-sub-ws-repo', cut: false });
+  assert.deepEqual([projectFolderName('x'.repeat(201)).cut, projectFolderName('x'.repeat(201)).name.length], [true, 200]);
+  // --no-transcripts: the plan says what that costs
+  const plan = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--subscription', '--no-transcripts', '--only-plan', '--arrangements', 'auto', '--tasks', 'c-l1-01', '--out', path.join(tmp, 'out-nt'), '--work', s.work], { encoding: 'utf8', timeout: 60_000 });
+  assert.match(plan.stdout, /router runs write no transcript \(--no-transcripts\): the router works from estimates/);
 });

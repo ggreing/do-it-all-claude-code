@@ -33,6 +33,8 @@ export interface RunArgs {
   strictMcp: boolean;
   /** A session of several steps (decision 221): the first step names the session id, the others resume it. */
   session?: { id: string; resume: boolean };
+  /** No transcript on disk (a run on the subscription login that no router reads the transcript of, decision 226). */
+  noSessionPersistence?: boolean;
 }
 
 export function claudeArgs(o: RunArgs): string[] {
@@ -42,5 +44,6 @@ export function claudeArgs(o: RunArgs): string[] {
     '--allowedTools', ...ALLOWED_TOOLS];
   if (o.agentTool) args.push('--append-system-prompt', WAIT_FOR_SUBAGENTS);
   if (o.session) args.push(...(o.session.resume ? ['--resume', o.session.id] : ['--session-id', o.session.id]));
+  if (o.noSessionPersistence) args.push('--no-session-persistence');
   return args;
 }

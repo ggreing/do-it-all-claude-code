@@ -4,7 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  CLASSIC_GLYPHS, DESK_H, DESK_W, GLYPHS, LAYOUT_SPARE, MAX_ROWS, TINY_STEP, OFFICE_MIN_CLAUDE, SLACK, NARROW_DESK_H, NARROW_DESK_W, SMALL_DESK_H, SMALL_DESK_W, TABS, appliedLines, bar, callRow, checksLine,
+  CLASSIC_GLYPHS, DESK_H, DESK_W, DIFFICULTY_COLOR, DIFFICULTY_SHORT, GLYPHS, LAYOUT_SPARE, MAX_ROWS, TINY_STEP, OFFICE_MIN_CLAUDE, SLACK, NARROW_DESK_H, NARROW_DESK_W, SMALL_DESK_H, SMALL_DESK_W,
+  STEP_ALIAS, TABS, appliedLines, bar, callRow, cellOf, cellText, checksLine, deskCell, difficultyNote, difficultyText, isDifficulty, moveText, packParts,
   choices, clockTime, columns, compileSecrets, confirmLine, cycle, dur, filesText, fit, holdoutText, homeCandidates, labelFor, levelText, mask, modelName,
   nextPeriod, officeLayout, officeSwitch, parseHelperLine, pendingSet, requestLine, resultRow, roleOf, routerLine, settingText, spentLine, statBar, statusWord, stepLine,
   subtaskOf, tabLabelsFit, tagOf, takeLines, textRow, timelineCells, unicodeTerminal, upDown, versionAtLeast, wantedRoom, withRow, workHeadline, workMark,
@@ -64,12 +65,85 @@ test('office: the helper\'s lines, split as they stream, and only version 1 of k
 const SUB: DaemonSubtask = { id: 'A', role: 'coder', slot: 0, step: 's2', model: 'haiku', effort: 'high', status: 'passed', verdict: 'pass', attempts: 1, agentId: 'ag-1', scope: ['src/**'], checks: [{ kind: 'test', result: 'ok', testsPassed: 12, testsFailed: 0 }, { kind: 'scope', result: 'ok' }], repro: null };
 
 test('office: the step against what ran: the plan, and "ran at" only when the real model or effort differs', () => {
-  assert.deepEqual(stepLine({ model: 'Haiku', effort: 'high' }, SUB), { plan: 's2 (Haiku high)' });
-  assert.deepEqual(stepLine({ model: 'Haiku', effort: 'medium' }, SUB), { plan: 's2 (Haiku high)', ranAt: 'ran at Haiku medium' });
-  assert.deepEqual(stepLine({ model: 'Sonnet', effort: '' }, SUB), { plan: 's2 (Haiku high)', ranAt: 'ran at Sonnet high' });
-  assert.deepEqual(stepLine({ model: '', effort: '' }, SUB), { plan: 's2 (Haiku high)' });
+  assert.deepEqual(stepLine({ model: 'Haiku', effort: 'high' }, SUB), { plan: 'Haiku · high (s2)' });
+  assert.deepEqual(stepLine({ model: 'Haiku', effort: 'medium' }, SUB), { plan: 'Haiku · high (s2)', ranAt: 'ran at Haiku medium' });
+  assert.deepEqual(stepLine({ model: 'Sonnet', effort: '' }, SUB), { plan: 'Haiku · high (s2)', ranAt: 'ran at Sonnet high' });
+  assert.deepEqual(stepLine({ model: '', effort: '' }, SUB), { plan: 'Haiku · high (s2)' });
   assert.equal(stepLine({ model: 'Haiku', effort: 'low' }, undefined), null);
+  assert.deepEqual(stepLine({ model: 'Sonnet', effort: 'xhigh' }, { ...SUB, step: 'sonnet-xhigh', model: 'sonnet', effort: 'xhigh', estimated: true }), { plan: 'Sonnet · xhigh est.' });
   assert.equal(checksLine(SUB.checks), 'test ok (12 passed), scope ok');
+});
+
+test('decision 225: a slot is its model · effort, the legacy alias in parentheses, "est." on a cell nobody has measured', () => {
+  const cell = (step: string, model: string, effort: string, estimated?: boolean) => ({ step, model, effort, ...(estimated === undefined ? {} : { estimated }) });
+  assert.equal(cellText(cell('s3', 'sonnet', 'medium', false)), 'Sonnet · medium (s3)');
+  assert.equal(cellText(cell('s3', 'claude-sonnet-5-5', 'medium')), 'Sonnet · medium (s3)', 'an older router: no estimated field');
+  assert.equal(cellText(cell('opus-low', 'opus', 'low', true)), 'Opus · low est.');
+  assert.equal(cellText(cell('s7', 'fable', 'high', true)), 'Fable · high (s7) est.', 'the one alias that is estimated');
+  // in less room the alias goes first, then the dot; "est." as long as there is room for it
+  assert.equal(cellText(cell('s7', 'fable', 'high', true), 20), 'Fable · high est.');
+  assert.equal(cellText(cell('s7', 'fable', 'high', true), 15), 'Fable high est.');
+  assert.equal(cellText(cell('s7', 'fable', 'high', true), 11), 'Fable high');
+  assert.equal(cellText(cell('s3', 'sonnet', 'medium'), 6), 'Sonne…');
+  // the ids of the grid and the aliases read as cells
+  assert.deepEqual(cellOf('s1'), { model: 'Haiku', effort: 'low' });
+  assert.deepEqual(cellOf('s6'), { model: 'Opus', effort: 'xhigh' });
+  assert.deepEqual(cellOf('sonnet-max'), { model: 'Sonnet', effort: 'max' });
+  assert.equal(cellOf('s9'), null);
+  assert.equal(Object.keys(STEP_ALIAS).join(','), 's1,s2,s3,s4,s5,s6,s7');
+  // a step change: the effort alone within a model, both across; one it cannot read as it came
+  assert.equal(moveText('s1', 's2'), 'Haiku low→high');
+  assert.equal(moveText('haiku-xhigh', 's3'), 'Haiku xhigh→Sonnet medium');
+  assert.equal(moveText('s5', 'opus-max', CLASSIC_GLYPHS), 'Opus high->max');
+  assert.equal(moveText('s1', 'x9'), 's1→x9');
+});
+
+test('decision 225: the difficulty beside the level, and where it came from', () => {
+  const view: DaemonOffice = {
+    request: { id: 'r', level: 'L2', source: 'rule', preset: 'L2', status: 'open', budgetUsd: 4, usedUsd: 0, leadDirect: false, leadModel: null, difficulty: 'hard', difficultySource: 'lead' },
+    subtasks: [], costUsd: 0.12, costEstimated: false, costUnknown: false, sessionCostUsd: 0.12, limits: null,
+  };
+  assert.equal(routerLine(view), 'L2 hard · rule · $0.120 of $4.00');
+  assert.equal(requestLine(view), 'L2 hard · rule · $0.120 of $4.00');
+  const direct = { ...view, request: { ...view.request!, level: 'L1', leadDirect: true, difficulty: 'moderate' as const, difficultySource: 'default' as const } };
+  assert.equal(routerLine(direct), 'L1 moderate lead-direct · rule · $0.120 of $4.00');
+  assert.equal(routerLine({ ...view, request: { ...view.request!, difficulty: null, difficultySource: null } }), 'L2 · rule · $0.120 of $4.00', 'a request from before');
+  assert.equal(difficultyText({ difficulty: 'routine' }), 'routine');
+  assert.equal(difficultyText({ difficulty: 'easy' as never }), '');
+  assert.equal(difficultyText(undefined), '');
+  assert.equal(difficultyNote({ difficulty: 'hard', difficultySource: 'lead' }), 'difficulty hard, by the lead');
+  assert.equal(difficultyNote({ difficulty: 'moderate', difficultySource: 'default' }), 'difficulty moderate (the lead gave none)');
+  assert.equal(difficultyNote({ difficulty: null }), '');
+  for (const d of ['routine', 'moderate', 'hard'] as const) {
+    assert.ok(isDifficulty(d));
+    assert.ok(DIFFICULTY_SHORT[d].length <= 4, 'the Work list keeps four cells for it');
+    assert.ok(DIFFICULTY_COLOR[d]);
+  }
+});
+
+test('decision 225: a desk adds the alias and "est." only while the member runs at its slot\'s cell', () => {
+  const sub = { ...SUB, step: 's7', model: 'fable', effort: 'high', estimated: true };
+  assert.deepEqual(deskCell({ model: 'Fable', effort: 'high' }, sub), { alias: 's7', estimated: true });
+  assert.deepEqual(deskCell({ model: 'Haiku', effort: 'high' }, SUB), { alias: 's2', estimated: false });
+  assert.deepEqual(deskCell({ model: 'Fable', effort: 'medium' }, sub), { alias: '', estimated: false }, 'ran at another cell');
+  assert.deepEqual(deskCell({ model: 'Fable', effort: '' }, sub), { alias: '', estimated: false }, 'has not said yet');
+  assert.deepEqual(deskCell({ model: 'model unknown', effort: 'high' }, sub), { alias: '', estimated: false });
+  assert.deepEqual(deskCell({ model: 'Haiku', effort: 'high' }, undefined), { alias: '', estimated: false }, 'no subtask (the lead)');
+});
+
+test('decision 225: parts go on as few lines as the width holds, the next lines under the first part', () => {
+  const p = (text: string) => ({ text });
+  const texts = (lines: Array<Array<{ text: string }>>) => lines.map(l => l.map(x => x.text).join(' · '));
+  const parts = [p('routine Haiku · low (s1)'), p('moderate Sonnet · medium (s3)'), p('hard Opus · high (s5)')];
+  assert.deepEqual(texts(packParts('  L2 2x ', parts, 120)), ['routine Haiku · low (s1) · moderate Sonnet · medium (s3) · hard Opus · high (s5)']);
+  assert.deepEqual(texts(packParts('  L2 2x ', parts, 70)), ['routine Haiku · low (s1) · moderate Sonnet · medium (s3)', 'hard Opus · high (s5)']);
+  assert.deepEqual(texts(packParts('  L2 2x ', parts, 40)), ['routine Haiku · low (s1)', 'moderate Sonnet · medium (s3)', 'hard Opus · high (s5)']);
+  // a line holds at least one part
+  assert.deepEqual(texts(packParts('  L2 2x ', [p('x'.repeat(50))], 20)), ['x'.repeat(50)]);
+  assert.deepEqual(packParts('  L2 ', [], 40), []);
+  for (const width of [40, 51, 70]) for (const line of packParts('  L2 2x ', parts, width)) {
+    assert.ok(8 + line.map(x => x.text).join(' · ').length <= width, `within ${width}`);
+  }
 });
 
 test('office: members join their subtask by agent id, else by tag; the request line', () => {

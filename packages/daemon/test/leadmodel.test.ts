@@ -45,8 +45,10 @@ test('decisions 117, 124, 144, 211: an Opus-class lead delegates what the wordin
   r = await req(d, 'sonnet');
   assert.deepEqual([r.level, r.leadDirect, r.leadClass], ['L1', true, 'sonnet']);
   assert.match(small, /^\[do-it-all-claude-code\] level L1 \(source=rule, confidence=0\.75\): .*; small by its wording, so the lead does it\nLevel L1 is handled by you directly/);
-  assert.doesNotMatch(small, /subagent_type|Routing is ON|router_report_triage/);
-  assert.ok(small.length < 500, `the short brief: ${small.length} characters`);
+  // decision 225: the one router tool it names is the hard invite (a small hard change goes to a stronger worker)
+  assert.doesNotMatch(small, /subagent_type|Routing is ON/);
+  assert.equal(small.match(/router_report_triage/g)?.length, 1, 'only the hard invite');
+  assert.ok(small.length < 800, `the short brief: ${small.length} characters`);
   // ... and still delegates from L1: a request of unclear size gets the L2 team, where the lead staffs it
   const unclear = ctx(await ask(d, 'sonnet', UNCLEAR_PROMPT, transcript(d, 'sonnet', 'claude-sonnet-5-5')));
   r = await req(d, 'sonnet');
@@ -187,14 +189,16 @@ test('decision 119: an automatic L3 is planned with the L2 team; the first call 
   assert.match(ctx, /Larger team/);
   const call = (tag: string, role: string, model: string, effort: string) => postHook(d.port, { session_id: sid, cwd: d.home, hook_event_name: 'PreToolUse', tool_name: 'Agent',
     tool_input: { subagent_type: `do-it-all-claude-code:${role}`, prompt: `[subtask:${tag}] work`, model, effort } });
-  assert.equal(((await call('X', 'architect', 'opus', 'high')).body as Out).hookSpecificOutput?.permissionDecision, undefined);
+  // decision 226: the L3 signal role is the one L3 has that L2 lacks (ui-designer); its moderate L3 cell is sonnet/medium.
+  // (The brief now raises to L3 through router_report_triage; this first-call path stays as a silent fallback.)
+  assert.equal(((await call('X', 'ui-designer', 'sonnet', 'medium')).body as Out).hookSpecificOutput?.permissionDecision, undefined);
   r = await req(d, sid);
   assert.deepEqual([r.level, r.budgetUsd, r.replannedFrom], ['L3', 15, 'L2']);
-  // a second request with L3 signs whose first call is at the L2 step stays L2
+  // a second request with L3 signs whose first call is a non-signal role at its L2 cell stays L2
   const sid2 = 'l3-stays';
   await ask(d, sid2, L3_SIGN_PROMPT);
   await postHook(d.port, { session_id: sid2, cwd: d.home, hook_event_name: 'PreToolUse', tool_name: 'Agent',
-    tool_input: { subagent_type: 'do-it-all-claude-code:architect', prompt: '[subtask:X] work', model: 'sonnet', effort: 'medium' } });
+    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:X] work', model: 'sonnet', effort: 'medium' } });
   assert.deepEqual([(await req(d, sid2)).level, (await req(d, sid2)).replannedFrom], ['L2', null]);
   // and the record keeps the triage's L3 signs
   await postHook(d.port, { session_id: sid, cwd: d.home, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' });

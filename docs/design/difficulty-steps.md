@@ -109,28 +109,35 @@ After its first look the lead reports **difficulty** alongside size in `router_r
 
 Difficulty is independent of size: "2 files, 30 lines, hard" is a normal report.
 
-## 1. Start cell from role × difficulty (× profile)
+## 1. Start cell from role × difficulty (as built, decision 226)
 
-Difficulty picks the **model tier**; the start cell is that tier's **low-effort cell**, leaving the
-higher-effort cells of the tier as step-up headroom. Coder (the cell that matters most), balanced:
+The start cell comes from a **difficulty table**, not from "preset start + shift". **Difficulty
+alone sets the coder's model**; the level preset keeps only the team shape (which roles, how many)
+and the user's overrides. The same table applies at every level:
 
-| difficulty | coder start cell | vs today |
-|------------|------------------|----------|
-| routine | **haiku · low** (haiku · medium if lightly reasoning) | same floor, now deliberate |
-| moderate | **sonnet · medium** (s3) | was haiku · low |
-| hard | **opus · high** (s5) | was haiku · low |
+| role | routine | moderate (default) | hard |
+|------|---------|--------------------|------|
+| coder | haiku · low (s1) | sonnet · medium (s3) | opus · high (s5) |
+| architect, reviewer | sonnet · medium (s3) | sonnet · high (s4) | opus · xhigh (s6) |
+| tester | the coder's cell | the coder's cell | the coder's cell |
+| ui-designer | sonnet · medium (s3) | sonnet · medium (s3) | sonnet · high (s4) |
 
-Other roles track the coder's tier, one effort step richer for the judging roles, as the presets
-already do (architect/reviewer start a tier above the coder; tester with it). The mapping is a
-**capped offset on the cost-ordered grid**: `start = preset_cell shifted up by one model-tier per
-difficulty rank`, capped at the top (s6, or s7 with Fable opted in). It is symmetric — routine can
-sit **below** the lead's tier (a Haiku worker under a Sonnet/Opus lead: cheaper), and **hard starts
-above it** (a Sonnet lead gets an Opus worker). "Up as well as down."
+The judging roles (architect, reviewer) are the coder's model one effort step richer, with a floor
+of sonnet · medium; **hard** is the one case they go to opus · xhigh. It is symmetric — routine can
+sit **below** the lead's tier (a Haiku coder under a Sonnet/Opus lead: cheaper), and **hard starts
+above it** (a Sonnet lead gets an Opus coder). "Up as well as down." A big but routine change does
+not get Opus coders, and a small hard one does. Because the table is level-independent, L3 at the
+default is **cheaper** for coders than before (sonnet · medium, not opus · high) and close to before
+for the judging roles.
 
-Reaching xhigh/max: `hard` starts at opus·high; opus·xhigh/·max are reached by the slot's own
-step-up (a miss or an unverified jump) or an explicit `router_request_escalation`, not by a fourth
-difficulty value — keeps difficulty at three levels and uses grid movement for the rest. (Whether
-to add a "very hard" that starts at opus·xhigh is an open question.)
+- The **profiles** (save, quality) move the whole table one notch (save down, quality up), capped at
+  the grid's reachable top.
+- A **teams.yaml start step or a role override** the user set still wins over the table.
+
+Reaching xhigh / max: `hard` starts at opus · high (coder) / opus · xhigh (judging); higher cells are
+reached by the slot's own movement (a miss, or the hard-unverified model jump) or an explicit
+`router_request_escalation`, not by a fourth difficulty value — difficulty stays three levels and
+the grid movement does the rest.
 
 ## 2. How a slot moves on the grid
 

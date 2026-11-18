@@ -5,8 +5,8 @@
 //   with the expected values. A role the preset lacks: deny when the lead may not adjust the team
 //   (L0), else expect the role's default start step for that level.
 // - s7 needs fableOptIn; usedUsd >= budgetUsd denies.
-import { DEFAULT_LADDER, PROTECTED_WRITE_PATHS } from '@do-it-all-claude-code/core';
-import type { LadderStep, Level, Role, Step, TeamPreset } from '@do-it-all-claude-code/core';
+import { DEFAULT_DIFFICULTY, DEFAULT_PROFILE, GRID_LADDER, PROTECTED_WRITE_PATHS, memberStartCell } from '@do-it-all-claude-code/core';
+import type { Difficulty, LadderId, LadderStep, Level, Profile, Role, Step, TeamPreset } from '@do-it-all-claude-code/core';
 
 export const MANAGED_PREFIX = 'do-it-all-claude-code:';
 export const ROLES: readonly Role[] = ['architect', 'ui-designer', 'coder', 'reviewer', 'tester'];
@@ -31,13 +31,13 @@ export function defaultStartStep(level: Level, role: Role): Step {
   return LEVEL_START[level]?.[role] ?? BASE_START[role];
 }
 
-/** Ladder step for an Agent call's model + effort. `model` may be the alias or the pinned model id. */
-/** The step a role starts at in a preset (its member's start, else the level's default). */
-export function startStep(preset: TeamPreset, level: Level, role: Role): Step {
+/** The routine baseline cell a role starts at in a preset (its member's start, else the level's default). */
+export function startStep(preset: TeamPreset, level: Level, role: Role): LadderId {
   return preset.roles.find(r => r.role === role && r.count > 0)?.start ?? defaultStartStep(level, role);
 }
 
-export function stepOf(model: string | undefined, effort: string | undefined, ladder: readonly LadderStep[] = DEFAULT_LADDER): LadderStep | undefined {
+/** Ladder cell for an Agent call's model + effort. `model` may be the alias or the pinned model id. */
+export function stepOf(model: string | undefined, effort: string | undefined, ladder: readonly LadderStep[] = GRID_LADDER): LadderStep | undefined {
   if (!model || !effort) return undefined;
   return ladder.find(s => (s.alias === model || s.modelId === model) && s.effort === effort);
 }
@@ -154,19 +154,22 @@ export interface AgentCallInput {
   budgetUsd: number;
   spentUsd: number;
   fableOptIn: boolean;
+  /** Decision 225: the request's difficulty; with the profile it sets each role's start cell (decision 226). */
+  difficulty?: Difficulty;
+  profile?: Profile;
   busySlots: number[];          // slots of this role whose subtask is pending or running
   tagBusy: boolean;             // the same subtask ID is already pending or running
-  /** Spec 3.5: the step a slot of this role was raised to after a miss (absent: the preset's start). */
-  slotSteps?: Record<number, Step>;
+  /** Spec 3.5: the cell a slot of this role was raised to after a miss (absent: the difficulty-adjusted start). */
+  slotSteps?: Record<number, LadderId>;
   ladder?: readonly LadderStep[];
 }
 
-export type AgentCallCheck = { ok: true; slot: number; step: Step } | { ok: false; reason: string };
+export type AgentCallCheck = { ok: true; slot: number; step: LadderId } | { ok: false; reason: string };
 
 const describe = (s: LadderStep) => `model="${s.alias}", effort="${s.effort}"`;
 
 export function checkAgentCall(i: AgentCallInput): AgentCallCheck {
-  const ladder = i.ladder ?? DEFAULT_LADDER;
+  const ladder = i.ladder ?? GRID_LADDER;
   const id = `subtask ${i.tag}`;
   if (i.spentUsd >= i.budgetUsd) {
     return { ok: false, reason: `${id}: the ${i.level} request budget is used up ($${i.spentUsd.toFixed(4)} of $${i.budgetUsd}). Do not start more subagents; report progress to the user and ask how to continue.` };
@@ -178,8 +181,10 @@ export function checkAgentCall(i: AgentCallInput): AgentCallCheck {
     const team = i.preset.roles.map(r => `${r.role} x${r.count}`).join(', ');
     return { ok: false, reason: `${id}: the ${i.level} team is fixed (${team}); a ${i.role} cannot be added.` };
   }
-  const start = member?.start ?? defaultStartStep(i.level, i.role);
-  const stepFor = (slot: number): Step => i.slotSteps?.[slot] ?? start;
+  // decision 226: the start cell comes from the difficulty table, the profile notch, and a user teams.yaml/role override.
+  const profile = i.profile ?? DEFAULT_PROFILE;
+  const start = memberStartCell(i.role, member?.start ?? defaultStartStep(i.level, i.role), member?.startSet, i.difficulty ?? DEFAULT_DIFFICULTY, profile, i.fableOptIn);
+  const stepFor = (slot: number): LadderId => i.slotSteps?.[slot] ?? start;
 
   // Free slots of the role, in order; past the team's count only when the lead may adjust the team.
   const count = member?.count ?? 0;

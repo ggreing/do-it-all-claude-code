@@ -136,7 +136,8 @@ test('the judge answer is used by its score in three bands (decision 115)', () =
   const big = applyJudge(open, v('team', 0.9, 'L3'));
   assert.deepEqual([big.level, big.preset, big.budgetUsd, big.rule, big.l3Signs], ['L2', 'L2', DEFAULT_PRESETS.L2.budgetUsd, 'judge-team', true]);
   assert.match(big.rationale, /^L3 signs, planned as L2: stage-2 judge said team/);
-  assert.match(formatTriageContext(big, DEFAULT_PRESETS[big.level]), /use the L3 team instead: make your first Agent call the L3 team's architect/);
+  // the way up is the lead's report of level L3 (decision 226)
+  assert.match(formatTriageContext(big, DEFAULT_PRESETS[big.level]), /report level "L3" in router_report_triage before your first Agent call/);
   assert.doesNotMatch(formatTriageContext(team, DEFAULT_PRESETS[team.level]), /L3/);
 
   const direct = applyJudge(open, v('direct', 0.9));

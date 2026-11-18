@@ -7,8 +7,8 @@
 // the lead handled alone against the teams, with how many there are and how many are needed).
 import type { SQLInputValue } from 'node:sqlite';
 import {
-  CACHE_MULTIPLIER, DEFAULT_DELEGATE_FROM, DEFAULT_PRESETS, PRICING_PER_MTOK, PROFILE_LAYERS, ladderStep, leadModelClass, loadPresets, profileDelegateFrom, profileOf,
-  profilePresets, type LeadModelClass, type Level, type Profile, type Role, type Step, type TeamPreset, type TriageResult,
+  CACHE_MULTIPLIER, DEFAULT_DELEGATE_FROM, DEFAULT_PRESETS, DIFFICULTIES, PRICING_PER_MTOK, PROFILE_LAYERS, ladderStep, leadModelClass, loadPresets, memberStartCell, profileDelegateFrom, profileOf,
+  profilePresets, type Difficulty, type LadderId, type LeadModelClass, type Level, type Profile, type Role, type TeamPreset, type TriageResult,
 } from '@do-it-all-claude-code/core';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -201,7 +201,7 @@ export function workList(c: TabsContext, q: { sessionId?: string; limit?: number
 // ------------------------------------------------------------------ Work: one request
 
 export interface StepChange {
-  at: string; requestId: string; subtaskId: string | null; role: Role; slot: number; from: Step; to: Step;
+  at: string; requestId: string; subtaskId: string | null; role: Role; slot: number; from: LadderId; to: LadderId;
   direction: 'up' | 'down'; reason: StepChangeRow['reason']; detail: string | null;
 }
 const stepChange = (x: StepChangeRow): StepChange => ({
@@ -211,7 +211,7 @@ const stepChange = (x: StepChangeRow): StepChange => ({
 
 export interface WorkSubtask {
   id: string; role: Role; slot: number; attempts: number;
-  step: Step; model: string; effort: string;
+  step: LadderId; model: string; effort: string; estimated: boolean;
   ranModel: string | null;
   status: string; verdict: string | null;
   stepChanges: StepChange[];
@@ -285,7 +285,7 @@ export function workDetail(c: TabsContext, requestId: string): WorkDetail | null
     const state: WorkSubtask['cost']['state'] = !cost.length ? 'none' : priced.length < cost.length ? 'unknown' : cost.some(k => k.source === 'estimate') ? 'estimate' : 'actual';
     const reproFiles = Object.keys(x.repro?.files ?? {});
     return {
-      id: x.id, role: x.role, slot: x.slot, attempts: x.attempts, step: x.step, model: planned.alias, effort: planned.effort,
+      id: x.id, role: x.role, slot: x.slot, attempts: x.attempts, step: x.step, model: planned.alias, effort: planned.effort, estimated: planned.estimated === true,
       ranModel: [...mine].reverse().find(a => a.resolvedModel)?.resolvedModel ?? null,
       status: x.status, verdict: x.verdict,
       stepChanges: steps.filter(k => k.subtaskId === x.id),
@@ -599,7 +599,8 @@ export interface TeamView {
   delegateFrom: { value: Level; source: Source } | null;
   roles: Array<{
     role: Role;
-    levels: Array<{ level: Level; count: number; step: Step; model: string; effort: string; source: Source }>;
+    // decision 225: one entry per level x difficulty, each with the start cell that difficulty gives.
+    levels: Array<{ level: Level; difficulty: Difficulty; count: number; step: LadderId; model: string; effort: string; estimated: boolean; source: Source }>;
     stats: { subtasks: number; passed: number; failed: number; passRate: number | null; avgCostUsd: number | null; avgRunMs: number | null; stepUps: number; stepDowns: number };
   }>;
   stepChanges: StepChange[];
@@ -677,8 +678,13 @@ export function teamView(c: TabsContext, q: { period: Period; sessionId?: string
         levels: TEAM_LEVELS.flatMap(level => {
           const m = layers.project[level].roles.find(x => x.role === role);
           if (!m || m.count <= 0) return [];
-          const st = ladderStep(m.start);
-          return [{ level, count: m.count, step: m.start, model: st.alias, effort: st.effort, source: sourceOf(p => p[level].roles.find(x => x.role === role) ?? null, layers) }];
+          const source = sourceOf(p => p[level].roles.find(x => x.role === role) ?? null, layers);
+          // decisions 225, 226: the start cell depends on difficulty, the profile notch and any user override; show all three difficulties.
+          return DIFFICULTIES.map(difficulty => {
+            const cell = memberStartCell(role, m.start, m.startSet, difficulty, profile, c.config?.fableOptIn === true);
+            const st = ladderStep(cell);
+            return { level, difficulty, count: m.count, step: cell, model: st.alias, effort: st.effort, estimated: st.estimated === true, source };
+          });
         }),
         stats: {
           subtasks: v?.subtasks ?? 0, passed: v?.passed ?? 0, failed: v?.failed ?? 0, passRate: judgedN ? Math.round(((v?.passed ?? 0) / judgedN) * 1000) / 1000 : null,

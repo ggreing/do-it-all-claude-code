@@ -57,7 +57,9 @@ test('the first brief no longer lists the router tools', () => {
   for (const prompt of [L2_PROMPT, 'Fix the typo in README.md', 'Look into why the build is slow and make it faster']) {
     const t = triage({ prompt });
     const brief = formatTriageContext(t, DEFAULT_PRESETS[t.level]);
-    assert.ok(!/router_(get_plan|report_triage|report_result|request_escalation|request_scope)/.test(brief), prompt);
+    // decision 225/226: the brief now names router_report_triage (the lead reports size + difficulty before its first call);
+    // the other four tools are still not listed in the first brief (decision 145).
+    assert.ok(!/router_(get_plan|report_result|request_escalation|request_scope)/.test(brief), prompt);
     assert.ok(!/Router tools/.test(brief), prompt);
   }
 });
@@ -74,7 +76,8 @@ function session(d: TestDaemon, sid: string, cwd: string) {
     assert.equal(r.status, 200, r.text);
     return r.body as Out;
   };
-  const steps: Record<string, [string, string]> = { coder: ['haiku', 'low'], tester: ['haiku', 'low'], reviewer: ['sonnet', 'medium'], architect: ['sonnet', 'medium'] };
+  // decision 226: default (moderate) cells — coder/tester s3 (sonnet/medium); reviewer/architect s4 (sonnet/high)
+  const steps: Record<string, [string, string]> = { coder: ['sonnet', 'medium'], tester: ['sonnet', 'medium'], reviewer: ['sonnet', 'high'], architect: ['sonnet', 'high'] };
   /** Dispatches a subtask, lets it change `edit` (a writer) and stop with `report` as its last message; returns the lead's line about it. */
   const run = async (tag: string, role: string, report: string, edit?: string): Promise<string> => {
     const agent = `ag${++seq}`;
@@ -102,7 +105,7 @@ const slot = (d: TestDaemon) => rows(d, "SELECT step, easy_streak, last_easy, fa
 test('a reviewer\'s accept with margin easy is recorded for the writer it reviewed, without any tool call', () => withDaemon(async (d, s) => {
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
   const coderLine = await s.run('A', 'coder', WRITER_REPORT, 'x.ts');
-  assert.match(coderLine, /subtask A \(coder @s1.*verify passed/);
+  assert.match(coderLine, /subtask A \(coder @s3.*verify passed/);
   assert.ok(coderLine.includes(`do not fix it yourself: call ${ROUTER_TOOL_PREFIX}router_request_escalation (load it with ToolSearch first)`), coderLine);
   assert.ok(!coderLine.includes('router_request_scope'), 'no scope sentence when the report asked for none');
   assert.deepEqual(sub(d, 'A'), { status: 'passed', verdict: 'meet', review: null });
@@ -134,13 +137,13 @@ test('a reject is recorded as a failure of the writer: the second one in a row r
   const first = await s.run('R1', 'reviewer', 'Verdict: reject\nMargin: normal\n- Review: must fix src/x.ts:1');
   assert.deepEqual(sub(d, 'A'), { status: 'failed', verdict: 'rejected', review: ['reject', 'reviewer', 'R1', null] });
   assert.match(first, /Its verdict was recorded from its report: reject for subtask A\..*Dispatch that subtask again/);
-  assert.deepEqual((x => [x!.step, x!.fail_streak])(slot(d)), ['s1', 1]);
+  assert.deepEqual((x => [x!.step, x!.fail_streak])(slot(d)), ['s3', 1]);
   // the second attempt of the same subtask, rejected again by a tester this time
   await s.run('A', 'coder', WRITER_REPORT, 'y.ts');
   assert.deepEqual(sub(d, 'A'), { status: 'passed', verdict: 'meet', review: null }, 'a new dispatch clears the review');
   const second = await s.run('T1', 'tester', '**Verdict:** reject\n- Changed files: none\n- Checks run: npm test (2 failed)');
   assert.deepEqual(sub(d, 'A').review, ['reject', 'tester', 'T1', null]);
-  assert.deepEqual((x => [x!.step, x!.up_count])(slot(d)), ['s2', 1], 'two rejects in a row raise the slot');
+  assert.deepEqual((x => [x!.step, x!.up_count])(slot(d)), ['s4', 1], 'two rejects in a row raise the slot');
   assert.match(second, /reject for subtask A\./);
 }));
 

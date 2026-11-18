@@ -7,13 +7,26 @@
 // figures are in the measurement notes, and they change with each run of the bench. Reproduce first is not part
 // of a profile: it waits for its own measurement. The per-request budgets follow the profile by a factor (save
 // 0.6, quality 1.5), below a budget the user set.
-import { DEFAULT_LADDER } from './ladder.ts';
+import { ladderStep, startCellFor } from './ladder.ts';
 import { DEFAULT_DELEGATE_FROM, DEFAULT_PRESETS, applyPresetFile, type LeadModelClass, type PresetFile } from './presets.ts';
-import type { Level, Step, TeamPreset } from './types.ts';
+import type { Difficulty, LadderId, Level, Role, Step, TeamPreset } from './types.ts';
 
 export const PROFILES = ['save', 'balanced', 'quality'] as const;
 export type Profile = typeof PROFILES[number];
 export const DEFAULT_PROFILE: Profile = 'balanced';
+
+/** Decision 226: a profile shifts the whole difficulty start-cell table one notch (save down, quality up). */
+export function profileNotch(profile: Profile): number {
+  return profile === 'save' ? -1 : profile === 'quality' ? 1 : 0;
+}
+
+/**
+ * Decision 226: the start cell a preset member runs at — the difficulty table and the profile notch, unless the
+ * member's start was set by the user's teams.yaml or a role override (`startSet`), which wins whatever its value.
+ */
+export function memberStartCell(role: Role, start: LadderId, startSet: boolean | undefined, difficulty: Difficulty, profile: Profile = DEFAULT_PROFILE, fableOptIn = false): LadderId {
+  return startCellFor(role, difficulty, { notch: profileNotch(profile), fableOptIn, ...(startSet ? { override: start } : {}) });
+}
 
 export const profileOf = (c: { profile?: unknown } | undefined | null): Profile =>
   ((PROFILES as readonly unknown[]).includes(c?.profile) ? c!.profile as Profile : DEFAULT_PROFILE);
@@ -99,7 +112,7 @@ export function withProfile<T extends { profile?: unknown; delegateFrom?: Partia
   return out;
 }
 
-const stepText = (s: Step): string => { const l = DEFAULT_LADDER.find(x => x.step === s)!; return `${s} (${l.alias} ${l.effort})`; };
+const stepText = (s: LadderId): string => { const l = ladderStep(s); return `${s} (${l.alias} ${l.effort})`; };
 
 /** What a profile changes against the defaults, as paths and values the settings view can list. */
 export function profileSets(profile: Profile): Array<{ path: string; value: string }> {

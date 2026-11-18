@@ -20,10 +20,11 @@
 //
 // Why so few cases are settled here: on 500 SWE-bench Verified issues neither prompt features nor
 // repository signals predicted the size of the fix (AUC 0.45-0.64), so stage 1 does not guess.
-import { DEFAULT_PRESETS } from './presets.ts';
-import { ladderStep } from './ladder.ts';
+import { DEFAULT_PRESETS, type LeadModelClass } from './presets.ts';
+import { DEFAULT_PROFILE, memberStartCell, type Profile } from './profiles.ts';
+import { DEFAULT_DIFFICULTY, ladderStep } from './ladder.ts';
 import { SMALL_DIRECT } from './tools.ts';
-import type { Level, Role, TaskType, TeamPreset, TriageResult } from './types.ts';
+import type { Difficulty, LadderId, Level, Role, TaskType, TeamPreset, TriageResult } from './types.ts';
 
 export interface TriageInput {
   prompt: string;
@@ -371,8 +372,8 @@ export function uncertainLevel(presets: Record<Level, TeamPreset>): Level {
   return presets.L1.leadDirect || presets.L2.leadDirect ? 'L1' : 'L2';
 }
 
-const agentCalls = (preset: TeamPreset): string[] => preset.roles.map(r => {
-  const s = ladderStep(r.start);
+const agentCalls = (preset: TeamPreset, difficulty: Difficulty, profile: Profile, fableOptIn: boolean): string[] => preset.roles.map(r => {
+  const s = ladderStep(memberStartCell(r.role, r.start, r.startSet, difficulty, profile, fableOptIn));
   return `   - ${r.role}${r.count > 1 ? ` (up to ${r.count} in parallel, one subtask each)` : ''}: subagent_type "do-it-all-claude-code:${r.role}", model "${s.alias}", effort "${s.effort}"`;
 });
 
@@ -384,14 +385,24 @@ export interface EscalationTeams { L2: TeamPreset; L3?: TeamPreset }
  * different step in L3 than in L2. A role the two teams start at the same step, or one only the L3
  * team has, cannot signal the level, so the brief never asks the lead to begin with it.
  */
-export function l3SignalRoles(l2: TeamPreset, l3: TeamPreset): Role[] {
-  const start = (p: TeamPreset, role: Role) => p.roles.find(r => r.role === role && r.count > 0)?.start;
-  return l3.roles.filter(r => r.count > 0 && start(l2, r.role) !== undefined && start(l2, r.role) !== r.start).map(r => r.role);
+export function l3SignalRoles(l2: TeamPreset, l3: TeamPreset, difficulty: Difficulty = DEFAULT_DIFFICULTY, profile: Profile = DEFAULT_PROFILE, fableOptIn = false): Role[] {
+  // Decision 226: start cells come from the difficulty table, so an L2 and L3 role share a cell unless the user set
+  // different starts. A role L3 has that L2 does not (its L2 cell is undefined), or whose shifted cell differs, is
+  // the one whose first call tells L2 from L3.
+  const cell = (p: TeamPreset, role: Role) => { const m = p.roles.find(r => r.role === role && r.count > 0); return m ? memberStartCell(role, m.start, m.startSet, difficulty, profile, fableOptIn) : undefined; };
+  return l3.roles.filter(r => r.count > 0 && cell(l2, r.role) !== cell(l3, r.role)).map(r => r.role);
 }
 
-const orList = (xs: string[]): string => xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} or ${xs[xs.length - 1]}`;
-
 const PROMPT_SHAPE ='   The prompt\'s first line is "[subtask:<ID>]", the second "[scope: <comma-separated globs this subtask may write>]", then the spec (goal, files, acceptance check).';
+
+// Decision 225: size sets the team and the budget; difficulty sets where each role starts on the model x effort
+// grid. The lead reports it before its first Agent call, by the signals of docs/design/difficulty-steps.md, said
+// once a brief. The call values a brief lists are the cells of the difficulty it was written for (moderate before
+// a report); a report of another one answers with a brief of its own.
+const DIFFICULTY_SIGNS = 'Difficulty: hard if any of these holds: no test reproduces the problem and one is not obvious; what you have seen does not explain the code at fault; the fix must choose between plausible behaviours; the work is reasoning-heavy (an algorithm, numerics, concurrency, a parser); a first attempt is likely to be subtly wrong. Routine if all hold: you can tell where and how to fix it, a test exists or is one line, and the code is familiar. Otherwise moderate. Difficulty is not size: a two-file change can be hard.';
+const HARD_SIGNS = 'no test reproduces it, the cause is unclear, the right behaviour is ambiguous, or the work is reasoning-heavy';
+const reportLine = (level: Level): string => `Before your first Agent call, call router_report_triage with kind "team", level "${level}", files and confidence (your estimates) and difficulty. The values below are for moderate; for routine or hard, use the ones its answer gives.`;
+const reportedLine = (d: Difficulty): string => `Difficulty ${d}, as you reported: the values below are for it.`;
 
 // The router's MCP tools are not named here (decision 145): a line at the end of the first brief was read a turn
 // before it mattered and was never acted on. The daemon names the one tool that applies on the task
@@ -406,14 +417,28 @@ const PROMPT_SHAPE ='   The prompt\'s first line is "[subtask:<ID>]", the second
  * pass the session's presets (teams.yaml applied) so the call values are the ones the router checks.
  * A single preset is taken as the L2 team, and the brief then offers no L3 path.
  * The L3 team appears only as something the lead may choose (decision 119): in the uncertain brief, and
- * in a team brief whose triage has `l3Signs`. In both the lead raises the request by making its first
- * call a role of l3SignalRoles(<the request's team>, L3) at that role's L3 start step.
+ * in a team brief whose triage has `l3Signs`. In both the lead raises the request by reporting level L3 in
+ * router_report_triage (decision 226); a first call of a role of l3SignalRoles(<the request's team>, L3) at
+ * that role's L3 start cell still raises it, but the brief does not ask for one.
  */
-export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalation: TeamPreset | EscalationTeams = DEFAULT_PRESETS): string {
+export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalation: TeamPreset | EscalationTeams = DEFAULT_PRESETS,
+  opts: { leadClass?: LeadModelClass; fableOptIn?: boolean; profile?: Profile } = {}): string {
   const l2 = 'roles' in escalation ? escalation : escalation.L2;
   const l3 = 'roles' in escalation ? undefined : escalation.L3;
+  // decision 225/226: the cells shown follow the request's difficulty (moderate before the lead reports one), the profile notch and any user override.
+  const difficulty: Difficulty = t.difficulty ?? DEFAULT_DIFFICULTY;
+  const fableOptIn = opts.fableOptIn === true;
+  const profile: Profile = opts.profile ?? DEFAULT_PROFILE;
+  const calls = (p: TeamPreset) => agentCalls(p, difficulty, profile, fableOptIn);
+  // decision 225: a non-Opus lead's lead-direct brief may invite a hard report (the text keys on this).
+  const invite = opts.leadClass !== undefined && opts.leadClass !== 'opus';
+  // a brief written after the lead's report says what it reported instead of asking again
+  const reported = t.difficultySource === 'lead';
+  const hardInvite = invite && !reported
+    ? [`Small is not always easy: if your look shows the change is hard (${HARD_SIGNS}), do not edit. Call router_report_triage with kind "direct", level "${t.level}", files, lines, confidence and difficulty "hard": its answer gives the Agent call for a coder on a stronger model.`]
+    : [];
   // each role's model and effort are in its Agent call line below, so the team line gives the count and the step only
-  const team = preset.roles.map(r => `${r.role} x${r.count} @${r.start}`).join('; ');
+  const team = preset.roles.map(r => `${r.role} x${r.count} @${memberStartCell(r.role, r.start, r.startSet, difficulty, profile, fableOptIn)}`).join('; ');
   // Decision 83, narrowed by decision 219: writers work in the user's working tree (no merge step), also when
   // several run at the same time with scopes that share no file (decision 192 verifies them once, at the last
   // stop). A worktree each is the skill's exception, for a project with isolation on and no uncommitted input.
@@ -425,39 +450,42 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
       // Decisions 104, 105, 109: the wording did not show the size, so the lead judges after a first look.
       const direct = `Level ${t.level} is handled by you directly (team preset lead_direct): start the change yourself, without subagents.`;
       const rubric = `The router could not tell the size of this request from its wording. Switch to the team only if, after a first look, the change needs edits in ${TEAM_SIZE_RULE.files} or more files, or in ${TEAM_SIZE_RULE.dirs} or more modules or layers, or a design decision first (a new public API, schema or data model). Do not switch for a change you can finish in a few edits, and do not explore just to decide.`;
-      const signal = l3 && !l3.leadDirect ? l3SignalRoles(l2, l3) : [];
-      if (!l3 || !signal.length) {
+      // decision 225: a switch reports the difficulty first, a small hard change the lead keeps (non-Opus) is handed on
+      const switchReport = reported ? [reportedLine(difficulty)] : [DIFFICULTY_SIGNS, ...hardInvite];
+      const values = reported ? '' : ', or for routine or hard the ones its answer gives (these are for moderate)';
+      if (!l3 || l3.leadDirect) {
         return [
-          head, direct, rubric,
-          `To switch, call the Agent tool once per subtask with exactly these parameters (team preset ${l2.id}); the router re-plans this request as ${l2.level} at your first call, and from then on you delegate as the lead-orchestrator skill describes:`,
-          ...agentCalls(l2),
+          head, direct, rubric, ...switchReport,
+          `To switch, first call router_report_triage with kind "team", level "${l2.level}", files and confidence (your estimates) and difficulty: the router re-plans this request as ${l2.level}. Then call the Agent tool once per subtask with exactly these parameters (team preset ${l2.id})${values}, and from then on delegate as the lead-orchestrator skill describes:`,
+          ...calls(l2),
           PROMPT_SHAPE,
         ].join('\n');
       }
-      // Decision 113: the lead may also pick the L3 team; the router reads the level from the first call.
+      // Decisions 113, 226: the lead may also pick the L3 team. It says so in its report: start cells follow the
+      // difficulty, not the level, so a first call no longer shows the level (the router still reads one, unasked).
+      // The report's answer gives the L3 team's call values, so this brief lists only the L2 team's.
       return [
-        head, direct, rubric,
+        head, direct, rubric, ...switchReport,
         `Which team: the ${l2.level} team, unless the change is clearly beyond it: ${L3_SIGNS}, or edits in ${L3_SIZE_RULE.files} or more files. Only then use the ${l3.level} team. When unsure between the two, use ${l2.level}.`,
-        `To switch, call the Agent tool once per subtask with exactly the parameters of the team you chose. The router re-plans this request at your first call: as ${l3.level} when that call is the ${l3.level} team's ${orList(signal)} with the ${l3.level} values below, as ${l2.level} for any other call. From then on you delegate as the lead-orchestrator skill describes.`,
+        `To switch, first call router_report_triage with kind "team", level "${l2.level}" or "${l3.level}" (the team you chose), files and confidence (your estimates) and difficulty: the router re-plans this request at that level. Then call the Agent tool once per subtask: for the ${l3.level} team with the values its answer gives, for the ${l2.level} team with exactly the parameters below${values}. From then on you delegate as the lead-orchestrator skill describes.`,
         `${l2.level} team (team preset ${l2.id}):`,
-        ...agentCalls(l2),
-        `${l3.level} team (team preset ${l3.id}); make your first call the ${signal[0]}:`,
-        ...agentCalls(l3),
+        ...calls(l2),
         PROMPT_SHAPE,
       ].join('\n');
     }
     return [
       head,
       `Level ${t.level} is handled by you directly (team preset lead_direct): make the change yourself, without subagents. Keep the edit minimal and do not explore beyond what the change needs.`,
+      // decision 225: small is not easy; a non-Opus lead hands a small hard change to a stronger worker
+      ...hardInvite,
       'The router only records this request. (If the user asks for a team, follow the lead-orchestrator skill.)',
     ].join('\n');
   }
   // Decision 119: a request with L3 signs is planned at L2; the L3 team is shown only as the lead's own way up.
-  const raiseBy = (t as Partial<Stage1Result>).l3Signs && l3 && !l3.leadDirect && preset.level !== l3.level ? l3SignalRoles(preset, l3) : [];
-  const raise = l3 && raiseBy.length ? [
-    `Larger team: the router plans up to ${preset.level} on its own, and this request shows signs of a larger change. If it is clearly beyond this team (${L3_SIGNS}, or edits in ${L3_SIZE_RULE.files} or more files), use the ${l3.level} team instead: make your first Agent call the ${l3.level} team's ${raiseBy[0]} with the ${l3.level} values below, and the router re-plans this request as ${l3.level}. When unsure, stay with this team.`,
-    `${l3.level} team (team preset ${l3.id}):`,
-    ...agentCalls(l3),
+  // Decision 226: the lead raises it in its report (start cells no longer show the level in a first call), and the
+  // report's answer gives the L3 team's call values.
+  const raise = (t as Partial<Stage1Result>).l3Signs && l3 && !l3.leadDirect && preset.level !== l3.level ? [
+    `Larger team: the router plans up to ${preset.level} on its own, and this request shows signs of a larger change. If it is clearly beyond this team (${L3_SIGNS}, or edits in ${L3_SIZE_RULE.files} or more files), report level "${l3.level}" in router_report_triage before your first Agent call (kind "team", with files, confidence and difficulty): the router re-plans this request as ${l3.level}, and its answer gives the ${l3.level} team's values. When unsure, stay with this team.`,
   ] : [];
   // Decision 121: an uncertain request on a delegating team. The lead staffs it; a small change is one coder.
   // Decision 178: a change of one file and a few lines costs more delegated than done, so the lead keeps it.
@@ -481,11 +509,13 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
       head,
       `Routing is ON for this request (team preset ${preset.id}, budget $${t.budgetUsd}). You are the lead: keep your own work small (every call you make re-reads your whole context at the lead model's price).`,
       'The router could not tell the size of this request from its wording, so you decide. To tell, take one quick look at the file you suspect, then decide — one look to size it, not an exploration.',
-      `- The whole change fits in ${SMALL_DIRECT.files} files or fewer and about ${SMALL_DIRECT.lines} changed lines or fewer: do not delegate. Call router_report_triage with kind "direct", level "L1", files and lines (your estimates) and confidence; when it answers leadDirect true, make the change yourself.`,
+      `- The whole change fits in ${SMALL_DIRECT.files} files or fewer and about ${SMALL_DIRECT.lines} changed lines or fewer: do not delegate. Call router_report_triage with kind "direct", level "L1", files and lines (your estimates), confidence and difficulty; when it answers leadDirect true, make the change yourself, and when it hands a hard change on, use the Agent call in its answer.`,
       `- Otherwise delegate, and the staffing is yours: call only the roles the change needs. One coder subtask alone is right for a small change (fewer than ${TEAM_SIZE_RULE.files} files, one module). Use the rest of the team only when the change needs edits in ${TEAM_SIZE_RULE.files} or more files, or in ${TEAM_SIZE_RULE.dirs} or more modules or layers, or a design decision first (a new public API, schema or data model).`,
+      reported ? reportedLine(difficulty) : DIFFICULTY_SIGNS,
       'When you delegate: Do not edit or write files yourself (unless the user explicitly asks you to), and do not open or read more source files to plan. The router gives every worker the user\'s request as written, so do not copy it into a prompt: write the subtask (which part, the files and symbols it names, the acceptance check); the worker investigates the code.',
+      ...(reported ? [] : [reportLine(t.level)]),
       'Call the Agent tool once per subtask (A, B, ...) with exactly these parameters:',
-      ...agentCalls(preset),
+      ...calls(preset),
       PROMPT_SHAPE,
       parallel
         ? '   Do not pass isolation: writers edit the working tree directly. Two coders at the same time: parts that write different files, sent in one message, each with its own [scope: ...]; the router runs the build and tests once, when the last one stops. An architect\'s plan comes first, a reviewer or tester after the writers.'
@@ -503,8 +533,9 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
     'Do not open or read source files to plan. The router gives every worker the user\'s request as written, so do not copy it into a prompt: write the subtask (which part, the files and symbols it names, the acceptance check); the worker investigates the code. At most one quick search if you cannot tell which files are involved.',
     '1. Split the request into subtasks A, B, ... (a single subtask A is fine for a small change).',
     ...(parallel ? [order] : []),
+    ...(reported ? [reportedLine(difficulty)] : [DIFFICULTY_SIGNS, reportLine(t.level)]),
     '2. Call the Agent tool once per subtask with exactly these parameters:',
-    ...agentCalls(preset),
+    ...calls(preset),
     PROMPT_SHAPE,
     writers,
     result,

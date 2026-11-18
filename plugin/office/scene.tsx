@@ -9,7 +9,8 @@ import { BODY, frameAt, frameIndex, react, type ReactionState } from './reaction
 
 type Role = 'lead' | 'architect' | 'coder' | 'reviewer' | 'tester' | 'ui-designer' | 'helper'
 type Status = 'working' | 'done' | 'waiting' | 'failed'
-export type SceneAgent = { id: string; role: Role; label: string; model: string; effort: string; status: Status; time: string; doing: string }
+/** `alias` and `estimated`: the slot's legacy step name and an estimated cell, when the member runs at its slot's cell (model.ts: deskCell). */
+export type SceneAgent = { id: string; role: Role; label: string; model: string; effort: string; status: Status; time: string; doing: string; alias?: string; estimated?: boolean }
 /**
  * `perRow`: desks to a row, as the hooks module laid the room out (model.ts: officeLayout); `compact`: no back wall;
  * `small`: the small desks, for a room the full ones do not fit; `narrow`: the narrow ones, for a room even those do
@@ -300,11 +301,15 @@ const OfficeScene: ClientModule<SceneProps, State> = (props, surface) => {
       )
     })
     // the lines start where the body does; the narrow desk shortens a medium effort and leaves the status to the
-    // member's eyes and marks (and to the session below)
+    // member's eyes and marks (and to the session below). The slot's alias and "est." follow the model and effort
+    // while the desk has room for them, the alias going first: a small desk has room for one, a narrow one for none.
     const pad = geo.monitor ? '  ' : geo.inset ? ' ' : ''
     const name = isSel ? (pad ? `▸${pad.slice(1)}${a.label}` : `▸${a.label}`) : `${pad}${a.label}`
     const effort = geo.desk ? a.effort : a.effort === 'medium' ? 'med' : a.effort
-    const model = geo.monitor ? `${a.model}${a.effort ? ` · ${a.effort}` : ''}` : `${a.model}${effort ? ` ${effort}` : ''}`
+    const base = geo.monitor ? `${a.model}${a.effort ? ` · ${a.effort}` : ''}` : `${a.model}${effort ? ` ${effort}` : ''}`
+    const alias = a.alias ? ` (${a.alias})` : ''
+    const est = a.estimated ? ' est.' : ''
+    const model = [`${base}${alias}${est}`, `${base}${est}`, base].find(t => [...t].length <= geo.w - pad.length) ?? base
     return (
       <Box key={`st-${a.id}`} flexDirection="column" width={geo.w} marginRight={i % per === per - 1 ? 0 : geo.gap} marginBottom={1}>
         {rows}

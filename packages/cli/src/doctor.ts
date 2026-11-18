@@ -3,7 +3,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { GENERATED_STAMP, ROLE_NAMES, WINDOWS_TERMINAL_HINT, classicWindowsConsole, expectedRole, paths, pluginRoleProblems, readText, resolveHomeApp, resolveLayout, routerHome, templateHash, type LayoutMode } from '@do-it-all-claude-code/core';
+import { GENERATED_STAMP, GRID, ROLE_NAMES, WINDOWS_TERMINAL_HINT, classicWindowsConsole, expectedRole, paths, pluginRoleProblems, readText, resolveHomeApp, resolveLayout, routerHome, templateHash, type LayoutMode } from '@do-it-all-claude-code/core';
 import { keyStatus, noProxyCovers, shownProxyUrl, splitNoProxy, upstreamProxy, type VaultErrorCode } from '@do-it-all-claude-code/proxy';
 import { HINT_HEADERS_ENV, claudeCodeProxy, isRouterHelper, proxyBaseUrl, staleHelpers, uncoveredNoProxy } from './apimode.ts';
 import { SettingsParseError, backupCredentials, backupFile, defaultClaudeSettings, promptStorageSummary, readConfig, readJsonFile, type CliConfig } from './setup.ts';
@@ -52,6 +52,18 @@ export function ladderBreakers(env: NodeJS.ProcessEnv): Check[] {
   if (env.ANTHROPIC_API_KEY) out.push({ name: 'ANTHROPIC_API_KEY in environment', ok: false, blocking: false,
     detail: 'keys belong in the OS keychain only (decision 33); this variable is visible to every process you start' });
   return out;
+}
+
+/**
+ * Decision 225: the grid cells whose cost coefficient is estimated, not Phase-0 measured. Informational
+ * (non-blocking): a request that runs on one of these is priced from an estimate until the bench measures it.
+ */
+export function estimatedCellsCheck(): Check {
+  const est = GRID.filter(c => c.estimated).map(c => c.id);
+  return {
+    name: 'ladder cost coefficients', ok: true, blocking: false,
+    detail: `${GRID.length - est.length} of ${GRID.length} cells measured (s1..s6); ${est.length} estimated: ${est.join(', ')}. Estimated cells are priced from list price x an effort multiplier until the bench measures them (subscription mode).`,
+  };
 }
 
 /** Windows: Git Bash is required (decision 102); Claude Code's Bash tool and the router's verify use it. */
@@ -454,5 +466,6 @@ export async function doctor(env: NodeJS.ProcessEnv = process.env): Promise<Chec
   const access = homeAccessCheck();
   if (access) checks.push(access);
   checks.push(...ladderBreakers(env));
+  checks.push(estimatedCellsCheck());   // decision 225: list the estimated grid cells
   return checks;
 }

@@ -43,7 +43,7 @@ test('model/effort map to ladder steps by alias or pinned id', () => {
   assert.equal(stepOf('haiku', 'low')?.step, 's1');
   assert.equal(stepOf('sonnet', 'high')?.step, 's4');
   assert.equal(stepOf('claude-opus-5-5', 'xhigh')?.step, 's6');
-  assert.equal(stepOf('haiku', 'medium'), undefined);
+  assert.equal(stepOf('haiku', 'medium')?.step, 'haiku-medium');   // decision 226: now a real grid cell
   assert.equal(stepOf(undefined, 'low'), undefined);
 });
 
@@ -60,7 +60,8 @@ test('default start steps of roles a preset lacks (decision Q3)', () => {
 });
 
 const call = (o: Partial<AgentCallInput>): AgentCallInput => ({
-  tag: 'A', role: 'coder', model: 'haiku', effort: 'low', level: 'L1', preset: DEFAULT_PRESETS.L1,
+  // decision 226: pin difficulty routine so the coder's cell is s1 (haiku/low) and the Q3 strict-match table reads as before
+  tag: 'A', role: 'coder', model: 'haiku', effort: 'low', level: 'L1', preset: DEFAULT_PRESETS.L1, difficulty: 'routine',
   budgetUsd: 2, spentUsd: 0, fableOptIn: false, busySlots: [], tagBusy: false, ...o,
 });
 

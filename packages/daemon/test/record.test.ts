@@ -6,7 +6,7 @@ import path from 'node:path';
 import { costUsd } from '@do-it-all-claude-code/core';
 import { AWAITING_USER_MARKER } from '../src/continuation.ts';
 import type { StatusView } from '../src/router.ts';
-import { getStatus, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
+import { pinRoutine, getStatus, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
 
 const L0_PROMPT = 'fix the typo in README.md';
 type Rec = Record<string, any>;   // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -35,6 +35,7 @@ test('T7: the changes of the request only: files, lines, new files, folders; the
     write(repo, 'docs/other.md', 'o1\no2 by the user\n');
     const post = session(d, 'chg', repo);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT });
+    pinRoutine(d);
     await d.router.drain();                                         // the start state is taken after the hook answers
     write(repo, 'README.md', 'the typo\n');                          // 1 added, 1 removed
     write(repo, 'src/a.ts', 'one\nTWO\nthree\nfour\n');              // 2 added, 1 removed
@@ -68,6 +69,7 @@ test('T7: the lead\'s usage of the request, from the main transcript (its prompt
   ].join('\n') + '\n');
   const post = session(d, 'lead', d.home, tr);
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT, prompt_id: 'p-1' });
+  pinRoutine(d);
   clock.advance(5000);
   await post(stop());
   await d.router.drain();
@@ -86,6 +88,7 @@ test('T7: the lead\'s usage of the request, from the main transcript (its prompt
   clock.advance(60_000);
   const t0 = clock.at();
   await post2({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT });
+  pinRoutine(d);
   clock.advance(10_000);
   fs.writeFileSync(tr2, [
     line({ type: 'assistant', timestamp: '2026-11-11T09:00:00.000Z', message: { id: 'old', model: 'claude-opus-5-5', usage: u } }),
@@ -113,6 +116,7 @@ test('T7: assistant lines belong to the promptId of the nearest user line above;
   ].join('\n') + '\n');
   const post = session(d, 'n', d.home, tr);
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT, prompt_id: 'p-1' });
+  pinRoutine(d);
   clock.advance(1000);
   await post(stop());
   clock.advance(1000);
@@ -130,6 +134,7 @@ test('T7: when none of the request\'s prompt ids is in the transcript, the time 
   const post = session(d, 'mis', d.home, tr);
   const t0 = clock.at();
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT, prompt_id: 'hook-id' });
+  pinRoutine(d);
   clock.advance(5000);
   fs.writeFileSync(tr, [
     JSON.stringify({ type: 'user', promptId: 'transcript-id', timestamp: t0, message: { role: 'user', content: 'x' } }),
@@ -146,6 +151,7 @@ test('T7: when none of the request\'s prompt ids is in the transcript, the time 
 test('T7: the record keeps the two-stage triage (kind, rule, teamScore) and its prompt features', () => withDaemon(async d => {
   const post = session(d, 'feat', d.home);
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT });
+  pinRoutine(d);
   await post(stop());
   await d.router.drain();
   const rec = record(d, 'feat');
@@ -160,6 +166,7 @@ test('T7: the record keeps the two-stage triage (kind, rule, teamScore) and its 
 test('T7: time awaiting the user is not active time; prompts, answers and notifications are counted', () => withDaemon(async (d, clock) => {
   const post = session(d, 'time', d.home);
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT });
+  pinRoutine(d);
   clock.advance(10_000);
   await post(stop(`Which file? ${AWAITING_USER_MARKER}`));
   clock.advance(60_000);
@@ -177,6 +184,7 @@ test('T7: triage, plan (T6 re-plan) and subtasks; a request reopened by a notifi
   try {
     const post = session(d, 'plan', repo);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT });
+    pinRoutine(d);
     await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_r1',
       tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] fix it\n[scope: README.md]', model: 'haiku', effort: 'low' } });
     await post({ hook_event_name: 'SubagentStart', agent_id: 'ag1', agent_type: 'do-it-all-claude-code:coder' });
@@ -231,6 +239,7 @@ test('costs: a subagent\'s and the lead\'s last line written after their stop ar
     fs.writeFileSync(sub, call('s1', 'claude-haiku-5-5', 10));
     const post = session(d, 'late', repo, main);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT, prompt_id: 'p-late' });
+    pinRoutine(d);
     await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_late',
       tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] x\n[scope: src/**]', model: 'haiku', effort: 'low' } });
     await post({ hook_event_name: 'SubagentStart', agent_id: 'l1', agent_type: 'do-it-all-claude-code:coder' });
@@ -258,6 +267,7 @@ test('costs: a subagent that never stopped is counted from its transcript next t
   fs.writeFileSync(path.join(subDir, 'agent-c1.jsonl'), call('x1', 'claude-opus-5-5', 1000) + call('x2', 'claude-opus-5-5', 1000) + call('x3', 'claude-opus-5-5', 1000));
   const post = session(d, 'cut', d.home, main);
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT });
+  pinRoutine(d);
   await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_cut',
     tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] x', model: 'haiku', effort: 'low' } });
   await post({ hook_event_name: 'SubagentStart', agent_id: 'c1', agent_type: 'do-it-all-claude-code:coder' });

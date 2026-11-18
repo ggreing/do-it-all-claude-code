@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import { parse } from 'yaml';
 import { z } from 'zod';
+import { isCellId } from './ladder.ts';
 import type { Level, TeamPreset } from './types.ts';
 
 /**
@@ -34,7 +35,8 @@ export const DEFAULT_PRESETS: Record<Level, TeamPreset> = {
     ] },
 };
 
-const step = z.enum(['s1', 's2', 's3', 's4', 's5', 's6', 's7']);
+// decision 225: a start cell is a legacy step (s1..s7) or a `model-effort` grid id.
+const step = z.string().refine(isCellId, { message: 'not a ladder cell (s1..s7 or model-effort, e.g. sonnet-xhigh)' });
 const role = z.enum(['architect', 'ui-designer', 'coder', 'reviewer', 'tester']);
 // zod 4: z.record with enum keys is exhaustive; a teams.yaml may list only some levels
 const presetFile = z.partialRecord(z.enum(['L0', 'L1', 'L2', 'L3']), z.object({
@@ -51,7 +53,8 @@ const presetFile = z.partialRecord(z.enum(['L0', 'L1', 'L2', 'L3']), z.object({
  */
 export function loadPresets(file?: string, base: Record<Level, TeamPreset> = DEFAULT_PRESETS): Record<Level, TeamPreset> {
   if (!file || !fs.existsSync(file)) return structuredClone(base);
-  return applyPresetFile(parsePresetsText(fs.readFileSync(file, 'utf8')), base);
+  // decision 226: a teams.yaml is the user's own file, so a start it sets is an override (startSet) whatever its value.
+  return applyPresetFile(parsePresetsText(fs.readFileSync(file, 'utf8')), base, { userSet: true });
 }
 
 /** A teams.yaml as written: every level and field optional (decision 168: the settings core validates with this). */
@@ -61,14 +64,19 @@ export function parsePresetsText(text: string): PresetFile {
   return presetFile.parse(parse(text) ?? {});
 }
 
-/** `parsed` on top of `base`: fields a level does not set come from `base`. */
-export function applyPresetFile(parsed: PresetFile, base: Record<Level, TeamPreset> = DEFAULT_PRESETS): Record<Level, TeamPreset> {
+/**
+ * `parsed` on top of `base`: fields a level does not set come from `base`. With `userSet` (the user's teams.yaml,
+ * not a profile), each role start the file provides is marked `startSet` so it wins over the difficulty table
+ * whatever its value (decision 226); a profile layer passes it false so the profile stays a notch, not an override.
+ */
+export function applyPresetFile(parsed: PresetFile, base: Record<Level, TeamPreset> = DEFAULT_PRESETS, opts: { userSet?: boolean } = {}): Record<Level, TeamPreset> {
   const out: Record<Level, TeamPreset> = structuredClone(base);
   for (const [lvl, p] of Object.entries(parsed) as Array<[Level, z.infer<typeof presetFile>[Level]]>) {
     if (!p) continue;
     const prev = out[lvl];
     const leadDirect = p.lead_direct ?? prev.leadDirect;
-    out[lvl] = { id: lvl, level: lvl, roles: p.roles ?? prev.roles, leadMayAdjust: p.lead_may_adjust ?? prev.leadMayAdjust,
+    const roles = p.roles ? p.roles.map(r => ({ ...r, ...(opts.userSet ? { startSet: true } : {}) })) : prev.roles;
+    out[lvl] = { id: lvl, level: lvl, roles, leadMayAdjust: p.lead_may_adjust ?? prev.leadMayAdjust,
       budgetUsd: p.budget_usd ?? prev.budgetUsd, ...(leadDirect ? { leadDirect } : {}) };
   }
   return out;

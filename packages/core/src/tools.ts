@@ -7,9 +7,9 @@
 // The plugin's stdio server cannot import this package, so it ships the output of routerToolList() as a
 // JSON file; the daemon validates every call again with the schemas here.
 import { z } from 'zod';
-import { crossesTier, stepUp } from './ladder.ts';
+import { DEFAULT_DIFFICULTY, crossesTier, stepUp } from './ladder.ts';
 import type { LeadModelClass } from './presets.ts';
-import type { Level, Step } from './types.ts';
+import type { Difficulty, LadderId, Level } from './types.ts';
 
 // ------------------------------------------------------------------ names
 
@@ -77,6 +77,8 @@ export const ReportTriageInput = z.strictObject({
   confidence: z.number().min(0).max(1),
   /** Decision 178: the lead's estimate of the lines the change touches (added plus removed). */
   lines: z.number().int().min(0).max(100_000).optional(),
+  /** Decision 225: how hard the change is, from the lead's first look. Absent -> the router assumes moderate. */
+  difficulty: z.enum(['routine', 'moderate', 'hard']).optional(),
 });
 
 /**
@@ -107,10 +109,22 @@ export function smallDirectBound(leadClass: LeadModelClass, own: Partial<Record<
   return leadClass !== 'opus' && own[leadClass] === undefined ? SMALL_DIRECT : ONE_FILE_DIRECT;
 }
 
-/** Whether a lead's size report is within the keep-it-yourself bound for its class (decisions 178, 220). */
+/** The lead's reported difficulty, or the assumed default when it gave none (decision 225). */
+export function difficultyOf(v: Pick<ReportTriageInput, 'difficulty'>): Difficulty {
+  return v.difficulty ?? DEFAULT_DIFFICULTY;
+}
+
+/**
+ * Whether a lead's size report is within the keep-it-yourself bound for its class (decisions 178, 220) AND the
+ * change is not hard for a non-Opus lead (decision 225): a small *hard* change delegates to a stronger worker, so
+ * it is not kept. An Opus lead keeps a small hard change (it is already the top tier). routine/moderate are
+ * unchanged from decision 220.
+ */
 export function smallChangeDirect(v: ReportTriageInput, leadClass: LeadModelClass, own: Partial<Record<LeadModelClass, Level>> = {}): boolean {
   const b = smallDirectBound(leadClass, own);
-  return v.kind === 'direct' && v.files <= b.files && v.lines !== undefined && v.lines <= b.lines && v.confidence >= b.confidence;
+  const withinBound = v.kind === 'direct' && v.files <= b.files && v.lines !== undefined && v.lines <= b.lines && v.confidence >= b.confidence;
+  if (!withinBound) return false;
+  return !(difficultyOf(v) === 'hard' && leadClass !== 'opus');
 }
 
 /** Whether a lead's size report says "one file, a small edit" (the narrow decision-178 bound; and sure enough to act on). */
@@ -183,7 +197,7 @@ export const ROUTER_TOOLS: readonly RouterToolDef[] = [
   },
   {
     name: 'router_report_triage', input: ReportTriageInput,
-    description: 'Do It All Claude Code, lead only. Reports your own judgement of the request size before the first subtask is dispatched: direct (L0 trivial, L1 small fix) or team (L2 module-level, L3 new service or architecture change), the files you expect to change, your line estimate and your confidence. When you judge it larger than planned the router re-plans it and returns the team and Agent call values. When you report direct and the change is small — up to 2 files and ~60 lines for a Sonnet or unknown-model lead, 1 file and ~15 lines for an Opus lead — the router keeps it with you (no team).',
+    description: 'Do It All Claude Code, lead only. Reports your judgement of a request before the first subtask: kind direct (L0/L1 small fix) or team (L2 module, L3 architecture); files, lines and confidence; and difficulty — routine, moderate or hard (hard = a subtle bug, heavy reasoning or no repro test; default moderate). Report team level L3 for an architecture change and the router re-plans as L3, returning the L3 team values. Small and not hard (<=2 files/~60 lines for a Sonnet or unknown lead, 1/~15 for Opus): kept with you. Small but hard: delegated to a stronger worker.',
   },
   {
     name: 'router_report_result', input: ReportResultInput,
@@ -278,8 +292,8 @@ export const MAX_STEP_UPS = 3;
 export const MAX_LEAD_ONLY_RAISES = 1;
 
 export interface EscalationState {
-  /** The step the slot runs at now. */
-  step: Step;
+  /** The cell the slot runs at now. */
+  step: LadderId;
   /** Raises of the slot so far (misses, rejects, requests). */
   upCount: number;
   fableOptIn: boolean;
@@ -292,7 +306,7 @@ export interface EscalationState {
 }
 
 export type EscalationDecision =
-  | { granted: true; to: Step; leadOnly: boolean }
+  | { granted: true; to: LadderId; leadOnly: boolean }
   | { granted: false; code: 'needs_user'; why: 'limit' | 'tier' | 'second_lead_only' };
 
 /**

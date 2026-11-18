@@ -112,6 +112,17 @@ export async function startTestDaemon(opts: DaemonOptions & { config?: Record<st
   return Object.assign(d, { home });
 }
 
+/**
+ * Decision 226: pin a session's open request to difficulty `routine`, so a coder dispatched at s1 (haiku·low) is
+ * accepted. For tests whose subject is NOT the difficulty-driven start cell (costs, security, records, worktrees,
+ * lifecycle…): call it once right after the request opens to keep their existing s1/haiku dispatches and assertions.
+ * Tests that exercise the default moderate path (start cells, step-ups) must NOT call this.
+ */
+export function pinRoutine(d: TestDaemon, sessionId?: string): void {
+  const r = sessionId ? d.ledger.latestRequest(sessionId) : d.ledger.latestRequestAny();
+  if (r) d.ledger.setRequestDifficulty(r.id, 'routine', 'lead');
+}
+
 export interface RawResponse { status: number; headers: http.IncomingHttpHeaders; body: unknown; text: string }
 
 export function request(port: number, o: { method?: string; path: string; headers?: Record<string, string>; body?: string | Buffer }): Promise<RawResponse> {

@@ -8,7 +8,7 @@ import { costUsd } from '@do-it-all-claude-code/core';
 import { readTranscriptUsage } from '../src/transcript.ts';
 import type { StatusView } from '../src/router.ts';
 import {
-  FIXTURE_CALLS, TRANSCRIPT_FIXTURE, copyTranscript, getStatus, postHook, rmrf, rows, startTestDaemon, tmpDir, write,
+  FIXTURE_CALLS, TRANSCRIPT_FIXTURE, copyTranscript, getStatus, pinRoutine, postHook, rmrf, rows, startTestDaemon, tmpDir, write,
   type HookInput, type TestDaemon,
 } from './helpers.ts';
 
@@ -63,10 +63,13 @@ const session = (d: TestDaemon, sid: string) => {
 };
 const postStatus = async (d: TestDaemon, sid: string): Promise<StatusView> => (await getStatus(d.port, sid)).body as StatusView;
 const agentCall = (tag: string) => ({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] x`, model: 'haiku', effort: 'low' } });
+// decision 226: pin the open request routine so the coder starts at s1 (claude-haiku-5-5), which these cost fixtures price against.
+const routine = (d: TestDaemon) => pinRoutine(d);
 
 test('async Agent run: no usage at PostToolUse, the cost comes from the SubagentStop transcript, once per agent', () => withDaemon(async d => {
   const post = session(d, 'async');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  routine(d);
   await post(agentCall('A'));
   await post({ hook_event_name: 'SubagentStart', agent_id: 'ag-a', agent_type: 'do-it-all-claude-code:coder' });
   // Claude Code runs the Agent tool asynchronously: the result is only "launched", without usage
@@ -92,6 +95,7 @@ test('async Agent run: no usage at PostToolUse, the cost comes from the Subagent
 test('sync Agent run: PostToolUse usage is kept for cross-checking only, not counted', () => withDaemon(async d => {
   const post = session(d, 'sync');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  routine(d);
   await post({ hook_event_name: 'PostToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'Explore', prompt: 'look' },
     tool_response: { status: 'completed', agentId: 'ex-1', resolvedModel: 'claude-haiku-5-5', usage: FIXTURE_CALLS[3] } });
   await post({ hook_event_name: 'SubagentStop', agent_id: 'ex-1', agent_type: 'Explore', stop_hook_active: false, agent_transcript_path: copyTranscript(d.home, 'ex-1') });
@@ -114,6 +118,7 @@ async function startedCoder(post: ReturnType<typeof session>, tag: string, agent
 test('decision 84: no transcript but notification tokens -> estimate at the output rate, counted, Agent calls go on', () => withDaemon(async d => {
   const post = session(d, 'estimate');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  routine(d);
   await startedCoder(post, 'A', 'ag-e');
   const gone = path.join(d.home, 'gone', 'agent-ag-e.jsonl');
   await post({ hook_event_name: 'SubagentStop', agent_id: 'ag-e', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: false, agent_transcript_path: gone });
@@ -146,6 +151,7 @@ test('decision 84: no transcript but notification tokens -> estimate at the outp
 test('decision 84: neither transcript nor notification tokens -> unknown, warned, flagged in status, no deny', () => withDaemon(async d => {
   const post = session(d, 'unknown');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  routine(d);
   await startedCoder(post, 'A', 'ag-u');
   await post({ hook_event_name: 'SubagentStop', agent_id: 'ag-u', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: false });
   await post({ hook_event_name: 'UserPromptSubmit', prompt: notification('ag-u') });
@@ -162,6 +168,7 @@ test('decision 84: neither transcript nor notification tokens -> unknown, warned
 test('a transcript with unexpected field types never throws: bad numbers count as 0, a missing usage falls back to unknown', () => withDaemon(async d => {
   const post = session(d, 'odd');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  routine(d);
   await startedCoder(post, 'A', 'ag-o');
   write(d.home, 'odd/agent-ag-o.jsonl', [
     JSON.stringify({ type: 'assistant', message: { id: 'm1', model: 'claude-haiku-5-5', usage: { input_tokens: '12', output_tokens: 100, cache_read_input_tokens: -5, cache_creation: 'x' } } }),
@@ -178,6 +185,7 @@ test('a transcript with unexpected field types never throws: bad numbers count a
 test('decision 85: a task notification brings the subtask\'s verify result to the lead; none when no subtask is bound', () => withDaemon(async d => {
   const post = session(d, 'result');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  routine(d);
   await startedCoder(post, 'A', 'ag-r');
   await post({ hook_event_name: 'SubagentStop', agent_id: 'ag-r', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: false, agent_transcript_path: copyTranscript(d.home, 'ag-r') });
   const passed = await post({ hook_event_name: 'UserPromptSubmit', prompt: notification('ag-r', 12764) });
@@ -205,6 +213,7 @@ test('decision 85: a task notification brings the subtask\'s verify result to th
 test('a <task-notification> prompt is not a new request: no triage, no context, the request continues', () => withDaemon(async d => {
   const post = session(d, 'notify');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  routine(d);
   await post({ hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'Started the coder in the background.' });
   assert.equal(rows(d, 'SELECT status FROM requests')[0]!.status, 'closed');
   const note = '<task-notification>\n<task-id>ag-a</task-id>\n<status>completed</status>\n<result>done</result>\n<usage><subagent_tokens>12764</subagent_tokens></usage>\n</task-notification>';

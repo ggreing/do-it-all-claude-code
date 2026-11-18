@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { AWAITING_USER_MARKER } from '../src/continuation.ts';
 import { PROMPT_TAIL_BYTES, readUserPrompts } from '../src/transcript.ts';
-import { TOKEN, call as sealedApi, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, type HookInput, type TestDaemon } from './helpers.ts';
+import { pinRoutine, TOKEN, call as sealedApi, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, type HookInput, type TestDaemon } from './helpers.ts';
 
 const MARKER = 'quartz-heron-5521';
 const L2_PROMPT = `Refactor the validation module across multiple files and add an audit log (${MARKER}).`;
@@ -75,6 +75,7 @@ function session(d: TestDaemon, sid: string, cwd: string, transcript: string, wr
   const say = async (prompt: string): Promise<void> => {
     if (writeTranscript) fs.appendFileSync(transcript, user(prompt) + '\n');
     await post({ hook_event_name: 'UserPromptSubmit', prompt });
+    pinRoutine(d, sid);   // decision 226: coder stays s1 (haiku·low); these tests dispatch coders as setup, not about cells
   };
   const call = (tag: string, role = 'coder', model = 'haiku', effort = 'low'): HookInput => ({
     hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_h${++seq}`,

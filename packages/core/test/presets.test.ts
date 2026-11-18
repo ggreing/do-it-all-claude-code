@@ -19,7 +19,7 @@ test('the repository file layers over the user file', () => {
   const user = loadPresets(tmp('teams.yaml', 'L2:\n  budget_usd: 9\nL1:\n  lead_direct: false\n'));
   const repo = loadPresets(tmp('teams.yaml', 'L2:\n  roles:\n    - { role: coder, count: 1, start: s2 }\n'), user);
   assert.equal(repo.L2.budgetUsd, 9, 'user budget kept');
-  assert.deepEqual(repo.L2.roles, [{ role: 'coder', count: 1, start: 's2' }]);
+  assert.deepEqual(repo.L2.roles, [{ role: 'coder', count: 1, start: 's2', startSet: true }]);   // decision 226: a file-set start is marked
   assert.equal(repo.L1.leadDirect, undefined, 'user lead_direct kept');
 });
 

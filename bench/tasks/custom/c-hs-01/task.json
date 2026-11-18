@@ -1,0 +1,13 @@
+{
+  "id": "c-hs-01",
+  "level": "L1",
+  "set": "hard-small",
+  "source": "custom",
+  "fixture": "datakit",
+  "title": "CsvStream: 청크 경계에 따라 결과가 달라지는 문제",
+  "prompt": "datakit의 `CsvStream`으로 큰 CSV를 네트워크에서 받는 대로 `write(chunk)`에 넣고 있습니다. 그런데 같은 파일인데도 청크가 어디서 잘리느냐에 따라 결과가 달라집니다.\n\n- `'a,\"b\"\"c\"\\n'`을 한 번에 넣으면 `[['a', 'b\"c']]`가 나오는데, `'a,\"b\"'`와 `'\"c\"\\n'`으로 나눠 넣으면 `DatakitError`(unexpected character after a closing quote)가 납니다.\n- Windows 줄바꿈(`\\r\\n`) 파일에서는 가끔 빈 행이 하나 더 끼어듭니다.\n\n청크가 어느 위치에서 잘리든(빈 청크가 섞여도) `write`들이 돌려준 행과 `end()`가 돌려준 행을 이은 결과가 `parseCsv(전체 텍스트)`와 같아야 합니다. 잘못된 입력에서 `DatakitError`가 나는 것도 자르는 위치와 무관해야 합니다. 형식 규칙은 README 그대로이고, 공개 API(`CsvStream`의 `write`/`end`, `parseCsv`)와 지금의 스트리밍 동작(행은 그 행을 끝낸 줄바꿈이 들어온 `write`에서 돌려줌, `end()` 뒤에는 새 문서를 받을 수 있음)은 유지해 주세요.",
+  "hidden_tests": ["hidden/csv-chunks.test.ts"],
+  "grade": { "cmd": "node --test \"test/**/*.test.ts\" \".bench-hidden/*.test.ts\"" },
+  "oracle": "oracle/",
+  "limits": { "maxTurns": 40, "timeoutSec": 900 }
+}

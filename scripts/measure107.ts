@@ -6,6 +6,7 @@
 //        [--lead opus] [--effort high] [--budget 50] [--cap-scale 1] [--out dir] [--work dir] [--dry-run] [--setup-only] [--only-plan]
 //        [--reproduce-first on|observe|off] [--profile save|balanced|quality] [--direct-no-agent-tool] [--no-router-mcp]
 //        [--daemon-port <n>]
+//   node scripts/measure107.ts --subscription --out <a folder of its own> [--max-percent 80] [--no-meter] [--no-transcripts] [the options above]
 //
 // - direct   : plain Claude Code, no plugin (the lead does the work alone) = router OFF. It has the Agent tool, as
 //              a user's session has (decision 213): the tool's definition is in every call of a session with or
@@ -40,6 +41,24 @@
 // no workspace, no daemon, no API call. --setup-only prepares the workspaces and starts the daemons, no API call.
 // Auth: isolated CLAUDE_CONFIG_DIR + apiKeyHelper via --settings (the key never passes through this script).
 // No --bare in team runs: hooks must run. Transcripts are kept (the daemon reads them for costs).
+// --subscription (decision 226) runs on the login of this machine's Claude Code instead of a key, isolated as
+// bench/src/subscription/isolation.ts has it: the run gets an allow-listed environment (no credential variable
+// reaches it), no config folder of ours (Claude Code reads its own login; this script reads no credential), and
+// the user's settings are not loaded. Every run's init message must show apiKeySource "none"; a run that shows a
+// key, or another plugin, leaves no record and stops the measurement, and so does a run that hit a limit. A run
+// that drew on paid extra usage is recorded and stops it. Before each run `/usage` is read (no model request):
+// no run starts with a meter at --max-percent or more (--no-meter leaves the readings out; then a limit warning
+// in a run stops the measurement after it). Costs are then the API-priced estimate Claude Code reports
+// (total_cost_usd); the budget, the per-run caps and --max-budget-usd count in it as they do with a key. Each
+// record and ledger entry says `subscription: true`, and a record carries what `/usage` moved by around the run
+// (`meters`: other use of the login in that time is in it too). Subscription runs need an --out of their own.
+// Every run works in one workspace folder (<work>/sub-ws), so Claude Code keeps one project entry for them; a
+// run's changes are kept in <out>/patches/. A router run keeps its transcript, which the daemon reads for costs
+// and for what a worker touched: it lands in Claude Code's own projects folder, under that workspace's name.
+// The measurement's last line names that folder (the path Claude Code gave the router when a worker ran, else
+// the name by Claude Code's naming rule); removing it is left to the user.
+// --no-transcripts runs the router arrangements without one too (the router then works from estimates), and a
+// direct run never writes one.
 // Decision 174: each run's record carries `phases` (bench/src/kpi/phases.ts), from its stream-json, stamped on
 // arrival and kept in <out>/streams/, and the daemon ledger; `node scripts/kpi-phases.ts` reports them.
 import { execFileSync } from 'node:child_process';
@@ -59,6 +78,10 @@ import { ALLOWED_SINCE_222, claudeArgs } from '../bench/src/kpi/run-args.ts';
 import { analysePhases, type LedgerTiming, type StreamLine } from '../bench/src/kpi/phases.ts';
 import { mcpSeen, routerMcpReady } from '../bench/src/kpi/router-mcp.ts';
 import { leadTurns } from '../bench/src/kpi/session.ts';
+import { loginSeen, meterLine, meterMoved, meterStop, readMeter, subscriptionRunEnv, subscriptionRunSettings, transcriptsLine } from '../bench/src/kpi/subscription.ts';
+import type { Reading } from '../bench/src/subscription/meter.ts';
+import { loadSubConfig } from '../bench/src/subscription/plan.ts';
+import { redact } from '../bench/src/secrets.ts';
 import { DEFAULT_PROFILE, PROFILES, profileOf } from '../packages/core/src/profiles.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -82,6 +105,13 @@ const LEAD = arg('lead', 'opus')!;
 const EFFORT = arg('effort', 'high')!;
 const BUDGET = Number(arg('budget', '50'));
 const HELPER = arg('api-key-helper');
+// decision 226: the login of this machine's Claude Code instead of a key
+const SUB = flag('subscription');
+if (SUB && HELPER) { console.error('--subscription and --api-key-helper are two ways to pay for a run: pass one of them'); process.exit(2); }
+const METER = SUB && !flag('no-meter');
+const TRANSCRIPTS = !flag('no-transcripts');
+const MAX_PERCENT = Number(arg('max-percent', String(loadSubConfig().maxPercent)));
+if (!(MAX_PERCENT >= 1 && MAX_PERCENT <= 95)) { console.error('--max-percent must be a number from 1 to 95'); process.exit(2); }
 // --cap-scale shrinks the per-run caps (and so the budget-stop threshold) for a cheaper lead model
 const CAP_SCALE = Number(arg('cap-scale', '1'));
 // decision 213: router off has the Agent tool unless the flag asks for the earlier arrangement
@@ -105,7 +135,13 @@ fs.mkdirSync(OUT, { recursive: true });
 const ledgerFile = path.join(OUT, 'ledger.jsonl');
 const runsFile = path.join(OUT, 'runs.jsonl');
 const spent = () => fs.existsSync(ledgerFile) ? fs.readFileSync(ledgerFile, 'utf8').split('\n').filter(Boolean).reduce((a, l) => a + Number(JSON.parse(l).costUsd || 0), 0) : 0;
-const doneKeys = new Set(fs.existsSync(runsFile) ? fs.readFileSync(runsFile, 'utf8').split('\n').filter(Boolean).map(l => { const j = JSON.parse(l); return `${j.taskId}|${j.arrangement}`; }) : []);
+const earlier = fs.existsSync(runsFile) ? fs.readFileSync(runsFile, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l) as { taskId: string; arrangement: string; budgetStop?: boolean; subscription?: boolean; transcript?: boolean }) : [];
+const doneKeys = new Set(earlier.map(j => `${j.taskId}|${j.arrangement}`));
+// a folder holds runs paid for one way: its ledger and budget are in one kind of dollar
+if (earlier.some(j => !j.budgetStop && (j.subscription === true) !== SUB)) {
+  console.error(SUB ? `${OUT} holds runs made with an API key: give the subscription runs an --out of their own` : `${OUT} holds runs made on the subscription login: give the API-key runs an --out of their own`);
+  process.exit(2);
+}
 
 const tasks = loadTasks({ ids: taskIds });
 const missing = taskIds.filter(id => !tasks.some(t => t.id === id));
@@ -121,11 +157,16 @@ console.log(`plan: ${order.length} runs, lead ${LEAD}/${EFFORT}, budget $${BUDGE
 if (arrangements.includes('direct')) console.log(`  direct runs ${DIRECT_AGENT_TOOL ? 'with' : 'without'} the Agent tool`);
 if (arrangements.some(a => a !== 'direct')) console.log(`  router runs ${ROUTER_MCP ? 'with' : 'without'} the router's MCP server, profile ${PROFILE ?? `${DEFAULT_PROFILE} (the router's default)`}`);
 console.log(`  every run may also use ${ALLOWED_SINCE_222.join(', ')} without a prompt (decision 222; runs before it could not)`);
+if (SUB) {
+  console.log('  on the subscription login of this machine\'s Claude Code, no API key: every $ is the API-priced estimate Claude Code reports, and the budget and the caps count in it');
+  console.log(METER ? `  /usage is read before each run: no run starts with a meter at ${MAX_PERCENT}% or more` : '  no /usage readings (--no-meter): a limit warning in a run stops the measurement after it');
+  if (arrangements.some(a => a !== 'direct')) console.log(TRANSCRIPTS ? '  router runs keep their transcript (the daemon reads it), in Claude Code\'s own projects folder' : '  router runs write no transcript (--no-transcripts): the router works from estimates');
+}
 for (const [t, a] of order) console.log(`  ${t.id.padEnd(32)} ${t.level} ${a.padEnd(8)} cap $${CAP[t.level]}${doneKeys.has(`${t.id}|${a}`) ? '  (done)' : ''}`);
 if (flag('only-plan')) process.exit(0);
 if (flag('dry-run')) { printEstimate(); process.exit(0); }
 fs.writeFileSync(path.join(OUT, 'tasks.jsonl'), '');      // rewritten with prompts as workspaces are prepared
-if (!HELPER && !flag('setup-only')) { console.error('pass --api-key-helper "<command>" (keychain helper)'); process.exit(2); }
+if (!HELPER && !SUB && !flag('setup-only')) { console.error('pass --api-key-helper "<command>" (keychain helper), or --subscription to run on the login of this machine\'s Claude Code'); process.exit(2); }
 
 // AGENTIC_ROUTER_HOME (the previous release) is left out: with it, init would move that folder into the temp home
 const { AGENTIC_ROUTER_HOME: _previousHome, ...inherited } = process.env;
@@ -138,8 +179,11 @@ const cli = (home: string, ...a: string[]) => execFileSync(process.execPath, [pa
   { env: cliEnv(home), encoding: 'utf8' });
 const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8', maxBuffer: 64 << 20 });
 
+/** On the subscription login: a router run keeps its transcript unless --no-transcripts; a direct run has no reader of one. */
+const keepsTranscript = (a: Arrangement): boolean => a !== 'direct' && TRANSCRIPTS;
+
 function settingsFor(): string {
-  return JSON.stringify({ apiKeyHelper: HELPER, permissions: { deny: CREDENTIAL_DENY } });
+  return SUB ? subscriptionRunSettings() : JSON.stringify({ apiKeyHelper: HELPER, permissions: { deny: CREDENTIAL_DENY } });
 }
 
 async function runClaude(repo: string, configDir: string, prompt: string, a: Arrangement, capUsd: number, timeoutSec: number, home: string | undefined, streamFile: string)
@@ -152,14 +196,26 @@ async function runClaude(repo: string, configDir: string, prompt: string, a: Arr
   // The command line itself is bench/src/kpi/run-args.ts, shared with scripts/measure-session.ts (what a run may
   // do without a prompt is there too, decision 222).
   const args = claudeArgs({ lead: LEAD, effort: EFFORT, capUsd, settings: settingsFor(), ...(a !== 'direct' ? { pluginDir: path.join(ROOT, 'plugin') } : {}),
-    agentTool: a !== 'direct' || DIRECT_AGENT_TOOL, strictMcp: a === 'direct' || !ROUTER_MCP });
+    agentTool: a !== 'direct' || DIRECT_AGENT_TOOL, strictMcp: a === 'direct' || !ROUTER_MCP, noSessionPersistence: SUB && !keepsTranscript(a) });
   // decision 218: Claude Code names the model to the hooks of an interactive session only (SessionStart), so a
   // -p run tells the router through ANTHROPIC_MODEL, which the relay hook passes on with the prompt. It is the
   // value of --model, so the run itself is the same; every arrangement gets it, router off included.
-  const env = { ...childEnv(configDir, { kind: 'api-key-helper' } as never), ANTHROPIC_MODEL: LEAD, ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
+  // decision 226: on the subscription login the run gets no config folder of ours and no credential variable
+  const env = SUB ? subscriptionRunEnv(LEAD, home)
+    : { ...childEnv(configDir, { kind: 'api-key-helper' } as never), ANTHROPIC_MODEL: LEAD, ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
   const bin = claudeBin();
   const c = await runCaptured(bin.cmd, [...bin.prefix, ...args], { cwd: repo, env, input: prompt, timeoutSec, streamFile });
   return { code: c.code, out: c.result, ms: c.ms, timedOut: c.timedOut, stderr: c.stderr, lines: c.lines, startedAt: c.startedAt };
+}
+
+/** Decision 226: the transcript paths Claude Code gave the router for a run's workers (they lie in the session's folder). */
+function workerTranscripts(home: string): string[] {
+  const dbFile = path.join(home, 'router.db');
+  if (!fs.existsSync(dbFile)) return [];
+  const db = new DatabaseSync(dbFile, { readOnly: true });
+  try { return (db.prepare('SELECT transcript_path FROM agents WHERE transcript_path IS NOT NULL').all() as Array<{ transcript_path: unknown }>).map(r => String(r.transcript_path)); }
+  catch { return []; }
+  finally { db.close(); }
 }
 
 /** Decision 174: the daemon ledger's timing rows (verify commands, workers, subtasks, hook events) for the phases. */
@@ -251,14 +307,40 @@ function printEstimate(): void {
 }
 
 const manifest = loadPublicManifest();
+// decision 226: every subscription run works in this one folder, and the /usage readings run there too
+const SUB_WS = path.join(WORK, 'sub-ws');
+const meter = (purpose: string): Promise<Reading> => readMeter({ claude: claudeBin(), cwd: path.join(SUB_WS, 'repo'), out: OUT, purpose });
+let reading: Reading | null = null;   // the latest /usage reading: the one after a run is the one before the next
+// Router runs on the subscription login leave their transcripts in Claude Code's own projects folder. However
+// the measurement ends (done, a stop, an error), its last line names that folder, for the user to remove it.
+let keptTranscripts = earlier.some(j => j.transcript === true);   // runs of an earlier invocation count too
+const transcriptPaths = new Set<string>();
+process.on('exit', () => {
+  if (!keptTranscripts) return;
+  const cwd = path.join(SUB_WS, 'repo');
+  let real = cwd;
+  try { real = fs.realpathSync.native(cwd); } catch { /* removed meanwhile: the name from the path as given */ }
+  console.log(transcriptsLine(real, transcriptPaths));
+});
 for (const [task, a] of order) {
   const key = `${task.id}|${a}`;
   if (doneKeys.has(key)) continue;
   const remaining = BUDGET - spent();
   const cap = Math.min(CAP[task.level]!, remaining);
-  if (cap < CAP[task.level]! / 2) { console.log(`budget stop before ${key}: $${remaining.toFixed(2)} left`); fs.appendFileSync(runsFile, JSON.stringify({ taskId: task.id, arrangement: a, level: task.level, budgetStop: true, passed: false, costUsd: 0, wallSeconds: 0 }) + '\n'); continue; }
+  if (cap < CAP[task.level]! / 2) { console.log(`budget stop before ${key}: $${remaining.toFixed(2)} left`); fs.appendFileSync(runsFile, JSON.stringify({ taskId: task.id, arrangement: a, level: task.level, budgetStop: true, passed: false, costUsd: 0, wallSeconds: 0, ...(SUB ? { subscription: true } : {}) }) + '\n'); continue; }
+  if (METER && !flag('setup-only')) {
+    if (!reading) {
+      reading = await meter(`before ${key}`);
+      console.log(`/usage: ${meterLine(reading)}`);
+      if (reading.extraUsageEnabled) console.log('  note: usage credits are on for this login: past a limit, use would be charged. No run starts at the guard or above, and a run that draws on them stops the measurement.');
+    }
+    const stop = meterStop(reading, MAX_PERCENT);
+    if (stop) { console.error(`stopped before ${key}: ${stop}`); process.exit(3); }
+  }
   const root = path.join(WORK, `${task.id.slice(0, 40)}-${a}`.replace(/[^A-Za-z0-9_.-]/g, '_'));
-  const ws = await prepare(task, root);
+  // on the subscription login the workspace is the shared one; the run's own folder holds its router home and grading
+  if (SUB) { fs.rmSync(root, { recursive: true, force: true }); fs.mkdirSync(root, { recursive: true }); }
+  const ws = await prepare(task, SUB ? SUB_WS : root);
   fs.appendFileSync(path.join(OUT, 'tasks.jsonl'), JSON.stringify({ taskId: task.id, level: task.level, prompt: ws.prompt }) + '\n');
   const base = git(ws.repo, 'rev-parse', 'HEAD').trim();
   // Harness files stay out of the diff: router project settings, worktrees, hidden tests.
@@ -299,8 +381,14 @@ for (const [task, a] of order) {
   const streamFile = path.join(OUT, 'streams', `${key.replace(/[^A-Za-z0-9_.-]/g, '_')}.jsonl`);
   const r = await runClaude(ws.repo, ws.configDir, ws.prompt, a, cap, task.limits.timeoutSec, home, streamFile);
   const costUsd = Number(r.out?.total_cost_usd ?? 0);
-  fs.appendFileSync(ledgerFile, JSON.stringify({ key, costUsd, at: new Date().toISOString() }) + '\n');
+  fs.appendFileSync(ledgerFile, JSON.stringify({ key, costUsd, at: new Date().toISOString(), ...(SUB ? { subscription: true } : {}) }) + '\n');
   if (home) { try { cli(home, 'stop'); } catch { /* already down */ } }
+  if (SUB && home && keepsTranscript(a)) { keptTranscripts = true; for (const p of workerTranscripts(home)) transcriptPaths.add(p); }
+  // decision 226: a run that was not on the subscription login as asked for, or that reached a limit (it may have
+  // been cut short), is not the run being measured: no record, so it is run again, and the measurement stops here
+  const login = SUB ? loginSeen(r.lines) : null;
+  const notOnLogin = login?.problems.length ? login.problems.join('; ') : login?.limit;
+  if (notOnLogin) { console.error(`stopped after ${key} ($${costUsd.toFixed(3)} counted for it): ${notOnLogin}`); process.exit(3); }
   // decision 213: the session must hold the router's MCP server in a router run that asked for it, and no other
   // server in any run. A run that does not is not the arrangement being measured: its cost is in the ledger, it
   // gets no record (so it is run again), and the measurement stops here.
@@ -310,8 +398,14 @@ for (const [task, a] of order) {
   const phases = analysePhases(r.lines, r.ms, home ? routerTiming(home, r.startedAt) : null);
   const stats = diffStats(ws.repo, base);
   let graded;
+  const patch = SUB || task.source !== 'custom' ? await workspacePatch(ws.repo, base) : '';
+  // the shared workspace is wiped for the next run: its changes are kept beside the record
+  if (SUB) { fs.mkdirSync(path.join(OUT, 'patches'), { recursive: true }); fs.writeFileSync(path.join(OUT, 'patches', `${key.replace(/[^A-Za-z0-9_.-]/g, '_')}.diff`), redact(patch)); }
   if (task.source === 'custom') graded = await gradeNodeTest(task, ws.repo);
-  else graded = await gradeSwebench(task, manifest!.dataset, manifest!.split, await workspacePatch(ws.repo, base), path.join(root, 'grade'), `m107-${task.id}-${a}`);
+  else graded = await gradeSwebench(task, manifest!.dataset, manifest!.split, patch, path.join(root, 'grade'), `m107-${task.id}-${a}`);
+  // the reading after the run (grading gave the meter time to catch up) is the next run's reading before
+  const before = reading;
+  if (METER) { reading = await meter(`after ${key}`); console.log(`/usage: ${meterLine(reading)}`); }
   const models = Object.entries(r.out?.modelUsage ?? {}).map(([m, u]: [string, any]) => ({ model: m, costUsd: Number(u.costUSD ?? 0) }));
   const rec = {
     taskId: task.id, arrangement: a, level: task.level, leadModel: LEAD, leadEffort: EFFORT, rep: 1, allowedSince222: true,
@@ -320,6 +414,8 @@ for (const [task, a] of order) {
     // over every result line of the run: a lead woken by its background workers writes one per turn, and num_turns counts one turn
     leadCalls: leadTurns(r.lines), models, ...stats, ...(a === 'direct' ? { outcome: 'router-off', levelChosen: null, agentTool: DIRECT_AGENT_TOOL } : { routerMcp: ROUTER_MCP, profile: ranProfile }), ...facts,
     mcp: { seen: mcp.seen, servers: mcp.servers.map(s => `${s.name} (${s.status})`), routerTools: mcp.routerTools },
+    // decision 226: costUsd and the other $ of this record are then API-priced estimates
+    ...(login ? { subscription: true, apiKeySource: login.apiKeySource, claudeVersion: login.version, transcript: keepsTranscript(a), limitEvents: login.limitEvents, meters: METER ? meterMoved(before, reading) : null } : {}),
     timedOut: r.timedOut, error: r.out?.is_error ? String(r.out?.subtype ?? r.out?.result ?? '').slice(0, 300) : (r.out ? undefined : r.stderr.slice(-300)),
     phases,
   };
@@ -330,5 +426,9 @@ for (const [task, a] of order) {
   console.log(`  -> ${graded.pass ? 'PASS' : 'FAIL'} ${graded.detail} $${costUsd.toFixed(3)} ${rec.wallSeconds}s${routed}; spent $${spent().toFixed(2)} / $${BUDGET}`);
   const ws1 = phases.workers;
   console.log(`     phases: startup ${phases.startupSeconds ?? '?'}s, lead before 1st worker ${phases.leadBeforeFirstWorkerSeconds ?? '-'}s, ${ws1.length} worker(s) active ${phases.workersActiveSeconds ?? '-'}s (start delays ${ws1.map(w => w.startDelaySeconds ?? '?').join('/') || '-'}s), lead wrap-up ${phases.leadFinishSeconds ?? '-'}s, verify ${phases.verify.totalSeconds}s, hooks ${phases.hooks.totalSeconds}s x${phases.hooks.count}`);
+  // decision 226: the run is recorded; what it showed about the login's limits decides whether another may start
+  if (login?.warning) console.log(`     ${login.warning}`);
+  const enough = login?.overage ?? (METER ? null : login?.warning);
+  if (enough) { console.error(`stopped after ${key} (recorded): ${enough}`); process.exit(3); }
 }
 console.log(`done. spent $${spent().toFixed(2)} of $${BUDGET}. runs: ${runsFile}`);

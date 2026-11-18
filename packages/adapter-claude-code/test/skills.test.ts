@@ -135,11 +135,12 @@ test('skill covers the uncertain-size escalation and shares the brief\'s rubric/
   assert.ok(body.includes(`${L3_SIZE_RULE.files} or more files`), 'skill states the L3 file threshold');
   assert.ok(body.includes(L3_SIGNS), 'skill lists the L3 signs');
 
-  // the role whose first call signals L3: the brief names it for the first call, the skill mentions it
-  const signal = l3SignalRoles(DEFAULT_PRESETS.L2, DEFAULT_PRESETS.L3);
-  assert.ok(signal.length > 0, 'default presets have an L3-signalling first-call role');
-  assert.ok(brief.includes(`make your first call the ${signal[0]}`), 'brief names the first-call L3 role');
-  assert.ok(body.includes(signal[0]!), 'skill mentions the first-call L3 role');
+  // the way up to L3 (decision 226): the lead reports the level in router_report_triage, the brief and the skill
+  // both say so, and neither asks for a first call that shows the level
+  assert.ok(brief.includes('first call router_report_triage with kind "team", level "L2" or "L3"'), 'brief: the switch is the report');
+  assert.match(body, /report level \*\*L3\*\* in that `router_report_triage` call/, 'skill: L3 by the report');
+  for (const text of [brief, body]) assert.doesNotMatch(text, /make your \*{0,2}first\*{0,2} call the|signals L3/, 'no first-call role');
+  assert.ok(l3SignalRoles(DEFAULT_PRESETS.L2, DEFAULT_PRESETS.L3).length > 0, 'the router can still read one, unasked');
 
   // the escalation brief carries the team Agent-call markers the skill also documents
   assert.ok(brief.includes('do-it-all-claude-code:') && body.includes('do-it-all-claude-code:'));

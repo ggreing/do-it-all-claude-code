@@ -16,6 +16,9 @@ export function safeEnv(tmp: string, name: string, extra: Record<string, string>
   fs.writeFileSync(path.join(dir, 'claude.cmd'), '@echo off\r\n>>"%~dp0calls.log" echo %CLAUDE_CONFIG_DIR%^|%*\r\necho 2.1.326 (Claude Code)\r\nexit /b 0\r\n');
   fs.writeFileSync(path.join(dir, 'claude'), '#!/bin/sh\necho "${CLAUDE_CONFIG_DIR}|$*" >> "$(dirname "$0")/calls.log"\necho "2.1.326 (Claude Code)"\n', { mode: 0o755 });
   const env: NodeJS.ProcessEnv = { ...process.env, ...extra, CLAUDE_CONFIG_DIR: path.join(tmp, `claude-config-${name}`) };
+  // A script grades with `node --test`. With the test runner's NODE_TEST_CONTEXT in its environment that command
+  // takes itself for a nested run, runs no file and exits 0, so every grade would pass. Without it the grade is real.
+  delete env.NODE_TEST_CONTEXT;
   // Windows names the variable Path; setting PATH beside it would leave two
   const key = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
   env[key] = `${dir}${path.delimiter}${env[key] ?? ''}`;

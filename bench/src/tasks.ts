@@ -29,8 +29,14 @@ export function loadPublicTasks(): Task[] {
   return m.tasks.map(t => ({ ...t, title: `${t.repo} ${t.instance_id} (${t.difficulty})` }));
 }
 
+/**
+ * The tasks a selection names. A task of a named set (task.json `set`, e.g. the hard-small tasks c-hs-*) is not
+ * part of the level plans: it is left out unless `ids` names it, so the measurements made by level or by source
+ * keep the tasks they had.
+ */
 export function loadTasks(filter: { levels?: string[]; ids?: string[]; sources?: string[] }): Task[] {
   return [...loadCustomTasks(), ...loadPublicTasks()].filter(t =>
+    (!t.set || (filter.ids?.includes(t.id) ?? false)) &&
     (!filter.levels || filter.levels.includes(t.level)) &&
     (!filter.ids || filter.ids.includes(t.id)) &&
     (!filter.sources || filter.sources.includes(t.source)));

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
 import {
-  CLASSIC_GLYPHS, DAEMON_DOWN, GLYPHS, LEAD, MIN_SESSION_ROWS, OFFICE_MIN_CLAUDE, ROLE_NAME, SLACK, TABS, callRow, checksLine, compileSecrets, elapsed, fit,
+  CLASSIC_GLYPHS, DAEMON_DOWN, GLYPHS, LEAD, MIN_SESSION_ROWS, OFFICE_MIN_CLAUDE, ROLE_NAME, SLACK, TABS, callRow, checksLine, compileSecrets, deskCell, elapsed, fit,
   fromAgentStatus, homeCandidates, isTab, joinPath, nextPeriod, labelFor, modelName, officeLayout, officeSwitch, oneLine, parseHelperLine,
   requestLine, resultRow, roleOf, routerLine, statusWord, stepLine, subtaskOf, tabLabelsFit, tagOf, takeLines, textRow, unicodeTerminal, versionAtLeast,
   wantedRoom, withRow,
@@ -637,7 +637,7 @@ async function officeTab($: Engine, e: RenderEvent, room: Room): Promise<RenderE
   const atDesks = list.slice(0, layout.shown)
   const rest = list.slice(layout.shown)
   const scene = {
-    agents: atDesks.map(a => ({ id: a.id, role: a.role, label: a.label, model: a.model, effort: a.effort ?? '', status: a.status, time: elapsed(a, now), doing: doing(a) })),
+    agents: atDesks.map(a => ({ id: a.id, role: a.role, label: a.label, model: a.model, effort: a.effort ?? '', status: a.status, time: elapsed(a, now), doing: doing(a), ...deskCell(a, a.id === LEAD ? undefined : subtaskOf(view, a)) })),
     selected: sel,
     summary,
     compact: !layout.wall,

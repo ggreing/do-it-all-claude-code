@@ -31,12 +31,33 @@ All notable changes to this project are documented here. This project adheres to
 
 ### Changed
 
+- **Difficulty, and a model × effort grid, decide where a worker starts.** The lead now reports a difficulty
+  (routine, moderate or hard) with its size, and the router sets each role's start from a difficulty table, not
+  from the level: a coder starts at Haiku·low when routine, Sonnet·medium when moderate (the default when the
+  lead gives none) and Opus·high when hard, at any level; architect and reviewer one effort step richer (floor
+  Sonnet·medium, Opus·xhigh when hard); the tester at the coder's cell; the ui-designer at Sonnet. So a big but
+  routine change does not get Opus coders and a small hard one does. The fixed seven-step ladder became a grid of
+  four models × five efforts (`s1`…`s7` stay as aliases of the seven measured/Phase-0 cells); the thirteen new
+  cells carry **estimated** cost coefficients (list price × an effort multiplier read from Claude Code 2.1.326),
+  marked estimated in the config, the office and `doctor`, to be measured in subscription mode. A slot moves on
+  the grid by effort first within a model, then a model change; a hard task that comes back unverified jumps the
+  model once within budget before it returns to the lead. Decision 220's keep-it-with-the-lead bound now applies
+  to routine and moderate only — a small *hard* change goes to a stronger worker (an Opus lead keeps it). The
+  profiles shift the whole table one notch; a `teams.yaml` start or a role override still wins. Provisional, and
+  the estimated cells especially: see [docs/design/difficulty-steps.md](docs/design/difficulty-steps.md).
 - **Bench.** `scripts/measure107.ts` takes `--profile save|balanced|quality` for the router runs, and passes the
   lead's model to the router as a session's environment would. Every run may now use `echo`, `pwd` and `wc`
   without a prompt, as a user at the terminal allows; earlier runs refused them. New:
   `scripts/measure-session.ts` puts the six requests of a scenario (`bench/tasks/sessions/taskboard-01`) to one
   session, router on and off, and records each step's result and cost and how the lead's context grows. A
   resumed process reports the session's running total, so a step's cost is the difference from the step before.
+- **Bench on a subscription.** `scripts/measure107.ts --subscription` runs on the login of the machine's Claude
+  Code instead of an API key: no key helper, no credential variable and no config folder of the run reach the
+  session, and the script reads no credential. A run that shows a key, or that reached a limit, leaves no record
+  and stops the measurement; `/usage` is read before each run and none starts with a meter at 80% or more. Costs
+  are then Claude Code's API-priced estimates, and each record says `subscription: true`. Three tasks were added
+  for it, `c-hs-01` to `c-hs-03` on a new fixture: a small change each that takes reasoning to get right, with
+  wrong fixes kept beside them that the hidden tests must fail. They are loaded only when named.
 - **Parallel writers share the checkout.** When a change has independent parts, the lead now sends one coder
   for each part in one message, in the working tree, and the router runs the build and tests once, when the last
   of them stops. A subtask the architect's plan marks `after: none` is such a part. Before, the brief asked for a
@@ -70,6 +91,19 @@ All notable changes to this project are documented here. This project adheres to
   suspects before deciding, rather than not to explore. The bound was fitted on one run of the 20 public
   SWE-bench tasks — the four requests the lead delegated or took back there were all two files, and two cost far
   more than the lead alone — so treat the exact numbers as provisional.
+- **The team office names each slot by its model and effort.** A worker's step now reads `Sonnet · medium (s3)`
+  where it was `s3`, with the old name in parentheses for the seven cells that have one, and `est.` on a cell whose
+  cost has not been measured yet (`Sonnet · xhigh est.`); a step change reads `Haiku low→high`. The difficulty the
+  lead reported stands beside the level in the Office line, on each Work row and in a request's detail, which
+  also says whether the lead gave it or the default applied. The Team tab gives each level's start cells from
+  routine to hard. Narrow docks and small desks drop the parenthesis first and keep within their width; requests
+  from before show no difficulty. A Work row in a dock 47 columns wide or narrower no longer runs past the frame:
+  the kind of work, then the state's padding give way first, and the state is cut last.
+- **The lead asks for the L3 team in its report.** With start cells set by difficulty, a first Agent call no
+  longer shows whether the lead chose the L2 or the L3 team, so the brief no longer asks for an architect (or any
+  role) as the first call. The lead reports level L3 in the `router_report_triage` call it makes before its first
+  Agent call, and the answer gives the L3 team's call values; a first call the router can still read as L3 counts
+  as before.
 
 ## [0.5.1] — 2026-11-18
 

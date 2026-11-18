@@ -7,7 +7,7 @@ import type { UsageRow } from '@do-it-all-claude-code/core';
 import { Ledger } from '../src/ledger.ts';
 import type { Logger } from '../src/log.ts';
 import { CROSS_CHECK_TOLERANCE, MAX_ROWS_PER_POST, crossCheck, validRow } from '../src/proxyusage.ts';
-import { TOKEN, call, callAs, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, type HookInput, type TestDaemon } from './helpers.ts';
+import { pinRoutine, TOKEN, call, callAs, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, type HookInput, type TestDaemon } from './helpers.ts';
 
 const L0_PROMPT = 'fix the typo in README.md';
 const L2_PROMPT = 'Refactor the validation module across multiple files and add an audit log';
@@ -65,6 +65,7 @@ test('decision 130: POST /router/v1/usage stores each row once (row id, message 
 test('decision 130: main-conversation rows are the lead\'s cost, by prompt id (opening prompt or a later one) or by time; the record says proxy', () => withDaemon(async d => {
   const post = session(d, 's1', d.home);
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L0_PROMPT, prompt_id: 'p-1' });
+  pinRoutine(d);
   const req = String(rows(d, 'SELECT id FROM requests')[0]!.id);
   const byPrompt = row({ promptId: 'p-1', usd: 0.25 });
   const byTime = row({ usd: 0.5 });
@@ -93,6 +94,7 @@ test('decision 130: a subagent\'s rows (agent id = hook agent id) are its subtas
   return withDaemon(async (d, warns) => {
     const post = session(d, 's1', repo);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT, prompt_id: 'p-1' });
+    pinRoutine(d);
     assert.deepEqual(await post({
       hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_1',
       tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] work\n[scope: src/**]', model: 'haiku', effort: 'low' },

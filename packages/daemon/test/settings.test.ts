@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyConfigChange, effectivePluginDir, readAudit } from '@do-it-all-claude-code/core';
-import { call, makeHome, makeRepo, postHook, request, rmrf, startTestDaemon, tmpDir, write, type HookInput, type TestDaemon } from './helpers.ts';
+import { call, makeHome, makeRepo, pinRoutine, postHook, request, rmrf, startTestDaemon, tmpDir, write, type HookInput, type TestDaemon } from './helpers.ts';
 
 const PLUGIN = fileURLToPath(new URL('../../../plugin/', import.meta.url));
 const json = (body: unknown) => JSON.stringify(body);
@@ -117,6 +117,7 @@ test('decision 168 review L3: the router never uses a generated role file that i
       tool_input: { subagent_type: type, prompt: `[subtask:${tag}] work${scope === null ? '' : `\n[scope: ${scope}]`}`, model, effort },
     });
     await hook({ hook_event_name: 'UserPromptSubmit', prompt: 'Refactor the validation module across multiple files and add an audit log' });
+    pinRoutine(d, 'l3');   // decision 226: coder s1 (haiku·low), reviewer s3 (sonnet·medium) — this test is about the role template, not cells
     await hook(agentCall('R', 'other/**', 'do-it-all-claude-code:reviewer', 'sonnet', 'medium'));
     await hook({ hook_event_name: 'SubagentStart', agent_id: 'r1', agent_type: 'do-it-all-claude-code:reviewer' });
     await hook(agentCall('A', 'src/a/**', 'do-it-all-claude-code:coder', 'haiku', 'low'));

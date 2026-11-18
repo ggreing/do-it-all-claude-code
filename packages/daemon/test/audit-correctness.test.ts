@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { TEAM_L0_PRESETS, claudeAdapter, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
+import { pinRoutine, TEAM_L0_PRESETS, claudeAdapter, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
 
 const L1_PROMPT = 'Fix the bug where parse() fails on empty input in src/parse.ts';
 const L2_PROMPT = 'Refactor the validation module across multiple files and add an audit log';
@@ -31,10 +31,12 @@ const subs = (d: TestDaemon) => rows(d, 'SELECT id, status, agent_id FROM subtas
 test('E9 / #10: a tag running in an earlier request of the session is busy in the next one; its scope file stays', () => withDaemon(async d => {
   const post = session(d, 'e9');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  pinRoutine(d);
   await post(call('A', 'src/a/**'));
   await post(start('a1'));
   await post({ hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'waiting for the subagent' });
   await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Also fix the bug in src/b/y.ts where it fails on empty input' });
+  pinRoutine(d);
   assert.match(denied(await post(call('A', 'src/b/**'))), /subtask A is already running/);
   const scope = JSON.parse(fs.readFileSync(d.ledger && path.join(d.home, 'scopes', fs.readdirSync(path.join(d.home, 'scopes'))[0]!), 'utf8'));
   assert.deepEqual(scope.allowed, ['src/a/**']);
@@ -45,6 +47,7 @@ test('E9 / #10: a tag running in an earlier request of the session is busy in th
 test('E8 / #11: an allowed subtask that never started expires after 30 s and frees the fixed team\'s slot', () => withDaemon(async (d, clock) => {
   const post = session(d, 'e8');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Fix the typo in the error message in src/a/x.ts' });
+  pinRoutine(d);
   assert.equal(rows(d, 'SELECT level FROM requests')[0]!.level, 'L0');
   await post(call('A', 'src/a/**'));                                       // never starts
   assert.match(denied(await post(call('A2', 'src/a/**'))), /L0 team are busy.*dispatched again with the same ID/);
@@ -56,10 +59,12 @@ test('E8 / #11: an allowed subtask that never started expires after 30 s and fre
 test('#11: an agent pairs with a pending subtask of the current request only', () => withDaemon(async (d, clock) => {
   const post = session(d, 'pair');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  pinRoutine(d);
   await post(call('A', 'src/a/**'));                                       // allowed, never starts
   await post({ hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'Done.' });
   clock.advance(1000);
   await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Fix the bug in src/b/y.ts where it fails on empty input' });
+  pinRoutine(d);
   await post(call('B', 'src/b/**'));
   await post(start('b1'));
   assert.equal(JSON.parse(fs.readFileSync(path.join(d.home, 'agents', 'b1.json'), 'utf8')).subtaskId, 'B');
@@ -68,6 +73,7 @@ test('#11: an agent pairs with a pending subtask of the current request only', (
 test('E12 / #11: a "killed" or "failed" notification ends the subtask (verify never ran) and frees its slot', () => withDaemon(async d => {
   const post = session(d, 'e12');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Fix the typo in the error message in src/a/x.ts' });
+  pinRoutine(d);
   await post(call('A', 'src/a/**'));
   await post(start('a1'));
   const n = await post({ hook_event_name: 'UserPromptSubmit', prompt: '<task-notification>\n<task-id>a1</task-id>\n<status>killed</status>\n<summary>Agent was stopped</summary>\n</task-notification>' });
@@ -89,6 +95,7 @@ test('E11 / #12: replayed events are history: duplicates ignored, an old prompt 
   try {
     const post = session(d, 'dup', repo);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT, prompt_id: 'p-1' });
+    pinRoutine(d);
     await post(call('A', 'src/a/**', { toolUseId: 'toolu_A' }));
     await post(start('a1'));
     write(repo, 'src/a/x.ts', 'ok\n');
@@ -102,6 +109,7 @@ test('E11 / #12: replayed events are history: duplicates ignored, an old prompt 
   // (c) an old spooled prompt replayed while a newer request is live
   const post = session(d, 'old');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+  pinRoutine(d);
   clock.advance(1000);
   await replay('old', d.home, { hook_event_name: 'UserPromptSubmit', prompt: 'Fix the typo in the error message' }, '2026-11-01T00:00:00.000Z');
   assert.deepEqual(rows(d, "SELECT level, status, created_at FROM requests WHERE session_id = 'old' ORDER BY created_at"),
@@ -113,6 +121,7 @@ test('E11 / #12: replayed events are history: duplicates ignored, an old prompt 
   try {
     const p2 = session(d, 'late', repo2);
     await p2({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+    pinRoutine(d);
     write(repo2, 'other/y.ts', 'edited while the daemon was down\n');
     await replay('late', repo2, call('A', 'src/a/**'));
     await replay('late', repo2, start('a9'));
@@ -126,6 +135,7 @@ test('E11 / #12: replayed events are history: duplicates ignored, an old prompt 
 test('E14 / #13: SessionStart after compaction re-injects nothing once the request is closed', () => withDaemon(async d => {
   const post = session(d, 'e14');
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  pinRoutine(d);
   assert.match((await post({ hook_event_name: 'SessionStart', source: 'compact' })).hookSpecificOutput?.additionalContext ?? '', /ledger \(after compaction\)/);
   await post({ hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'done' });
   assert.deepEqual(await post({ hook_event_name: 'SessionStart', source: 'compact' }), {});

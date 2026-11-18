@@ -9,7 +9,7 @@ import path from 'node:path';
 import { startDaemon } from '../src/index.ts';
 import type { StatusView } from '../src/router.ts';
 import { AWAITING_USER_MARKER } from '../src/continuation.ts';
-import { copyTranscript, getStatus, loadSpike, makeHome, makeRepo, postHook, retarget, rmrf, write, type HookInput } from './helpers.ts';
+import { copyTranscript, getStatus, loadSpike, makeHome, makeRepo, pinRoutine, postHook, retarget, rmrf, write, type HookInput } from './helpers.ts';
 
 const CHECK = 'const t = require("fs").readFileSync("allowed/c.txt", "utf8");\nif (!t.includes("VERIFIED")) { console.error("c.txt is not VERIFIED"); process.exit(1); }\n';
 
@@ -37,6 +37,7 @@ test('startDaemon + real adapter: brief, deny, block then pass on spike s2, HITL
           h.prompt = 'Fix the bug where parse() fails on empty input in src/parse.ts';
           fs.appendFileSync(transcript, JSON.stringify({ type: 'user', message: { role: 'user', content: h.prompt } }) + '\n');
           const o = (await post(h)).body as Out;
+          pinRoutine(d, sid);   // decision 226: coder stays s1 (haiku·low), which the wrong-call deny and the status assert below expect
           assert.equal(o.hookSpecificOutput?.hookEventName, 'UserPromptSubmit');
           assert.match(o.hookSpecificOutput?.additionalContext ?? '', /^\[do-it-all-claude-code\] level L1/);
           // a call at the wrong step is denied in Claude Code's PreToolUse format (sonnet/medium is neither the L2 nor

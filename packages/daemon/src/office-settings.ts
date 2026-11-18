@@ -6,7 +6,7 @@
 import {
   CONFIG_KEYS, DEFAULT_LADDER, DEFAULT_PRESETS, MANAGED_CONFIG_KEYS, PROFILES, PROFILE_INFO, PROFILE_LAYERS, SMALL_STAYS_WITH_LEAD, SettingsRejected, TEAM_PATH, applyTeamPaths, checkRevision,
   getProjectWorktree, ladderStep, profileOf, profilePresets, profileSets, readText, revisionOf, rolesView, teamsFile, validateConfigSet,
-  type ConfigKeySpec, type LeadModelClass, type Level, type Profile, type SettingsError, type Step,
+  type ConfigKeySpec, type LadderId, type LeadModelClass, type Level, type Profile, type SettingsError,
 } from '@do-it-all-claude-code/core';
 import { readConfigFile } from './config.ts';
 import { headRef, repoRoot } from './git.ts';
@@ -57,7 +57,7 @@ export interface OfficeSettings {
     options: Array<{ id: Profile; title: string; summary: string; sets: Array<{ path: string; value: string }>; measured: string | null }>;
   };
   items: SettingsItem[];
-  team: Array<{ level: Level; leadDirect: boolean; budgetUsd: number; roles: Array<{ role: string; count: number; step: Step; model: string; effort: string; source: Source }> }>;
+  team: Array<{ level: Level; leadDirect: boolean; budgetUsd: number; roles: Array<{ role: string; count: number; step: LadderId; model: string; effort: string; estimated: boolean; source: Source }> }>;
   text: Array<{ key: string; title: string; value: string; command: string }>;
   /** The session's project (decision 192): its folder name, and whether parallel writers get a work tree each (null: not asked yet). Null without a session folder. */
   project: { name: string; worktree: 'on' | 'off' | null } | null;
@@ -195,7 +195,7 @@ export async function officeSettingsView(ctx: OfficeSettingsContext, sessionId?:
     budgetUsd: typeof ownBudgets[level] === 'number' ? ownBudgets[level] as number : layers.project[level].budgetUsd,
     roles: layers.project[level].roles.filter(m => m.count > 0).map(m => {
       const st = ladderStep(m.start);
-      return { role: m.role, count: m.count, step: m.start, model: st.alias, effort: st.effort, source: sourceOf(p => p[level].roles.find(x => x.role === m.role) ?? null, layers) };
+      return { role: m.role, count: m.count, step: m.start, model: st.alias, effort: st.effort, estimated: st.estimated === true, source: sourceOf(p => p[level].roles.find(x => x.role === m.role) ?? null, layers) };
     }),
   }));
 

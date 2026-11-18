@@ -41,13 +41,13 @@ test('T6: the lead\'s first router Agent call re-plans a lead-direct request at 
     assert.deepEqual([(await status(d, sid)).request?.level, (await status(d, sid)).request?.leadDirect], [from, true]);
     const call = (tag: string, type: string, model: string, effort: string) => post({ hook_event_name: 'PreToolUse', tool_name: 'Agent',
       tool_input: { subagent_type: `do-it-all-claude-code:${type}`, prompt: `[subtask:${tag}] work`, model, effort } });
-    // the architect of the L2 team starts at s3: haiku/low is the wrong step
+    // decision 226: the architect's moderate cell is s4 (sonnet·high); haiku/low is the wrong step
     const r = await call('X', 'architect', 'haiku', 'low');
     assert.equal(r.hookSpecificOutput?.permissionDecision, 'deny');
     const st = await status(d, sid);
     assert.deepEqual([st.request?.level, st.request?.leadDirect, st.request?.budgetUsd, st.request?.replannedFrom], ['L2', false, 5, from]);
-    assert.equal((await call('X', 'architect', 'sonnet', 'medium')).hookSpecificOutput?.permissionDecision, undefined);
-    assert.equal((await call('A', 'coder', 'haiku', 'low')).hookSpecificOutput?.permissionDecision, undefined);
+    assert.equal((await call('X', 'architect', 'sonnet', 'high')).hookSpecificOutput?.permissionDecision, undefined);
+    assert.equal((await call('A', 'coder', 'sonnet', 'medium')).hookSpecificOutput?.permissionDecision, undefined);
     const [req] = rows(d, 'SELECT level, preset, replanned_from, triage FROM requests WHERE session_id = ?', sid);
     assert.deepEqual([req!.level, req!.preset, JSON.parse(String(req!.replanned_from)).level], ['L2', 'L2', from]);
     assert.match(String(req!.triage), new RegExp(`re-planned at L2: the lead called a router subagent \\(architect at s1\\) in a lead-direct ${from} request`));
@@ -56,31 +56,32 @@ test('T6: the lead\'s first router Agent call re-plans a lead-direct request at 
   }
 }));
 
-test('decision 113: the first call\'s step picks the team: the L3 start step re-plans at L3, the L2 one (or both, or neither) at L2', () => withDaemon(async d => {
-  const cases: Array<[string, string, string, string, string, 'L2' | 'L3', boolean | null]> = [
+test('decision 113/226: the first call picks the team: a ui-designer (the only cell that differs L2 vs L3) re-plans at L3, any other role at L2', () => withDaemon(async d => {
+  // decision 226: start cells come from the difficulty table (level-independent), so only a role L3 has and L2
+  // lacks — the ui-designer — still signals L3 by its first call. Every other role re-plans at L2.
+  const cases: Array<[string, string, string, string, string, 'L2' | 'L3', boolean]> = [
     // session, prompt level, role, model, effort, re-planned at, allowed
-    ['a3', L0_PROMPT, 'architect', 'opus', 'high', 'L3', true],      // L3 architect starts at s5
-    ['c3', L1_PROMPT, 'coder', 'opus', 'high', 'L3', true],          // L3 coder starts at s5
-    ['c2', L0_PROMPT, 'coder', 'haiku', 'low', 'L2', true],          // L2 coder starts at s1
-    ['t2', L1_PROMPT, 'tester', 'haiku', 'low', 'L2', true],         // both teams start the tester at s1: L2
-    ['x2', L0_PROMPT, 'coder', 'sonnet', 'medium', 'L2', false],     // neither: checked against L2 and denied
-    ['u2', L0_PROMPT, 'ui-designer', 'sonnet', 'medium', 'L2', null],   // only the L3 team has it: no L3 signal (core l3SignalRoles)
+    ['ud3', L0_PROMPT, 'ui-designer', 'sonnet', 'medium', 'L3', true],   // ui-designer's moderate cell s3: the L3 signal
+    ['ar2', L1_PROMPT, 'architect', 'sonnet', 'high', 'L2', true],       // architect: same cell in L2 and L3, so L2
+    ['c2', L0_PROMPT, 'coder', 'sonnet', 'medium', 'L2', true],          // coder's moderate cell s3: L2
+    ['t2', L1_PROMPT, 'tester', 'sonnet', 'medium', 'L2', true],         // tester's moderate cell s3: L2
+    ['x2', L0_PROMPT, 'coder', 'opus', 'high', 'L2', false],             // wrong cell: checked against L2 and denied
   ];
   for (const [sid, prompt, role, model, effort, level, allowed] of cases) {
     const post = session(d, sid);
     await post({ hook_event_name: 'UserPromptSubmit', prompt });
     const r = await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent',
       tool_input: { subagent_type: `do-it-all-claude-code:${role}`, prompt: '[subtask:A] work', model, effort } });
-    if (allowed !== null) assert.equal(r.hookSpecificOutput?.permissionDecision, allowed ? undefined : 'deny', sid);
+    assert.equal(r.hookSpecificOutput?.permissionDecision, allowed ? undefined : 'deny', sid);
     const st = await status(d, sid);
     assert.deepEqual([st.request?.level, st.request?.budgetUsd, st.request?.leadDirect], [level, level === 'L3' ? 15 : 5, false], sid);
-    if (allowed !== null) assert.equal(rows(d, 'SELECT COUNT(*) AS c FROM subtasks WHERE request_id = ?', String(st.request!.id))[0]!.c, allowed ? 1 : 0, sid);
+    assert.equal(rows(d, 'SELECT COUNT(*) AS c FROM subtasks WHERE request_id = ?', String(st.request!.id))[0]!.c, allowed ? 1 : 0, sid);
   }
   // a later call does not re-plan again: the request stays at L3
-  const post = session(d, 'a3');
+  const post = session(d, 'ud3');
   await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent',
-    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:B] work', model: 'haiku', effort: 'low' } });
-  assert.equal((await status(d, 'a3')).request?.level, 'L3');
+    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:B] work', model: 'sonnet', effort: 'medium' } });
+  assert.equal((await status(d, 'ud3')).request?.level, 'L3');
 }));
 
 test('a team request (L1 with lead_direct: false) that ends without any subtask is marked no_delegation; awaiting the user sets no outcome yet', () => withDaemon(async d => {

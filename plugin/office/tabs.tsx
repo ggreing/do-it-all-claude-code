@@ -1,11 +1,11 @@
 import type { Elements, RenderElement } from 'claude-code'
 
 import {
-  PERIODS, PERIOD_NAME, SLACK, appliedLines, bar, choices, clockTime, columns, confirmLine, cycle, dur, filesText, fit, holdoutText,
-  levelText, modelName, pct, pendingSet, pointLabel, settingText, shownValue, spanName, spentLine, statBar, timelineCells, upDown,
-  usd, workHeadline, workMark,
-  type Glyphs, type LimitWindow, type OfficeSettings, type Period, type Savings, type SettingItem, type SettingValue, type Team, type WorkDetail, type WorkList,
-  type WorkRow,
+  DIFFICULTY_COLOR, DIFFICULTY_SHORT, PERIODS, PERIOD_NAME, SLACK, appliedLines, bar, cellText, choices, clockTime, columns, confirmLine, cycle,
+  difficultyNote, difficultyText, dur, filesText, fit, holdoutText, isDifficulty, levelText, modelName, moveText, packParts, pct, pendingSet,
+  pointLabel, settingText, shownValue, spanName, spentLine, statBar, timelineCells, upDown, usd, workHeadline, workMark,
+  type Difficulty, type DifficultyOf, type Glyphs, type LimitWindow, type OfficeSettings, type Period, type Savings, type SettingItem, type SettingValue, type Team,
+  type WorkDetail, type WorkList, type WorkRow,
 } from './model'
 import type { OfficeDaemonState, OfficeSettingsState, OfficeTabData } from '../types/office'
 
@@ -60,6 +60,12 @@ function noteOf(ctx: TabContext, st: OfficeTabData): string {
   return reachLine(ctx.dstate) || st.error || ''
 }
 
+/** The difficulty badge's look: its color when the lead judged it, dim when it is the default (decision 225). */
+function badgeLook(d: DifficultyOf): { color?: string; dimColor?: boolean } {
+  if (!isDifficulty(d.difficulty)) return {}
+  return d.difficultySource === 'default' ? { dimColor: true } : { color: DIFFICULTY_COLOR[d.difficulty] }
+}
+
 /** Lines past `max` left out, the last kept line saying how many: the pane keeps to the rows it has. */
 function within(lines: El[], max: number, more: (n: number) => El): El[] {
   if (lines.length <= max) return lines
@@ -78,21 +84,40 @@ export function workTab(els: Els, st: OfficeTabData, ctx: TabContext): El {
   const note = noteOf(ctx, st)
   const open = (id: string) => () => ctx.act.open(id)
 
-  // a request a line: its mark and time, the level it ran at, the kind of work, what it changed; time and cost at the end
+  // a request a line: its mark and time, the level it ran at and its difficulty, the kind of work, what it changed;
+  // time and cost at the end. The difficulty is a word where a closed row still has room for its files (66 columns
+  // and up), else four cells; no column at all while every row is from before difficulty was kept (decision 225).
   const firstId = w?.open[0]?.requestId ?? w?.rows[0]?.requestId
+  const badgeW = w && [...w.open, ...w.rows].some(r => difficultyText(r)) ? (width >= 66 ? 8 : 4) : 0
   const row = (r: WorkRow): El => {
     const m = workMark(r, g)
     // the time today, the date before (five cells either way)
     const at = clockTime(r.state === 'closed' ? r.closedAt : r.createdAt, now).slice(0, 5)
     const lvl = levelText(r.level, r.finalLevel, g).padEnd(5)
-    const kind = fit(r.kind ?? (r.outcome === 'direct' ? 'lead alone' : ''), 10).padEnd(10)
-    const right = `${r.state === 'closed' ? dur(r.durationMs) : m.word}`.padStart(r.state === 'closed' ? 6 : 16) + ` ${usd(r.totalUsd)}${r.estimated ? '~' : ''}`.padStart(8)
-    const head = ` ${at} ${lvl} ${kind} `
-    const room = width - 1 - [...head].length - [...right].length - 1
+    const diff = difficultyText(r)
+    const badge = badgeW ? `${(diff ? (badgeW >= 8 ? diff : DIFFICULTY_SHORT[diff as Difficulty]) : '').padEnd(badgeW)} ` : ''
+    const len = (s: string) => [...s].length
+    const head = ` ${at} ${lvl} `
+    const cost = ` ${usd(r.totalUsd)}${r.estimated ? '~' : ''}`.padStart(8)
+    const word = r.state === 'closed' ? dur(r.durationMs) : m.word
+    // the mark, the head and badge, the kind and a space, what it changed, a space, the state (or time) and the cost.
+    // Before the row would pass the frame it gives way: what it changed, the kind down to four cells, the state's
+    // padding, the kind, then the state's word is cut; narrower than the rest, the line itself is cut.
+    const base = 1 + len(head) + len(badge) + 1 + len(cost)
+    let right = word.padStart(r.state === 'closed' ? 6 : 16)
+    let kindW = Math.min(10, width - base - len(right) - 1)
+    if (kindW < 4) { right = word; kindW = Math.min(10, width - base - len(right) - 1) }
+    if (kindW < 4) kindW = 0
+    if (!kindW && base + len(right) > width) right = fit(word, Math.max(1, width - base))
+    const kind = kindW ? `${fit(r.kind ?? (r.outcome === 'direct' ? 'lead alone' : ''), kindW).padEnd(kindW)} ` : ''
+    const room = width - base - len(right) - len(kind)
     const what = room > 4 ? fit(filesText(r) || (r.subtasks ? `${r.subtasks} subtask${r.subtasks === 1 ? '' : 's'}` : ''), room).padEnd(room) : ''
+    const press = { plain: true as const, ...(r.requestId === firstId ? { autoFocus: true as const } : {}), onPress: open(r.requestId) }
+    const plainText = `${m.mark}${head}${badge}${kind}${what} ${right}${cost}`
+    if (len(plainText) > width) return <Button key={`req-${r.requestId}`} {...press}>{fit(plainText, width)}</Button>
     return (
-      <Button key={`req-${r.requestId}`} plain {...(r.requestId === firstId ? { autoFocus: true as const } : {})} onPress={open(r.requestId)}>
-        <Text color={m.color}>{m.mark}</Text>{head}<Text dimColor>{what}</Text>{' '}{right}
+      <Button key={`req-${r.requestId}`} {...press}>
+        <Text color={m.color}>{m.mark}</Text>{head}{badge ? <Text {...badgeLook(r)}>{badge}</Text> : null}{kind}<Text dimColor>{what}</Text>{' '}{right}{cost}
       </Button>
     )
   }
@@ -138,7 +163,9 @@ function workDetail(els: Els, ctx: TabContext, st: OfficeTabData): El {
   // the answer: how it went, how long, what it cost
   lines.push(
     <Text key="head" wrap="wrap">
-      <Text bold>{`${levelText(d.level.judged, d.level.final, g)}${d.kind ? ` ${d.kind}` : ''} `}</Text>
+      <Text bold>{`${levelText(d.level.judged, d.level.final, g)} `}</Text>
+      {difficultyText(d.level) ? <Text {...badgeLook(d.level)}>{`${difficultyText(d.level)} `}</Text> : null}
+      {d.kind ? <Text bold>{`${d.kind} `}</Text> : null}
       <Text color={m.color}>{`${m.mark} ${m.word}`}</Text>
       {` · ${dur(d.time.durationMs)} · ${usd(d.cost.totalUsd)}${d.cost.estimated ? ' estimated' : ''}${d.cost.budgetExceeded ? ' (over budget)' : ''}`}
     </Text>,
@@ -146,7 +173,7 @@ function workDetail(els: Els, ctx: TabContext, st: OfficeTabData): El {
   const judged = `judged ${d.level.judged} by ${d.level.source}${d.level.rule ? ` ${d.level.rule}` : ''}${d.level.confidence !== null ? ` ${pct(d.level.confidence)}` : ''}`
   const changed = d.level.changes.map(c => `${c.from}${g.arrow}${c.to} (${c.why})`).join(', ')
   const plan = d.plan.leadDirect ? 'the lead alone' : `team ${d.plan.preset}`
-  lines.push(<Text key="level" dimColor wrap="wrap">{[judged, changed, plan, d.plan.leadModel ? `lead ${modelName(d.plan.leadModel)}` : '', d.plan.holdout ? `holdout ${d.plan.holdout}` : ''].filter(Boolean).join(' · ')}</Text>)
+  lines.push(<Text key="level" dimColor wrap="wrap">{[judged, changed, difficultyNote(d.level), plan, d.plan.leadModel ? `lead ${modelName(d.plan.leadModel)}` : '', d.plan.holdout ? `holdout ${d.plan.holdout}` : ''].filter(Boolean).join(' · ')}</Text>)
 
   // the timeline: plan, workers, verify, review on one time axis
   if (d.timeline.length) {
@@ -168,12 +195,12 @@ function workDetail(els: Els, ctx: TabContext, st: OfficeTabData): El {
     })
   }
 
-  // each worker: its step against what ran, how it ended, its tries and step changes, its checks, time and cost
+  // each worker: its cell against what ran, how it ended, its tries and step changes, its checks, time and cost
   if (d.subtasks.length) {
     lines.push(<Text key="sub-title" bold>Workers</Text>)
     for (const s of d.subtasks) {
       const ran = s.ranModel && modelName(s.ranModel) !== modelName(s.model) ? ` (ran ${modelName(s.ranModel)})` : ''
-      const moves = s.stepChanges.map(c => `${c.from}${g.arrow}${c.to} ${c.reason}`).join(', ')
+      const moves = s.stepChanges.map(c => `${moveText(c.from, c.to, g)} ${c.reason}`).join(', ')
       const tests = s.checks.filter(c => c.kind === 'test' && c.testsPassed !== undefined).at(-1)
       const checks = [...new Map(s.checks.map(c => [c.kind, c])).values()].map(c => `${c.kind} ${c.result}`).join(', ')
       const ok = s.status === 'passed' || s.verdict === 'pass' || s.verdict === 'accept'
@@ -182,7 +209,7 @@ function workDetail(els: Els, ctx: TabContext, st: OfficeTabData): El {
       lines.push(
         <Text key={`sub-${s.id}`} wrap="wrap">
           <Text bold>{`${s.id} ${s.role} `}</Text>
-          <Text dimColor>{`${s.step} ${modelName(s.model)} ${s.effort}${ran} · `}</Text>
+          <Text dimColor>{`${cellText(s)}${ran} · `}</Text>
           <Text {...(ok ? { color: 'success' } : held ? { color: 'warning' } : s.status === 'failed' ? { color: 'error' } : {})}>{held ? 'waiting for the shared work tree verify' : s.verdict ?? s.status}</Text>
           <Text dimColor>{[s.attempts > 1 ? ` · ${s.attempts} tries` : '', moves ? ` · ${moves}` : '', tests ? ` · ${tests.testsPassed} passed${tests.testsFailed ? `, ${tests.testsFailed} failed` : ''}` : checks ? ` · ${checks}` : '',
             ` · ${dur(s.time.runMs)} · ${usd(s.cost.usd)}${s.cost.state === 'estimate' ? '~' : ''}`].join('')}</Text>
@@ -210,7 +237,7 @@ function workDetail(els: Els, ctx: TabContext, st: OfficeTabData): El {
   }
   if (d.tests) lines.push(<Text key="tests" wrap="truncate-end"><Text bold>Tests</Text>{`  ${d.tests.passed} passed`}<Text color="error">{d.tests.failed ? `, ${d.tests.failed} failed` : ''}</Text></Text>)
   const ups = d.stepChanges.filter(c => c.direction === 'up').length, downs = d.stepChanges.length - ups
-  if (ups || downs) lines.push(<Text key="steps" wrap="wrap"><Text bold>Steps</Text>{`  ${upDown(ups, downs, g)}: `}<Text dimColor>{d.stepChanges.map(c => `${c.role} ${c.from}${g.arrow}${c.to} (${c.reason})`).join(', ')}</Text></Text>)
+  if (ups || downs) lines.push(<Text key="steps" wrap="wrap"><Text bold>Steps</Text>{`  ${upDown(ups, downs, g)}: `}<Text dimColor>{d.stepChanges.map(c => `${c.role} ${moveText(c.from, c.to, g)} (${c.reason})`).join(', ')}</Text></Text>)
   lines.push(<Text key="time" wrap="wrap"><Text bold>Time</Text><Text dimColor>{`  ${d.time.phases.map(p => `${p.phase === 'awaiting_user' ? 'waiting for you' : p.phase} ${dur(p.ms)}`).join(' · ')}`}</Text></Text>)
   lines.push(<Text key="cost" wrap="wrap"><Text bold>Cost</Text><Text dimColor>{`  lead ${usd(d.cost.leadUsd)} + workers ${usd(d.cost.workerUsd)} of a ${usd(d.cost.budgetUsd)} budget${d.cost.estimated ? ' · estimated' : ''}${d.cost.unknown ? ' · some costs unknown' : ''}`}</Text></Text>)
   if (d.hasPrompt) lines.push(<Text key="prompt" dimColor wrap="truncate-end">The prompt is kept in the request record (recordPrompts); the office does not show it.</Text>)
@@ -313,6 +340,60 @@ export function savingsTab(els: Els, st: OfficeTabData, ctx: TabContext): El {
 
 // ------------------------------------------------------------------ Team
 
+const DIFFICULTY_ORDER: readonly Difficulty[] = ['routine', 'moderate', 'hard']
+
+/**
+ * A role's start cells under its pass rate. From a router that keeps difficulty (decision 225) each level gives its
+ * cells routine to hard, the difficulty as a badge before each, on as many lines as the width needs, and levels
+ * whose cells are the same share a line ("L2, L3"); from an older one, the levels on one line.
+ */
+function startLines(els: Els, role: string, levels: Team['roles'][number]['levels'], width: number): El[] {
+  const { Text } = els
+  const src = (l: { source: string }) => (l.source !== 'default' ? ` (${l.source})` : '')
+  if (!levels.some(l => isDifficulty(l.difficulty))) {
+    return [
+      <Text key={`role-${role}-levels`} dimColor wrap="truncate-end">
+        {`  ${levels.map(l => `${l.level} ${l.count > 1 ? `${l.count}x ` : ''}${cellText(l)}${src(l)}`).join(' · ')}`}
+      </Text>,
+    ]
+  }
+  type Entry = Team['roles'][number]['levels'][number]
+  const rank = (l: Entry) => (isDifficulty(l.difficulty) ? DIFFICULTY_ORDER.indexOf(l.difficulty) : DIFFICULTY_ORDER.length)
+  const byLevel = new Map<string, Entry[]>()
+  for (const l of levels) byLevel.set(l.level, [...(byLevel.get(l.level) ?? []), l])
+  const groups: Array<{ names: string[]; count: number; entries: Entry[]; key: string }> = []
+  for (const [level, list] of byLevel) {
+    const entries = [...list].sort((a, b) => rank(a) - rank(b))
+    const count = entries[0]?.count ?? 1
+    const key = `${count}|${entries.map(l => `${l.difficulty ?? ''} ${cellText(l)}${src(l)}`).join('|')}`
+    const last = groups.at(-1)
+    if (last && last.key === key) last.names.push(level)
+    else groups.push({ names: [level], count, entries, key })
+  }
+  const out: El[] = []
+  for (const gr of groups) {
+    const head = `  ${gr.names.join(', ')} ${gr.count > 1 ? `${gr.count}x ` : ''}`
+    const parts = gr.entries.map(l => {
+      const diff = isDifficulty(l.difficulty) ? l.difficulty : null
+      const s = src(l)
+      // a cell a line holds alone at the least: its alias and the dot go before it is cut
+      const rest = `${cellText(l, width - head.length - (diff ? diff.length + 1 : 0) - s.length)}${s}`
+      return { diff, rest, text: `${diff ? `${diff} ` : ''}${rest}` }
+    })
+    packParts(head, parts, width).forEach((line, i) => out.push(
+      <Text key={`role-${role}-${gr.names.join('-')}-${i}`} dimColor wrap="truncate-end">
+        {i ? ' '.repeat(head.length) : head}
+        {line.flatMap((p, k) => [
+          k ? ' · ' : '',
+          p.diff ? <Text key={`d-${k}`} color={DIFFICULTY_COLOR[p.diff]}>{p.diff}</Text> : '',
+          `${p.diff ? ' ' : ''}${p.rest}`,
+        ])}
+      </Text>,
+    ))
+  }
+  return out
+}
+
 export function teamTab(els: Els, st: OfficeTabData, ctx: TabContext): El {
   const { Box, Text } = els
   const { g, now } = ctx
@@ -345,11 +426,7 @@ export function teamTab(els: Els, st: OfficeTabData, ctx: TabContext): El {
             : <Text dimColor>no subtasks in this period</Text>}
         </Text>,
       )
-      lines.push(
-        <Text key={`role-${r.role}-levels`} dimColor wrap="truncate-end">
-          {`  ${r.levels.map(l => `${l.level} ${l.count > 1 ? `${l.count}x ` : ''}${l.step} ${modelName(l.model)} ${l.effort}${l.source !== 'default' ? ` (${l.source})` : ''}`).join(' · ')}`}
-        </Text>,
-      )
+      lines.push(...startLines(els, r.role, r.levels, width))
     }
     if (!t.roles.length) lines.push(<Text key="roles-none" dimColor>No team has run in this period.</Text>)
     // the latest step changes, newest first, as many as the room holds
@@ -357,7 +434,7 @@ export function teamTab(els: Els, st: OfficeTabData, ctx: TabContext): El {
       lines.push(<Text key="sc-title" bold>Step changes</Text>)
       const room = Math.max(1, ctx.room.rows - 1 - 2 - lines.length - 4)
       for (const c of t.stepChanges.slice(0, room)) {
-        lines.push(<Text key={`sc-${c.at}-${c.subtaskId ?? c.slot}`} wrap="truncate-end">{`  ${clockTime(c.at, now)} ${c.role}${c.subtaskId ? ` ${c.subtaskId}` : ''} `}<Text color={c.direction === 'up' ? 'warning' : 'success'}>{`${c.from}${g.arrow}${c.to}`}</Text><Text dimColor>{` ${c.reason}${c.detail ? ` (${c.detail.replace(/_/g, ' ')})` : ''}`}</Text></Text>)
+        lines.push(<Text key={`sc-${c.at}-${c.subtaskId ?? c.slot}`} wrap="truncate-end">{`  ${clockTime(c.at, now)} ${c.role}${c.subtaskId ? ` ${c.subtaskId}` : ''} `}<Text color={c.direction === 'up' ? 'warning' : 'success'}>{moveText(c.from, c.to, g)}</Text><Text dimColor>{` ${c.reason}${c.detail ? ` (${c.detail.replace(/_/g, ' ')})` : ''}`}</Text></Text>)
       }
     }
     // how well the triage judged, at the bottom
@@ -435,7 +512,7 @@ export function settingsTab(els: Els, st: OfficeSettingsState, ctx: TabContext):
     lines.push(<Text key={`grp-${grp}`} bold>{GROUP_NAME[grp] ?? grp}</Text>)
     if (grp === 'team') {
       for (const lv of v.team) {
-        lines.push(<Text key={`team-${lv.level}`} dimColor wrap="truncate-end">{`  ${lv.level} ${usd(lv.budgetUsd)} · ${lv.leadDirect ? 'the lead alone' : lv.roles.map(r => `${r.role} ${r.count} ${r.step}`).join(' · ')}`}</Text>)
+        lines.push(<Text key={`team-${lv.level}`} dimColor wrap="truncate-end">{`  ${lv.level} ${usd(lv.budgetUsd)} · ${lv.leadDirect ? 'the lead alone' : lv.roles.map(r => `${r.role} ${r.count} ${cellText(r)}`).join(' · ')}`}</Text>)
       }
     }
     for (const item of v.items.filter(i => i.group === grp)) {

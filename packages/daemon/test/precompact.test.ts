@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { TEAM_L1_PRESETS, postHook, rmrf, startTestDaemon, type HookInput, type TestDaemon } from './helpers.ts';
+import { pinRoutine, TEAM_L1_PRESETS, postHook, rmrf, startTestDaemon, type HookInput, type TestDaemon } from './helpers.ts';
 
 const L1_PROMPT = 'Fix the bug where parse() fails on empty input in src/parse.ts';
 
@@ -24,6 +24,7 @@ test('guidance keeps level, subtasks with step/status/scope, the unfinished ones
   assert.equal(await preCompact(), '');                                         // no request yet
 
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  pinRoutine(d);
   const agent = (tag: string, scope?: string) => post({ hook_event_name: 'PreToolUse', tool_name: 'Agent',
     tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work${scope ? `\n[scope: ${scope}]` : ''}`, model: 'haiku', effort: 'low' } });
   await agent('A', 'src/a/**, test/a/**');

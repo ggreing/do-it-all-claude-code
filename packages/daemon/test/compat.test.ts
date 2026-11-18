@@ -10,8 +10,7 @@ import { homeLayout, tightenPermissions, writeJsonAtomic } from '../src/home.ts'
 import { BASH_NOT_FOUND, findShell, zeroTestsRan } from '../src/shell.ts';
 import { fingerprint, sameContent, eolOnly } from '../src/tree.ts';
 import { checkScope, runVerify } from '../src/verify.ts';
-import {
-  claudeAdapter, getStatus, git, makeHome, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, write, type HookInput, type TestDaemon,
+import { pinRoutine, claudeAdapter, getStatus, git, makeHome, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, write, type HookInput, type TestDaemon,
 } from './helpers.ts';
 
 const PROTECTED = [...PROTECTED_WRITE_PATHS];
@@ -63,6 +62,7 @@ test('decision 99: a subagent\'s verify runs with the variables its relay forwar
   try {
     const post = session(d, 'env', repo);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Fix the bug where parse() fails on empty input in src/a.ts' });
+    pinRoutine(d);
     await post(call('A', 'src/**'));
     await post(start('e1', { verifyEnv: { AR_TOOLCHAIN: 'tc-1', NODE_OPTIONS: '--require ./evil.cjs', MY_API_KEY: 'k-123' } }));
     write(repo, 'src/a.ts', 'b\n');
@@ -117,6 +117,7 @@ test('decision 98: no bash: the commands are held, not run, and the lead is told
   try {
     const post = session(d, 'nobash', repo);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Fix the typo in the error message in src/a.ts' });
+    pinRoutine(d);
     await post(call('A', 'src/**'));
     await post(start('n1'));
     write(repo, 'src/a.ts', 'b\n');
@@ -264,6 +265,7 @@ test('#9: an Agent call whose scope file cannot be written is denied and leaves 
   try {
     const post = session(d, 'nofile', d.home);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Fix the typo in the error message in src/a.ts' });
+    pinRoutine(d);
     fs.mkdirSync(homeLayout(d.home).scopeFile('nofile', 'A'), { recursive: true });   // a folder where the file goes
     const out = await post(call('A', 'src/**'));
     assert.equal(out.hookSpecificOutput?.permissionDecision, 'deny');
@@ -331,6 +333,7 @@ test('E16: foreground subagents that start out of order are paired by the tag in
       return p;
     };
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+    pinRoutine(d);
     await post(call('A', 'src/a/**'));
     await post(call('B', 'src/b/**'));
     // B's subagent starts first: by order it is taken for A

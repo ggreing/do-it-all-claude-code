@@ -182,14 +182,26 @@ export function withRow(all: Readonly<Record<string, OfficeRow[]>>, who: string,
 // ------------------------------------------------------------------ the daemon's view
 
 export type DaemonCheck = { kind: string; result: 'ok' | 'failed' | 'skipped'; testsPassed?: number; testsFailed?: number };
-export type DaemonSubtask = {
-  id: string; role: string; slot: number; step: string; model: string; effort: string; status: string; verdict: string | null;
+/**
+ * A slot's cell on the model × effort grid (decision 225): `step` is s1…s7 for the seven legacy cells, else the
+ * cell id ("sonnet-xhigh"); `estimated`, a cell whose cost nobody has measured yet. An older router sends no
+ * `estimated`.
+ */
+export type SlotCell = { step: string; model: string; effort: string; estimated?: boolean };
+export type DaemonSubtask = SlotCell & {
+  id: string; role: string; slot: number; status: string; verdict: string | null;
   attempts: number; agentId: string | null; scope: string[]; checks: DaemonCheck[];
   repro: { required: boolean; state: string; reason?: string } | null;
 };
+export type Difficulty = 'routine' | 'moderate' | 'hard';
+/**
+ * How hard the lead judged the request after its first look (decision 225): `lead` when it said, `default` when it
+ * said nothing (moderate then applies). Null and absent: a request from before difficulty was kept.
+ */
+export type DifficultyOf = { difficulty?: Difficulty | null; difficultySource?: 'lead' | 'default' | null };
 export type LimitWindow = { usedPercentage: number; resetsAt: number | null };
 export type DaemonOffice = {
-  request: null | { id: string; level: string; source: string; preset: string; status: string; budgetUsd: number; usedUsd: number; leadDirect: boolean; leadModel: string | null };
+  request: null | ({ id: string; level: string; source: string; preset: string; status: string; budgetUsd: number; usedUsd: number; leadDirect: boolean; leadModel: string | null } & DifficultyOf);
   subtasks: DaemonSubtask[];
   costUsd: number; costEstimated: boolean; costUnknown: boolean; sessionCostUsd: number;
   routing?: unknown;
@@ -206,18 +218,96 @@ export function subtaskOf(view: DaemonOffice | null, a: Pick<OfficeAgent, 'id' |
 
 const cap = (s: string) => (s ? s[0]!.toUpperCase() + s.slice(1) : s);
 
+// ------------------------------------------------------------------ cells and difficulty (decision 225)
+
+/** The seven legacy steps, which stay as names of seven cells of the grid (docs/design/difficulty-steps.md, section 4). */
+export const STEP_ALIAS: Readonly<Record<string, string>> = {
+  s1: 'haiku-low', s2: 'haiku-high', s3: 'sonnet-medium', s4: 'sonnet-high', s5: 'opus-high', s6: 'opus-xhigh', s7: 'fable-high',
+};
+const aliasOf = (step: string): string => (Object.hasOwn(STEP_ALIAS, step) ? step : '');
+
+/** A step as its model and effort: "s3" and "sonnet-medium" are both Sonnet medium; null for one it cannot read. */
+export function cellOf(step: string): { model: string; effort: string } | null {
+  const m = /^([a-z]+)-([a-z]+)$/.exec(Object.hasOwn(STEP_ALIAS, step) ? STEP_ALIAS[step]! : step);
+  return m ? { model: modelName(m[1]), effort: m[2]! } : null;
+}
+
 /**
- * The step against what ran: the step and its planned model and effort, and — when the member's last request ran
- * at other values (an organization's cap, maxEffortLevel, a model's own levels) — what it ran at.
+ * A slot as the office names it: "Sonnet · medium (s3)", "Sonnet · xhigh est.". Given `max`, the longest form that
+ * fits: the alias goes first, then the dot; "est." stays as long as there is room for it.
+ */
+export function cellText(s: SlotCell, max = Infinity): string {
+  const model = modelName(s.model);
+  const alias = aliasOf(s.step) ? ` (${s.step})` : '';
+  const est = s.estimated ? ' est.' : '';
+  const forms = [`${model} · ${s.effort}${alias}${est}`, `${model} · ${s.effort}${est}`, `${model} ${s.effort}${est}`, `${model} ${s.effort}`];
+  return forms.find(f => [...f].length <= max) ?? fit(forms.at(-1)!, max);
+}
+
+/** A step change on the grid: "Haiku low→high" within a model, "Haiku high→Sonnet medium" across; a step it cannot read as it came. */
+export function moveText(from: string, to: string, g: Glyphs = GLYPHS): string {
+  const a = cellOf(from), b = cellOf(to);
+  if (!a || !b) return `${from}${g.arrow}${to}`;
+  return a.model === b.model ? `${a.model} ${a.effort}${g.arrow}${b.effort}` : `${a.model} ${a.effort}${g.arrow}${b.model} ${b.effort}`;
+}
+
+export const isDifficulty = (v: unknown): v is Difficulty => v === 'routine' || v === 'moderate' || v === 'hard';
+/** The badge's color: the theme's, one per difficulty. */
+export const DIFFICULTY_COLOR: Readonly<Record<Difficulty, string>> = { routine: 'success', moderate: 'suggestion', hard: 'warning' };
+/** The badge where a row has four cells for it (the Work tab's list in a narrow dock). */
+export const DIFFICULTY_SHORT: Readonly<Record<Difficulty, string>> = { routine: 'rtn', moderate: 'mod', hard: 'hard' };
+
+/** The difficulty after the level ("L2 hard"), or '' for a request from before it was kept. */
+export function difficultyText(d: DifficultyOf | null | undefined): string {
+  return isDifficulty(d?.difficulty) ? d.difficulty : '';
+}
+
+/** Where the difficulty comes from, for the Work tab's detail: "difficulty hard, by the lead", "difficulty moderate (the lead gave none)". */
+export function difficultyNote(d: DifficultyOf | null | undefined): string {
+  if (!isDifficulty(d?.difficulty)) return '';
+  return d.difficultySource === 'lead' ? `difficulty ${d.difficulty}, by the lead` : `difficulty ${d.difficulty} (the lead gave none)`;
+}
+
+/**
+ * Parts on as few lines as `width` holds: the first line starts with `head`, the next ones with as many spaces;
+ * a part that does not fit a line of its own is cut. Each line's parts, in order.
+ */
+export function packParts<T extends { text: string }>(head: string, parts: readonly T[], width: number, sep = ' · '): T[][] {
+  const lines: T[][] = [];
+  let line: T[] = [], used = [...head].length;
+  for (const p of parts) {
+    const n = [...p.text].length + (line.length ? sep.length : 0);
+    if (line.length && used + n > width) { lines.push(line); line = []; used = [...head].length; }
+    line.push(p);
+    used += [...p.text].length + (line.length > 1 ? sep.length : 0);
+  }
+  if (line.length) lines.push(line);
+  return lines;
+}
+
+/**
+ * The step against what ran: the slot's cell, and — when the member's last request ran at other values (an
+ * organization's cap, maxEffortLevel, a model's own levels) — what it ran at.
  */
 export function stepLine(a: Pick<OfficeAgent, 'model' | 'effort'>, s: DaemonSubtask | undefined): { plan: string; ranAt?: string } | null {
   if (!s) return null;
   const plannedModel = modelName(s.model);
-  const plan = `${s.step} (${plannedModel} ${s.effort})`;
+  const plan = cellText(s);
   const model = a.model && a.model !== 'model unknown' ? a.model : '';
   if (!model && !a.effort) return { plan };
   const differs = (model && cap(model) !== cap(plannedModel)) || (a.effort && a.effort !== s.effort);
   return differs ? { plan, ranAt: `ran at ${model || plannedModel} ${a.effort || s.effort}` } : { plan };
+}
+
+/**
+ * What a desk adds to the model and effort it shows (decision 225): the slot's alias and whether its cell is
+ * estimated, when the member shows both and they are its slot's cell; nothing when it ran at another cell (the
+ * session's plan line says so) or has not said yet.
+ */
+export function deskCell(a: Pick<OfficeAgent, 'model' | 'effort'>, s: DaemonSubtask | undefined): { alias: string; estimated: boolean } {
+  const model = a.model && a.model !== 'model unknown' ? a.model : '';
+  if (!s || !model || !a.effort || cap(model) !== cap(modelName(s.model)) || a.effort !== s.effort) return { alias: '', estimated: false };
+  return { alias: aliasOf(s.step), estimated: s.estimated === true };
 }
 
 /** How verify ended, one short phrase: "test ok (3 passed), scope ok". */
@@ -231,11 +321,14 @@ export function usd(n: number | null | undefined): string {
   return n >= 10 ? `$${n.toFixed(1)}` : `$${n.toFixed(n >= 1 ? 2 : 3)}`;
 }
 
-/** The office's top line from the daemon: "L2 · rule · $0.12 of $4 · 5h 23% · 7d 4%". */
+/** The level with the difficulty beside it: "L2 hard", "L1 moderate lead-direct"; an older request, the level alone. */
+const levelHead = (r: NonNullable<DaemonOffice['request']>): string => `${r.level}${difficultyText(r) ? ` ${difficultyText(r)}` : ''}${r.leadDirect ? ' lead-direct' : ''}`;
+
+/** The office's top line from the daemon: "L2 hard · rule · $0.12 of $4 · 5h 23% · 7d 4%". */
 export function requestLine(view: DaemonOffice | null): string {
   if (!view?.request) return '';
   const r = view.request;
-  const parts = [`${r.level}${r.leadDirect ? ' lead-direct' : ''}`, r.source, `${usd(view.costUsd)}${view.costEstimated ? '~' : ''} of ${usd(r.budgetUsd)}`];
+  const parts = [levelHead(r), r.source, `${usd(view.costUsd)}${view.costEstimated ? '~' : ''} of ${usd(r.budgetUsd)}`];
   if (view.limits?.fiveHour) parts.push(`5h ${Math.round(view.limits.fiveHour.usedPercentage)}%`);
   if (view.limits?.sevenDay) parts.push(`7d ${Math.round(view.limits.sevenDay.usedPercentage)}%`);
   return parts.join(' · ');
@@ -249,7 +342,7 @@ export function requestLine(view: DaemonOffice | null): string {
  */
 export function routerLine(view: DaemonOffice | null): string {
   const r = view?.request;
-  const head = r ? [`${r.level}${r.leadDirect ? ' lead-direct' : ''}`, r.source, `${usd(view.costUsd)}${view.costEstimated ? '~' : ''} of ${usd(r.budgetUsd)}`] : ['router on', 'no request yet'];
+  const head = r ? [levelHead(r), r.source, `${usd(view.costUsd)}${view.costEstimated ? '~' : ''} of ${usd(r.budgetUsd)}`] : ['router on', 'no request yet'];
   return [
     ...head,
     view?.project?.worktree === 'off' ? 'isolation off' : '',
@@ -506,7 +599,7 @@ export const isPeriod = (v: unknown): v is Period => PERIODS.includes(v as Perio
 
 export type Level = 'L0' | 'L1' | 'L2' | 'L3';
 export type WorkState = 'open' | 'awaiting_user' | 'closed';
-export type WorkRow = {
+export type WorkRow = DifficultyOf & {
   requestId: string; state: WorkState; mine: boolean; createdAt: string; closedAt: string | null;
   kind: string | null; level: Level; finalLevel: Level;
   outcome: 'direct' | 'delegated' | 'no_delegation' | 'lead_takeover' | null;
@@ -523,8 +616,8 @@ export type StepChange = {
   direction: 'up' | 'down'; reason: 'miss' | 'rejected' | 'escalation' | 'easy'; detail: string | null;
 };
 export type WorkCheck = { kind: string; attempt: number; result: 'ok' | 'failed' | 'skipped'; testsPassed?: number; testsFailed?: number; durationMs?: number };
-export type WorkSubtask = {
-  id: string; role: string; slot: number; attempts: number; step: string; model: string; effort: string; ranModel: string | null;
+export type WorkSubtask = SlotCell & {
+  id: string; role: string; slot: number; attempts: number; ranModel: string | null;
   status: string; verdict: string | null; stepChanges: StepChange[]; scope: string[]; unscoped: boolean;
   files: { list: Array<{ path: string; added: number; removed: number; state: string }>; total: number; truncated: boolean; approximate: boolean } | null;
   checks: WorkCheck[];
@@ -535,7 +628,7 @@ export type WorkSubtask = {
 };
 export type WorkDetail = {
   requestId: string; state: WorkState; createdAt: string; closedAt: string | null; kind: string | null; taskType: string | null;
-  level: { judged: Level; source: string; rule: string | null; confidence: number | null; final: Level; changes: Array<{ from: Level; to: Level; why: string }> };
+  level: DifficultyOf & { judged: Level; source: string; rule: string | null; confidence: number | null; final: Level; changes: Array<{ from: Level; to: Level; why: string }> };
   plan: { preset: string; leadDirect: boolean; leadModel: string | null; leadClass: string | null; budgetUsd: number; holdout: string | null };
   outcome: WorkRow['outcome']; passed: boolean | null; acceptance: string | null;
   subtasks: WorkSubtask[];
@@ -569,7 +662,8 @@ export type Team = {
   period: Period; profile: { value: string; source: string }; leadClass: string | null; delegateFrom: { value: Level; source: Source } | null;
   roles: Array<{
     role: string;
-    levels: Array<{ level: Level; count: number; step: string; model: string; effort: string; source: Source }>;
+    /** one entry a level, or (decision 225) one a level and difficulty, each with the start cell the router computed */
+    levels: Array<SlotCell & { level: Level; difficulty?: Difficulty | null; count: number; source: Source }>;
     stats: { subtasks: number; passed: number; failed: number; passRate: number | null; avgCostUsd: number | null; avgRunMs: number | null; stepUps: number; stepDowns: number };
   }>;
   stepChanges: StepChange[];
@@ -590,7 +684,7 @@ export type OfficeSettings = {
   revision: { config: string; presets: string };
   profile: { value: string; source: string; options: Array<{ id: string; title: string; summary: string; measured: string | null }> };
   items: SettingItem[];
-  team: Array<{ level: Level; leadDirect: boolean; budgetUsd: number; roles: Array<{ role: string; count: number; step: string; model: string; effort: string; source: Source }> }>;
+  team: Array<{ level: Level; leadDirect: boolean; budgetUsd: number; roles: Array<SlotCell & { role: string; count: number; source: Source }> }>;
   text: Array<{ key: string; title: string; value: string; command: string }>;
   project: { name: string; worktree: 'on' | 'off' | null } | null;
   problems: Array<{ path: string; message: string }>;

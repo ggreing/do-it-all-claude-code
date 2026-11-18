@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { LeadNotes, leadNotesDir, takeLeadNotes } from '../src/lead-notes.ts';
 import { minimalPayload } from '../src/payload.ts';
-import { makeHome, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
+import { makeHome, makeRepo, pinRoutine, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
 
 const L2_PROMPT = 'Refactor the validation module across multiple files and add an audit log';
 type Out = { decision?: string; reason?: string; hookSpecificOutput?: { hookEventName?: string; permissionDecision?: string; additionalContext?: string } };
@@ -46,6 +46,7 @@ async function withSession(fn: (d: TestDaemon, repo: string, post: (h: HookInput
   };
   try {
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+    pinRoutine(d, 's');   // decision 226: coder stays s1 (haiku·low); these notification lines are about notes, not cells
     await fn(d, repo, post);
   } finally { await d.close(); rmrf(d.home); rmrf(repo); }
 }

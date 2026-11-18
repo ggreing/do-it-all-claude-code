@@ -254,10 +254,23 @@ lowers effort to the organization's cap, the `maxEffortLevel` setting or the mod
 
 - The desk shows what `turn.step` reports, the model and effort of the member's last request, as the prototype
   does.
-- The session header shows the step and its plan, for example `coder A · s2 (Haiku high)`.
+- The session header shows the slot's cell, for example `coder A · Haiku · high (s2)`.
 - When the real values differ from the plan, the header adds `ran at Haiku medium` in the warning color.
 - The desk itself gets no extra mark, because the desk stays fixed.
 - The lead has no step. Its header shows the request's level, the level's source and the budget.
+
+**Cells and difficulty (decision 225, as built).** A slot is a cell of the model × effort grid
+([difficulty-steps.md](difficulty-steps.md)), and the office names it `model · effort`, with the legacy name in
+parentheses for the seven cells that have one and `est.` for a cell whose cost nobody has measured yet:
+`Sonnet · medium (s3)`, `Sonnet · xhigh est.`, `Fable · high (s7) est.`. Where a line has less room, the
+parenthesis goes first, then the dot, and `est.` stays as long as it fits. A step change reads as cells,
+`Haiku low→high` within a model and `Haiku high→Sonnet medium` across. A desk adds the parenthesis and `est.`
+after its model and effort only while the member runs at its slot's cell, and only as far as the desk has room: a
+full desk has room for both, a small desk for one, a narrow desk for neither. The difficulty the lead reported
+(`routine`, `moderate`, `hard`) stands beside the level: in the router's line (`L2 hard · rule · …`), in each
+Work row (the word from 66 columns, else `rtn`, `mod`, `hard` in four cells; dim when the lead gave none and the
+default applied) and in the request's detail, which also says where it came from. A request from before
+difficulty was kept shows none, and an older router's payload draws as before.
 
 ## 4. Tabs (0.5.0, decision 193; as built)
 
@@ -271,7 +284,7 @@ columns).
 | Office | the team's level, cost against budget and limits | the desks, or the list (section "The room and the terminal") |
 | Work | what runs now, how today went (`1 running · today 4 done, 1 failed · $3.01`) | running requests first, then the recent ones: a line each with its mark, time, the level it ran at (`L1→L2`), the kind of work, the file it changed most and how many more, its time and cost. Enter opens one: the level and how it was judged, a timeline of plan, workers, verify and review on one time axis, each worker's step against what ran, its tries, step changes and checks, the files with git's stat bar, the tests, the time per phase, the cost |
 | Savings | what was spent, measured, and the limits used | the 5-hour and 7-day limits as bars; spend per hour or day as columns; then, under "Estimated (not measured)", the lead-priced comparison with its assumptions shown as the daemon words them, and the holdout rows with their counts. A holdout row with too few requests says how many more it needs and shows no difference. No figure says "saved" |
-| Team | the profile, the roles, the share of subtasks passed, step changes | each role's pass rate as a bar, its average cost and time, and its model and effort per level with where each comes from; the latest step changes; the triage's hit rate and the rules it flags at the bottom |
+| Team | the profile, the roles, the share of subtasks passed, step changes | each role's pass rate as a bar, its average cost and time, and its start cell per level with where each comes from (decision 225: per level the three cells, routine to hard, each after its difficulty, on as many lines as the width needs; levels with the same cells share a line, `L2, L3 2x`); the latest step changes; the triage's hit rate and the rules it flags at the bottom |
 | Settings | the profile, how many settings are the person's own, how many problems | the problems, a line each; the change bar; every setting the daemon offers, grouped (profile, team, budget, quality, office, privacy, advanced), with the value in effect and where it comes from (`default`, `profile`, `own`, `project`, or the daemon's own note such as `profile x 0.6`); the profile's summary and whether a measurement backs it ("not measured yet" for save and quality); what needs typing, with the command that changes it; the keys init and mode own |
 
 **Keys.** A Button's hotkey is one digit or one lowercase letter, and the tabs' must not meet the tabs' own:

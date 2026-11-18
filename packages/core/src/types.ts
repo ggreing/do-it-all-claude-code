@@ -7,18 +7,39 @@ export type Tier = 'T1' | 'T2' | 'T3' | 'T3+';
 export type ModelAlias = 'haiku' | 'sonnet' | 'opus' | 'fable';
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type Role = 'architect' | 'ui-designer' | 'coder' | 'reviewer' | 'tester';
+/** The lead's own read of how hard a request is, reported with its size (decision 225). Default: moderate. */
+export type Difficulty = 'routine' | 'moderate' | 'hard';
+/**
+ * A model x effort grid cell's id as stored, shown and configured (decision 225): `s1`…`s7` for the seven
+ * legacy cells (Phase-0 measured, Appendix E), else `model-effort` (e.g. `sonnet-xhigh`). Kept as a string so
+ * old ledgers and teams.yaml files read unchanged; `cellOf`/`cellId` in ladder.ts map it to a Cell.
+ */
+export type LadderId = string;
+/** One cell of the model x effort grid (decision 225); the ladder's legacy 1-D steps are seven of these. */
+export interface Cell {
+  id: LadderId;             // canonical id: the s-alias for a legacy cell, else `model-effort`
+  model: ModelAlias;        // passed as the per-call `model` of the Agent tool
+  effort: Effort;           // passed as the per-call `effort` of the Agent tool
+  tier: Tier;
+  modelId: string;          // pinned full ID, used for pricing and reporting
+  optIn: boolean;           // Fable cells only when the user enables it
+  coefficient: number;      // effective cost vs s1; measured (Phase 0) or estimated
+  estimated: boolean;       // true when `coefficient` is estimated, not Phase-0 measured
+  alias: Step | null;       // the s1…s7 alias when this is a legacy cell
+}
 export type TaskType = 'question' | 'edit' | 'feature' | 'debug' | 'design' | 'refactor';
 export type TriageSource = 'rule' | 'vector' | 'judge' | 'haiku' | 'lead' | 'manual' | 'default';   // judge: stage-2 model (decisions 104, 115)
 
-/** One rung of the model x effort ladder (spec 3.5). Model changes only at tier boundaries. */
+/** One rung of the model x effort ladder (spec 3.5), as a flat view of a grid Cell (decision 225). */
 export interface LadderStep {
-  step: Step;
+  step: LadderId;
   tier: Tier;
   alias: ModelAlias;        // passed as the per-call `model` of the Agent tool
   effort: Effort;           // passed as the per-call `effort` of the Agent tool
   modelId: string;          // pinned full ID, used for pricing and reporting
-  optIn: boolean;           // s7 (Fable) only when the user enables it
-  coefficient?: number;     // measured effective cost vs s1 (Phase 0, Appendix E)
+  optIn: boolean;           // Fable cells only when the user enables it
+  coefficient?: number;     // effective cost vs s1 (Phase 0 measured, or estimated)
+  estimated?: boolean;      // decision 225: true when the coefficient is estimated, not Phase-0 measured
 }
 
 /** Result of triage for one user request (spec 3.2). */
@@ -30,9 +51,20 @@ export interface TriageResult {
   preset: string;           // team preset id (normally the level, e.g. "L2")
   budgetUsd: number;        // per-request cap (provisional until Phase 0 KPI targets)
   rationale: string;        // one line, shown to the lead and stored for learning
+  /** Decision 225: the lead's difficulty read, and whether the lead gave it or the router defaulted to moderate.
+   *  Absent on records written before decision 225. */
+  difficulty?: Difficulty;
+  difficultySource?: 'lead' | 'default';
 }
 
-export interface TeamMember { role: Role; count: number; start: Step }
+export interface TeamMember {
+  role: Role;
+  count: number;
+  start: LadderId;
+  /** Decision 226: the start came from a user teams.yaml or role override (not the default/profile), so it wins
+   *  over the difficulty table whatever its value — even when it equals the default. */
+  startSet?: boolean;
+}
 export interface TeamPreset {
   id: string;
   level: Level;
@@ -63,17 +95,17 @@ export interface VerifySignal {
 /** Outcome of one session: 1st failure, miss (2 consecutive failures), meet, ample (first-try pass + review score >= threshold). */
 export type Verdict = 'fail_once' | 'miss' | 'meet' | 'ample';
 
-/** Per role-slot state; the step carries across subtasks (no reset). */
+/** Per role-slot state; the cell carries across subtasks (no reset). */
 export interface SlotState {
   role: Role;
   slot: number;
-  step: Step;
+  step: LadderId;
   easyStreak: number;                                  // consecutive "ample" results; 2 => step down
-  floorLock?: { step: Step; tasksLeft: number };       // after a step-up: no step-down below `step` for 2 tasks
+  floorLock?: { step: LadderId; tasksLeft: number };   // after a step-up: no step-down below `step` for 2 tasks
 }
 
 export type AdjustAction = 'retry' | 'hold' | 'step_up' | 'step_down' | 'hitl' | 'budget_pause';
-export interface AdjustDecision { action: AdjustAction; nextStep: Step; respawn: boolean; reason: string }
+export interface AdjustDecision { action: AdjustAction; nextStep: LadderId; respawn: boolean; reason: string }
 
 // ---------------------------------------------------------------- hook events (client-neutral)
 
@@ -126,7 +158,7 @@ export interface SubtaskRecord {
   requestId: string;
   role: Role;
   slot: number;
-  step: Step;
+  step: LadderId;
   writeScope: string[];      // repo-relative globs the subagent may edit
   agentId?: string;          // bound at SubagentStart (order), verified at first tool call (tag), confirmed at PostToolUse(Agent)
   attempts: number;

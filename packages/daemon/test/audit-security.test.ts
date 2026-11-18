@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { changedFiles } from '../src/git.ts';
-import { claudeAdapter, git, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, write, type HookInput, type TestDaemon } from './helpers.ts';
+import { pinRoutine, claudeAdapter, git, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, write, type HookInput, type TestDaemon } from './helpers.ts';
 
 const L1_PROMPT = 'Fix the bug where parse() fails on empty input in src/parse.ts';
 type Out = { decision?: string; reason?: string; hookSpecificOutput?: { additionalContext?: string } };
@@ -22,6 +22,7 @@ async function startCoder(d: TestDaemon, repo: string, sid: string, agentId: str
     return r.body as Out;
   };
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+  pinRoutine(d);
   await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:A] work\n[scope: ${scope}]`, model: 'haiku', effort: 'low' } });
   await post({ hook_event_name: 'SubagentStart', agent_id: agentId, agent_type: 'do-it-all-claude-code:coder' });
   const stop = (extra: HookInput = {}) => post({ hook_event_name: 'SubagentStop', agent_id: agentId, agent_type: 'do-it-all-claude-code:coder', stop_hook_active: false, ...extra });

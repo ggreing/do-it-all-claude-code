@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { costUsd } from '@do-it-all-claude-code/core';
-import { git, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
+import { pinRoutine, git, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
 
 const L1_PROMPT = 'Fix the bug where parse() fails on empty input in src/parse.ts';
 const L2_PROMPT = 'Refactor the validation module across multiple files and add an audit log';
@@ -41,6 +41,7 @@ test('E13 / #14: a zero-usage "<synthetic>" line is skipped, and a later notific
     const line = (id: string, model: string, usage: object) => JSON.stringify({ type: 'assistant', message: { id, model, usage } });
     fs.writeFileSync(tr, [line('m1', 'claude-haiku-5-5', u1), line('m2', '<synthetic>', { input_tokens: 0, output_tokens: 0 }), line('m3', 'claude-haiku-5-5', u3)].join('\n') + '\n');
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+    pinRoutine(d);
     await post(call('A', 'src/a/**'));
     await post(start('a1'));
     write(repo, 'src/a/x.ts', 'ok\n');
@@ -64,6 +65,7 @@ test('#14: a model without a price is estimated on its own; the priced part stay
     const line = (id: string, model: string, usage: object) => JSON.stringify({ type: 'assistant', message: { id, model, usage } });
     fs.writeFileSync(tr, [line('m1', 'claude-haiku-5-5', priced), line('m2', 'claude-future-9', { input_tokens: 2000, output_tokens: 1000 })].join('\n') + '\n');
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+    pinRoutine(d);
     await post(call('A', 'src/a/**'));
     await post(start('m1'));
     write(repo, 'src/a/x.ts', 'ok\n');
@@ -85,6 +87,7 @@ test('E2 / #6: in a shared tree, only a scoped, writing sibling running at the s
   try {
     const post = session(d, 'e2', repo);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+    pinRoutine(d);
     assert.equal(rows(d, 'SELECT level FROM requests')[0]!.level, 'L2');
     // an unscoped reviewer (read-only role, whole repo) runs alongside coder A
     await post(call('R', null, 'do-it-all-claude-code:reviewer', 'sonnet', 'medium'));
@@ -126,6 +129,7 @@ test('decision 103: a sibling whose role file cannot be read excuses nothing', (
   try {
     const post = session(d, 'nofile', repo);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+    pinRoutine(d);
     await post(call('A', 'src/a/**'));
     await post(start('a1'));
     await post(call('B', 'lib/**'));

@@ -234,16 +234,21 @@ async function flow(runs: Array<[string, number]>): Promise<Flow> {
   const state = tmpDir('fake-pytest');
   const repo = repoWith(runs);
   const d = await startTestDaemon({ verify: { resolveCommands: async () => commandsFor(state) } });
-  const post: Flow['post'] = async h => {
-    const r = await postHook(d.port, { session_id: 's', cwd: repo, transcript_path: path.join(d.home, 's.jsonl'), ...h });
-    assert.equal(r.status, 200, r.text);
-    return r.body as never;
-  };
-  await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Refactor the validation module across multiple files and add an audit log' });
-  assert.deepEqual(await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_ns',
-    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] fix\n[scope: pkg/**]', model: 'haiku', effort: 'low' } }), {});
-  await post({ hook_event_name: 'SubagentStart', agent_id: 'c1', agent_type: 'do-it-all-claude-code:coder' });
-  return { d, repo, state, post, close: async () => { await d.close(); rmrf(d.home); rmrf(repo); rmrf(state); } };
+  const close = async () => { await d.close(); rmrf(d.home); rmrf(repo); rmrf(state); };
+  // close the daemon if setup throws, so a failed assertion fails the test instead of leaking a listening daemon (no node --test timeout)
+  try {
+    const post: Flow['post'] = async h => {
+      const r = await postHook(d.port, { session_id: 's', cwd: repo, transcript_path: path.join(d.home, 's.jsonl'), ...h });
+      assert.equal(r.status, 200, r.text);
+      return r.body as never;
+    };
+    await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Refactor the validation module across multiple files and add an audit log' });
+    // decision 226: the default difficulty is moderate, so the coder starts at s3 (sonnet/medium).
+    assert.deepEqual(await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_ns',
+      tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] fix\n[scope: pkg/**]', model: 'sonnet', effort: 'medium' } }), {});
+    await post({ hook_event_name: 'SubagentStart', agent_id: 'c1', agent_type: 'do-it-all-claude-code:coder' });
+    return { d, repo, state, post, close };
+  } catch (e) { await close(); throw e; }
 }
 const stop = (f: Flow, again: boolean) => f.post({ hook_event_name: 'SubagentStop', agent_id: 'c1', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: again });
 const notify = async (f: Flow) => (await f.post({ hook_event_name: 'UserPromptSubmit', prompt: '<task-notification>\n<task-id>c1</task-id>\n<status>completed</status>\n</task-notification>' })).hookSpecificOutput?.additionalContext ?? '';
@@ -259,15 +264,15 @@ test('the tests do not start, before and after the fix attempt, by an error outs
     assert.match(first.reason ?? '', /- test: sh tools\/pytest\.sh '[^']+': tests did not start: pkg\/tests\/test_variable\.py - AttributeError: `np\.unicode_` was remov\.\.\. \(pytest: collection error; exit 2\)/);
     assert.match(first.reason ?? '', /The tests did not start, and the error is in no file you changed\. If your change causes it all the same .* fix that and finish again\. If it does not, do not work around it or change the test setup/);
     assert.doesNotMatch(first.reason ?? '', /Fix these, re-run the checks/);
-    assert.deepEqual(subtask(f), { status: 'running', verdict: 'fail_once', step: 's1' });
+    assert.deepEqual(subtask(f), { status: 'running', verdict: 'fail_once', step: 's3' });
 
     assert.deepEqual(await stop(f, true), {});
-    assert.deepEqual(subtask(f), { status: 'hitl', verdict: 'unverified', step: 's1' });
+    assert.deepEqual(subtask(f), { status: 'hitl', verdict: 'unverified', step: 's3' });
     assert.equal(coderSlot(f), undefined, 'the slot was never raised: it has no row of its own');
     assert.equal(rows(f.d, 'SELECT COUNT(*) AS c FROM step_changes')[0]!.c, 0);
 
     const line = await notify(f);
-    assert.match(line, /^\[do-it-all-claude-code\] subtask A \(coder @s1, model=haiku, effort=low\): verify could not start the tests, before and after one fix attempt \(sh tools\/pytest\.sh '[^']+': tests did not start: pkg\/tests\/test_variable\.py - AttributeError: .* \(pytest: collection error; exit 2\)\)\. The error is in no file this subtask changed, so it is not counted as a failure and the coder slot keeps its step/);
+    assert.match(line, /^\[do-it-all-claude-code\] subtask A \(coder @s3, model=sonnet, effort=medium\): verify could not start the tests, before and after one fix attempt \(sh tools\/pytest\.sh '[^']+': tests did not start: pkg\/tests\/test_variable\.py - AttributeError: .* \(pytest: collection error; exit 2\)\)\. The error is in no file this subtask changed, so it is not counted as a failure and the coder slot keeps its step/);
     assert.match(line, /Do not dispatch the subtask again for this and do not try to repair the test setup: read the change \(git diff\), then tell the user what was changed and that the tests could not be run here\./);
     assert.doesNotMatch(line, /one step higher|miss/);
   } finally { await f.close(); }
@@ -283,8 +288,8 @@ test('an import the subagent broke is its failure: the block asks for a fix, and
     assert.match(first.reason ?? '', /Fix these, re-run the checks, then finish again/);
     assert.doesNotMatch(first.reason ?? '', /tests did not start/i);
     assert.deepEqual(await stop(f, true), {});
-    assert.deepEqual(subtask(f), { status: 'failed', verdict: 'miss', step: 's1' });
-    assert.deepEqual(coderSlot(f), { step: 's2', up_count: 1 });
+    assert.deepEqual(subtask(f), { status: 'failed', verdict: 'miss', step: 's3' });
+    assert.deepEqual(coderSlot(f), { step: 's4', up_count: 1 });   // decision 226: a miss from s3 (sonnet·medium) raises to s4 (sonnet·high)
     assert.match(await notify(f), /verify failed again after one fix attempt \(miss\)/);
   } finally { await f.close(); }
 });
@@ -296,8 +301,8 @@ test('only a repeat counts: a subagent that breaks the import and then meets the
     write(mixed.repo, 'pkg/core/assumptions.py', 'B = 2\n');
     assert.equal((await stop(mixed, false)).decision, 'block');
     assert.deepEqual(await stop(mixed, true), {});
-    assert.deepEqual(subtask(mixed), { status: 'failed', verdict: 'miss', step: 's1' });
-    assert.deepEqual(coderSlot(mixed), { step: 's2', up_count: 1 });
+    assert.deepEqual(subtask(mixed), { status: 'failed', verdict: 'miss', step: 's3' });
+    assert.deepEqual(coderSlot(mixed), { step: 's4', up_count: 1 });   // decision 226: miss from s3 raises to s4
   } finally { await mixed.close(); }
   // tests that ran and failed, then tests that do not start: also a miss
   const failedFirst = await flow([[TESTS_FAILED, 1], [REMOVED_ALIAS, 2]]);
@@ -305,7 +310,7 @@ test('only a repeat counts: a subagent that breaks the import and then meets the
     write(failedFirst.repo, 'pkg/core/variable.py', 'A = 2\n');
     assert.match((await stop(failedFirst, false)).reason ?? '', /Fix these, re-run the checks/);
     assert.deepEqual(await stop(failedFirst, true), {});
-    assert.deepEqual(subtask(failedFirst), { status: 'failed', verdict: 'miss', step: 's1' });
+    assert.deepEqual(subtask(failedFirst), { status: 'failed', verdict: 'miss', step: 's3' });
   } finally { await failedFirst.close(); }
   // the tests do not start once, the subagent's next stop runs them: a pass
   const recovered = await flow([[REMOVED_ALIAS, 2], ['2 passed in 0.10s\n', 0]]);
@@ -313,6 +318,6 @@ test('only a repeat counts: a subagent that breaks the import and then meets the
     write(recovered.repo, 'pkg/core/variable.py', 'A = 2\n');
     assert.equal((await stop(recovered, false)).decision, 'block');
     assert.deepEqual(await stop(recovered, true), {});
-    assert.deepEqual(subtask(recovered), { status: 'passed', verdict: 'meet', step: 's1' });
+    assert.deepEqual(subtask(recovered), { status: 'passed', verdict: 'meet', step: 's3' });
   } finally { await recovered.close(); }
 });

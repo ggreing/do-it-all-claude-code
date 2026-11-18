@@ -38,12 +38,12 @@ test('/router level on a request in progress re-plans it (manual triage, new tea
   const cwd = d.home;
   const sid = 'lvl-replan';
   await out(d, prompt(sid, cwd, L1_PROMPT));
-  assert.deepEqual(await out(d, agent(sid, cwd, 'coder', 'A', 'haiku', 'low')), {});        // L1 coder @s1, still pending
+  assert.deepEqual(await out(d, agent(sid, cwd, 'coder', 'A', 'sonnet', 'medium')), {});    // L1 coder @s3 (moderate default), still pending
   await out(d, stop(sid, cwd, `Which file should I start with? ${AWAITING_USER_MARKER}`));
 
   const o = await out(d, prompt(sid, cwd, '/router level L3'));
   assert.match(ctx(o), /^\[do-it-all-claude-code\] level L3 \(source=manual, confidence=1\.00\)/);
-  assert.match(ctx(o), /team preset L3: architect x1 @s5; .* budget \$15\./);
+  assert.match(ctx(o), /team preset L3: architect x1 @s4; .* budget \$15\./);
   assert.match(ctx(o), /level set manually to L3 for request r-.* \(was L1\)/);
 
   const [r] = rows(d, 'SELECT level, preset, budget_usd, status, turns, triage, override_from FROM requests');
@@ -52,10 +52,10 @@ test('/router level on a request in progress re-plans it (manual triage, new tea
   assert.match(JSON.parse(String(r!.triage)).rationale, /rule result was L1/);
   assert.equal(JSON.parse(String(r!.override_from)).level, 'L1');
 
-  // the pending subtask keeps s1; new calls use the L3 steps (coder s5 = opus/high)
-  assert.deepEqual(rows(d, 'SELECT id, step FROM subtasks'), [{ id: 'A', step: 's1' }]);
+  // the pending subtask keeps its step; new calls use the moderate-default cells (decision 226: coder s3 = sonnet/medium)
+  assert.deepEqual(rows(d, 'SELECT id, step FROM subtasks'), [{ id: 'A', step: 's3' }]);
   assert.ok(denied(await out(d, agent(sid, cwd, 'coder', 'B', 'haiku', 'low'))));
-  assert.deepEqual(await out(d, agent(sid, cwd, 'coder', 'B', 'opus', 'high')), {});
+  assert.deepEqual(await out(d, agent(sid, cwd, 'coder', 'B', 'sonnet', 'medium')), {});
   assert.deepEqual(await out(d, agent(sid, cwd, 'ui-designer', 'U', 'sonnet', 'medium')), {});  // in the L3 preset now
   const st = (await getStatus(d.port, sid)).body as StatusView;
   assert.equal(st.request?.level, 'L3');

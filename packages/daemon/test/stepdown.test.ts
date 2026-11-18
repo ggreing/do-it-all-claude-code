@@ -60,12 +60,13 @@ function session(d: TestDaemon, sid: string, cwd: string) {
 const denied = (o: Out) => (o.hookSpecificOutput?.permissionDecision === 'deny' ? o.hookSpecificOutput.permissionDecisionReason ?? '' : '');
 const coder0 = (d: TestDaemon) => rows(d, "SELECT step, up_count, easy_streak, last_easy, lock_step, lock_left, down_count, fail_streak, lead_raises FROM slots WHERE role = 'coder' AND slot = 0")[0];
 
-/** An L3 team request (coder and reviewer start at s5), with a finished reviewer subtask RV. */
+/** A hard L3 team request: the difficulty table (decision 226) starts the coder at s5 (opus·high) and the
+ *  reviewer at s6 (opus·xhigh), giving step-down room. With a finished reviewer subtask RV. */
 async function l3(d: TestDaemon, sid: string, repo: string) {
   const s = session(d, sid, repo);
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
-  assert.equal((await s.tool('router_report_triage', { kind: 'team', level: 'L3', files: 30, confidence: 0.8 })).result?.level, 'L3');
-  await s.pass('RV', 'opus', 'high', 'reviewer');
+  assert.equal((await s.tool('router_report_triage', { kind: 'team', level: 'L3', files: 30, confidence: 0.8, difficulty: 'hard' })).result?.level, 'L3');
+  await s.pass('RV', 'opus', 'xhigh', 'reviewer');
   return s;
 }
 
@@ -81,18 +82,18 @@ test('two easy passes in a row lower the slot for its next subtask, across a mod
   assert.equal(coder0(d)!.easy_streak, 1);
   await s.pass('X2', 'opus', 'high');
   const two = await s.easy('X2');
-  assert.deepEqual([two.result?.steppedDown, two.result?.slot.step, two.result?.slot.model, two.result?.slot.effort, two.result?.next], [true, 's4', 'sonnet', 'high', 'none']);
-  assert.deepEqual(coder0(d), { step: 's4', up_count: 0, easy_streak: 0, last_easy: 1, lock_step: null, lock_left: 0, down_count: 1, fail_streak: 0, lead_raises: 0 });
+  assert.deepEqual([two.result?.steppedDown, two.result?.slot.step, two.result?.slot.model, two.result?.slot.effort, two.result?.next], [true, 'opus-medium', 'opus', 'medium', 'none']);
+  assert.deepEqual(coder0(d), { step: 'opus-medium', up_count: 0, easy_streak: 0, last_easy: 1, lock_step: null, lock_left: 0, down_count: 1, fail_streak: 0, lead_raises: 0 });
   // the next call for the slot must use the lower step; the old one is refused
-  assert.match(denied(await s.post(s.call('X3', 'coder', 'opus', 'high'))), /the coder runs at step s4 \(model="sonnet", effort="high"\)/);
-  await s.pass('X3', 'sonnet', 'high');
+  assert.match(denied(await s.post(s.call('X3', 'coder', 'opus', 'high'))), /the coder runs at step opus-medium \(model="opus", effort="medium"\)/);
+  await s.pass('X3', 'opus', 'medium');
   // the plan and the request record show it
   const plan = (await s.tool('router_get_plan')).result!;
-  assert.deepEqual((r => [r.step, r.model])(plan.roles.find((r: any) => r.role === 'coder' && r.slot === 0)), ['s4', 'sonnet']);
+  assert.deepEqual((r => [r.step, r.model])(plan.roles.find((r: any) => r.role === 'coder' && r.slot === 0)), ['opus-medium', 'opus']);
   await s.post({ hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'Done.' });
   await d.router.drain();
   const rec = d.ledger.getRecord(rows(d, "SELECT id FROM requests WHERE session_id = 'down'")[0]!.id as string) as any;
-  assert.deepEqual(rec.slots.find((x: any) => x.role === 'coder'), { role: 'coder', slot: 0, step: 's4', ups: 0, downs: 1 });
+  assert.deepEqual(rec.slots.find((x: any) => x.role === 'coder'), { role: 'coder', slot: 0, step: 'opus-medium', ups: 0, downs: 1 });
 }));
 
 test('what is not an easy pass: the lead\'s word, a second attempt, a result nobody reported, a late report', () => withDaemon(async (d, repo) => {
@@ -134,16 +135,18 @@ test('what is not an easy pass: the lead\'s word, a second attempt, a result nob
 test('a raise locks the slot for two tasks; coming back down gives the raise back but not the lead-only raise', () => withDaemon(async (d, repo) => {
   const s = session(d, 'lock', repo);
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+  // decision 226: report routine so the coder starts at s1 (haiku·low) — the bottom — for this raise/lock/step-down test
+  await s.tool('router_report_triage', { kind: 'team', level: 'L2', files: 5, confidence: 0.8, difficulty: 'routine' });
   await s.pass('RV', 'sonnet', 'medium', 'reviewer');
   await s.pass('A', 'haiku', 'low');
   // verify passed, the lead judges the result wrong: one raise on its word (decision 128), and the floor lock
-  assert.equal((await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result' })).result?.step, 's2');
-  assert.deepEqual(coder0(d), { step: 's2', up_count: 1, easy_streak: 0, last_easy: 0, lock_step: 's2', lock_left: 2, down_count: 0, fail_streak: 0, lead_raises: 1 });
+  assert.equal((await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result' })).result?.step, 'haiku-medium');
+  assert.deepEqual(coder0(d), { step: 'haiku-medium', up_count: 1, easy_streak: 0, last_easy: 0, lock_step: 'haiku-medium', lock_left: 2, down_count: 0, fail_streak: 0, lead_raises: 1 });
   // two tasks at the raised step, both easy: the third runs one step lower
-  await s.pass('B', 'haiku', 'high');
+  await s.pass('B', 'haiku', 'medium');
   assert.equal((await s.easy('B')).result?.steppedDown, undefined);
   assert.deepEqual([coder0(d)!.lock_left, coder0(d)!.easy_streak], [1, 1]);
-  await s.pass('C', 'haiku', 'high');
+  await s.pass('C', 'haiku', 'medium');
   assert.deepEqual([coder0(d)!.lock_left, coder0(d)!.lock_step], [0, null]);
   const down = await s.easy('C');
   assert.deepEqual([down.result?.steppedDown, down.result?.slot.step, down.result?.slot.upCount, down.result?.slot.upsLeft], [true, 's1', 0, 3]);
@@ -169,9 +172,9 @@ test('a verify miss right after a step-down raises the slot again and locks it',
       await s.pass('X1', 'opus', 'high');
       await s.easy('X1');
       await s.pass('X2', 'opus', 'high');
-      assert.equal((await s.easy('X2')).result?.slot.step, 's4');
+      assert.equal((await s.easy('X2')).result?.slot.step, 'opus-medium');
       fail = true;
-      assert.deepEqual(await s.post(s.call('X3', 'coder', 'sonnet', 'high')), {});
+      assert.deepEqual(await s.post(s.call('X3', 'coder', 'opus', 'medium')), {});
       await s.post({ hook_event_name: 'SubagentStart', agent_id: 'm1', agent_type: 'do-it-all-claude-code:coder' });
       await s.post({ hook_event_name: 'SubagentStop', agent_id: 'm1', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: false });
       await s.post({ hook_event_name: 'SubagentStop', agent_id: 'm1', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: true });

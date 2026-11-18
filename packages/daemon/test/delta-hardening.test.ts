@@ -14,7 +14,7 @@ import { homeLayout } from '../src/home.ts';
 import { Ledger } from '../src/ledger.ts';
 import { eventPayload } from '../src/payload.ts';
 import { testCounts } from '../src/verify.ts';
-import { TOKEN, makeHome, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, type HookInput } from './helpers.ts';
+import { TOKEN, makeHome, makeRepo, pinRoutine, postHook, rmrf, rows, startTestDaemon, tmpDir, type HookInput } from './helpers.ts';
 import { sealedFake } from '../../core/test/sealed-fake.ts';
 
 type Rec = Record<string, any>;   // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -80,6 +80,7 @@ test('audit N1: a worker result spooled when the daemon drops mid-run is valid J
   const cfgFile = path.join(home, 'config.json');
   { const c = JSON.parse(fs.readFileSync(cfgFile, 'utf8')) as Rec; c.daemonPort = d1.port; fs.writeFileSync(cfgFile, JSON.stringify(c)); }
   await hook({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT, prompt_id: 'p-1' });
+  pinRoutine(d1);   // decision 226: coder stays s1 (haiku·low) for this delta/hardening flow
   await hook({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_1',
     tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] add the audit log\n[scope: src/**]\nThe spec.', model: 'haiku', effort: 'low' } });
   await hook({ hook_event_name: 'SubagentStart', agent_id: 'a1', agent_type: 'do-it-all-claude-code:coder' });

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeProjectState } from '@do-it-all-claude-code/core';
-import { call as sealed, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
+import { pinRoutine, call as sealed, makeRepo, postHook, rmrf, rows, startTestDaemon, write, type HookInput, type TestDaemon } from './helpers.ts';
 
 const L2_PROMPT = 'Refactor the validation module across multiple files and add an audit log';
 type Out = { decision?: string; reason?: string; hookSpecificOutput?: { additionalContext?: string } };
@@ -33,6 +33,7 @@ async function withTwoWriters(fn: (d: TestDaemon, repo: string, post: (h: HookIn
   const fs = await import('node:fs');
   try {
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+    pinRoutine(d);
     await d.router.drain();
     await fn(d, repo, post, () => fs.readFileSync(path.join(d.home, 'runs'), 'utf8').length);
   } finally { await d.close(); rmrf(d.home); rmrf(repo); }

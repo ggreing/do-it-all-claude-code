@@ -15,6 +15,8 @@ export interface Task {
   hidden_tests?: string[];
   grade?: { cmd: string };
   oracle?: string;
+  /** A named set outside the level plans (e.g. "hard-small"): such a task is loaded only when asked for by id. */
+  set?: string;
   // public tasks
   instance_id?: string;
   repo?: string;

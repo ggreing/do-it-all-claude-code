@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import type {
-  Level, RequestRecord, Role, SignalKind, Step, SubtaskRecord, SubtaskStatus, TeamPreset, TriageResult, Verdict,
+  Difficulty, LadderId, Level, RequestRecord, Role, SignalKind, Step, SubtaskRecord, SubtaskStatus, TeamPreset, TriageResult, Verdict,
   UsageRow, VerifySignal,
 } from '@do-it-all-claude-code/core';
 import type { AcceptSignal } from '@do-it-all-claude-code/core';
@@ -142,8 +142,8 @@ export interface StepChangeRow {
   subtaskId: string | null;
   role: Role;
   slot: number;
-  from: Step;
-  to: Step;
+  from: LadderId;
+  to: LadderId;
   reason: 'miss' | 'rejected' | 'escalation' | 'easy';
   /** The escalation's reason word, when there is one. */
   detail: string | null;
@@ -158,7 +158,7 @@ export interface AgentRow {
   agentType: string | null;
   role: Role | null;
   slot: number | null;
-  step: Step | null;
+  step: LadderId | null;
   cwd: string | null;
   snapshot: Snapshot | null;
   /** Decisions 99, 142: the names of the toolchain variables the relay forwarded (the values stay in the router's memory). */
@@ -590,7 +590,7 @@ export interface DispatchInput {
   id: string;
   role: Role;
   slot: number;
-  step: Step;
+  step: LadderId;
   writeScope: string[];
   unscoped: boolean;
   agentType: string;
@@ -645,9 +645,9 @@ export interface RecordRow {
 export type SubtaskPatch = Partial<Pick<SubtaskRow, 'status' | 'verdict' | 'agentId' | 'upCount' | 'writeScope' | 'review' | 'protectedGranted' | 'repro' | 'changes'>>;
 
 export interface SlotRow {
-  role: Role; slot: number; step: Step; upCount: number; failStreak: number; leadRaises: number;
+  role: Role; slot: number; step: LadderId; upCount: number; failStreak: number; leadRaises: number;
   /** Decision 135 (core SlotAdjust): easy passes in a row, whether the latest result was one, the floor lock, step-downs so far. */
-  easyStreak: number; lastEasy: boolean; lockStep: Step | null; lockLeft: number; downCount: number;
+  easyStreak: number; lastEasy: boolean; lockStep: LadderId | null; lockLeft: number; downCount: number;
 }
 
 export class Ledger {
@@ -925,6 +925,21 @@ export class Ledger {
     return this.getRequest(id)!;
   }
 
+  /**
+   * Decision 225: stamps the lead's difficulty on a request's triage (and, for a hard task, a raised budget)
+   * without re-planning its level or team. The start cells are computed from this at dispatch.
+   */
+  setRequestDifficulty(id: string, difficulty: Difficulty, source: 'lead' | 'default', budgetUsd?: number): RequestRow {
+    this.tx(() => {
+      const r = this.db.prepare('SELECT triage FROM requests WHERE id = ?').get(id) as Row | undefined;
+      if (!r) return;
+      const t = { ...json<TriageResult>(r.triage), difficulty, difficultySource: source, ...(budgetUsd !== undefined ? { budgetUsd } : {}) };
+      if (budgetUsd !== undefined) this.db.prepare('UPDATE requests SET triage = ?, budget_usd = ? WHERE id = ?').run(JSON.stringify(t), budgetUsd, id);
+      else this.db.prepare('UPDATE requests SET triage = ? WHERE id = ?').run(JSON.stringify(t), id);
+    });
+    return this.getRequest(id)!;
+  }
+
   replanRequest(id: string, triage: TriageResult, team: TeamPreset): RequestRow {
     this.db.prepare(`UPDATE requests SET override_from = COALESCE(override_from, triage), triage = ?, team = ?, level = ?, preset = ?,
         budget_usd = ? WHERE id = ?`)
@@ -947,7 +962,7 @@ export class Ledger {
    * after an easy pass, a raise, a dispatch. A slot without a row gets one. Reject streak and lead-only raises stay.
    */
   setSlotAdjust(requestId: string, role: Role, slot: number,
-    a: { step: Step; upCount: number; easyStreak: number; lastEasy: boolean; lockStep: Step | null; lockLeft: number; downCount: number }, at: string): void {
+    a: { step: LadderId; upCount: number; easyStreak: number; lastEasy: boolean; lockStep: LadderId | null; lockLeft: number; downCount: number }, at: string): void {
     this.db.prepare(`INSERT INTO slots (request_id, role, slot, step, up_count, updated_at, easy_streak, last_easy, lock_step, lock_left, down_count)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (request_id, role, slot) DO UPDATE SET step = excluded.step, up_count = excluded.up_count, updated_at = excluded.updated_at,
@@ -963,7 +978,7 @@ export class Ledger {
   }
 
   /** Moves a slot to a step (a raise). The failure streak starts again at the new step. */
-  setSlot(requestId: string, role: Role, slot: number, step: Step, upCount: number, at: string): void {
+  setSlot(requestId: string, role: Role, slot: number, step: LadderId, upCount: number, at: string): void {
     this.db.prepare(`INSERT INTO slots (request_id, role, slot, step, up_count, updated_at) VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT (request_id, role, slot) DO UPDATE SET step = excluded.step, up_count = excluded.up_count, fail_streak = 0, updated_at = excluded.updated_at`)
       .run(requestId, role, slot, step, upCount, at);
@@ -973,7 +988,7 @@ export class Ledger {
    * Sets a slot's counters without moving it: failStreak (rejects in a row, decision 127) and leadRaises
    * (raises on the lead's word alone, decision 128). A slot not raised yet gets its row at `step`.
    */
-  setSlotCounters(requestId: string, role: Role, slot: number, step: Step, c: { failStreak?: number; leadRaises?: number }, at: string): void {
+  setSlotCounters(requestId: string, role: Role, slot: number, step: LadderId, c: { failStreak?: number; leadRaises?: number }, at: string): void {
     this.db.prepare(`INSERT INTO slots (request_id, role, slot, step, up_count, updated_at, fail_streak, lead_raises) VALUES (?, ?, ?, ?, 0, ?, ?, ?)
       ON CONFLICT (request_id, role, slot) DO UPDATE SET fail_streak = COALESCE(?, fail_streak), lead_raises = COALESCE(?, lead_raises), updated_at = excluded.updated_at`)
       .run(requestId, role, slot, step, at, c.failStreak ?? 0, c.leadRaises ?? 0, c.failStreak ?? null, c.leadRaises ?? null);

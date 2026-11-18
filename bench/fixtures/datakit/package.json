@@ -1,0 +1,11 @@
+{
+  "name": "datakit",
+  "version": "0.3.1",
+  "description": "Small, dependency-free data helpers: streaming CSV, proportional allocation, a loading cache",
+  "type": "module",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\""
+  }
+}

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { TOKEN, call, makeRepo, postHook, request, rmrf, startTestDaemon, type HookInput } from './helpers.ts';
+import { pinRoutine, TOKEN, call, makeRepo, postHook, request, rmrf, startTestDaemon, type HookInput } from './helpers.ts';
 
 const SHUTDOWN = '/router/v1/shutdown';
 
@@ -39,6 +39,7 @@ test('shutdown kills a running verify command; the waiting stop gets {} and no v
     const b = { session_id: 'sd', cwd: repo, transcript_path: path.join(repo, 't.jsonl') };
     const post = (h: HookInput) => postHook(d.port, { ...b, ...h });
     await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Fix the bug where parse() fails on empty input in src/parse.ts' });
+    pinRoutine(d);
     await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] x', model: 'haiku', effort: 'low' } });
     await post({ hook_event_name: 'SubagentStart', agent_id: 'ag-h', agent_type: 'do-it-all-claude-code:coder' });
     const stopping = post({ hook_event_name: 'SubagentStop', agent_id: 'ag-h', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: false })

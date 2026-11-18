@@ -22,8 +22,8 @@ const PANE = {
 const OFFICE_LINE = JSON.stringify({
   v: 1, type: 'office', reach: 'ok',
   view: {
-    request: { id: 'r-1', level: 'L2', source: 'rule', preset: 'L2', status: 'open', budgetUsd: 4, usedUsd: 0.1, leadDirect: false, leadModel: 'sonnet' },
-    subtasks: [{ id: 'A', role: 'coder', slot: 0, step: 's2', model: 'haiku', effort: 'high', status: 'passed', verdict: 'pass', attempts: 1, agentId: 'demo-a', scope: ['src/**'],
+    request: { id: 'r-1', level: 'L2', source: 'rule', preset: 'L2', status: 'open', budgetUsd: 4, usedUsd: 0.1, leadDirect: false, leadModel: 'sonnet', difficulty: 'hard', difficultySource: 'lead' },
+    subtasks: [{ id: 'A', role: 'coder', slot: 0, step: 's2', model: 'haiku', effort: 'high', estimated: false, status: 'passed', verdict: 'pass', attempts: 1, agentId: 'demo-a', scope: ['src/**'],
       checks: [{ kind: 'test', result: 'ok', testsPassed: 12, testsFailed: 0 }], repro: null }],
     costUsd: 0.12, costEstimated: false, costUnknown: false, sessionCostUsd: 0.12, limits: null,
   },
@@ -97,12 +97,29 @@ test('the helper\'s lines reach the office: the level line, and the step against
   await clock.advance(1500)
   await ui.advance(1500)
   must('the helper ran', spawned.length > 0 && spawned[0]![0] === 'node' && /bridge\.mjs$/.test(spawned[0]![1]!) && spawned[0]!.includes('kit-session'))
-  must('level line', await ui.find({ type: 'Text', text: /L2 · rule · \$0\.120 of \$4/ }))
+  must('level line, the difficulty beside the level', await ui.find({ type: 'Text', text: /L2 hard · rule · \$0\.120 of \$4/ }))
   // coder A is subtask A: planned s2 (Haiku high), its last request ran at Haiku low
-  must('step and plan', await ui.find({ type: 'Text', text: /s2 \(Haiku high\)/ }))
+  must('the slot\'s cell and plan', await ui.find({ type: 'Text', text: /Haiku · high \(s2\)/ }))
+  must('no alias on a desk that ran at another cell', !(await ui.find({ type: 'Text', text: /\(s2\)/, in: 'office-scene' })))
   must('ran at', await ui.find({ type: 'Text', text: /ran at Haiku low/ }))
   must('checks', await ui.find({ type: 'Text', text: /test ok \(12 passed\)/ }))
   await ui.unmount()
+})
+
+test('decision 225: a desk running at its slot\'s cell shows the alias where the desk has room: full and small desks, not narrow ones', async ($, on) => {
+  // coder A of the preview runs at Haiku low, its slot's cell (s1)
+  const line = JSON.stringify({ ...JSON.parse(OFFICE_LINE), view: { ...JSON.parse(OFFICE_LINE).view, subtasks: [{ ...JSON.parse(OFFICE_LINE).view.subtasks[0], step: 's1', effort: 'low' }] } })
+  const { clock } = engine(on, [line])
+  await $.command.run({ command: 'office', args: 'demo' })
+  for (const [columns, rows, form] of [[120, 40, /^ {2}Haiku · low \(s1\)$/], [54, 34, /^ Haiku low \(s1\)$/], [98, 15, /^Haiku low$/]] as const) {
+    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns, scroll: { offset: 0, bodyRows: rows } }, surface: 'terminal' })
+    await clock.advance(1500)
+    await ui.advance(1500)
+    must(`${columns} x ${rows}: coder A's cell`, await ui.find({ type: 'Text', text: form, in: 'office-scene' }))
+    // the others ran at no cell of their own (no subtask): no alias on their desks
+    must(`${columns} x ${rows}: one alias`, (await ui.findAll({ type: 'Text', text: /\(s\d\)/, in: 'office-scene' })).length === (columns === 98 ? 0 : 1))
+    await ui.unmount()
+  }
 })
 
 test('with the router on and no request yet, the office says so in one line, with isolation off and the limits', async ($, on) => {
@@ -151,27 +168,29 @@ test('without the router every tab says so in one line; the five tabs switch wit
 const ISO = (min: number) => new Date(1_000_000 - min * 60_000).toISOString()
 const ROW = {
   requestId: 'r-2', state: 'closed', mine: true, createdAt: ISO(20), closedAt: ISO(18), kind: 'feature', level: 'L1', finalLevel: 'L2',
+  difficulty: 'moderate', difficultySource: 'default',
   outcome: 'delegated', passed: true, acceptance: 'accepted', subtasks: 3, verifyFailures: 1, stepUps: 1,
   changedFiles: 3, linesAdded: 42, linesRemoved: 7, files: [{ path: 'src/slug.ts', added: 30, removed: 4 }, { path: 'src/cli.ts', added: 10, removed: 3 }],
   durationMs: 92_000, activeMs: 90_000, totalUsd: 0.42, estimated: false, unknown: false, budgetExceeded: false,
 }
 const WORK = {
-  open: [{ ...ROW, requestId: 'r-3', state: 'open', closedAt: null, passed: null, kind: 'bugfix', level: 'L2', finalLevel: 'L2', durationMs: null, files: [] }],
-  rows: [ROW, { ...ROW, requestId: 'r-1', passed: false, kind: 'docs', level: 'L0', finalLevel: 'L0', totalUsd: 0.05, files: [{ path: 'README.md', added: 2, removed: 1 }], changedFiles: 1 }],
+  open: [{ ...ROW, requestId: 'r-3', state: 'open', closedAt: null, passed: null, kind: 'bugfix', level: 'L2', finalLevel: 'L2', difficulty: 'hard', difficultySource: 'lead', durationMs: null, files: [] }],
+  // r-1 is from before difficulty was kept
+  rows: [ROW, { ...ROW, requestId: 'r-1', passed: false, kind: 'docs', level: 'L0', finalLevel: 'L0', difficulty: null, difficultySource: null, totalUsd: 0.05, files: [{ path: 'README.md', added: 2, removed: 1 }], changedFiles: 1 }],
   nextCursor: null, today: { done: 4, failed: 1, usd: 1.82 },
 }
 const DETAIL = {
   requestId: 'r-2', state: 'closed', createdAt: ISO(20), closedAt: ISO(18), kind: 'feature', taskType: null,
-  level: { judged: 'L1', source: 'rule', rule: 'multi-file', confidence: 0.82, final: 'L2', changes: [{ from: 'L1', to: 'L2', why: 'replanned' }] },
+  level: { judged: 'L1', source: 'rule', rule: 'multi-file', confidence: 0.82, final: 'L2', changes: [{ from: 'L1', to: 'L2', why: 'replanned' }], difficulty: 'hard', difficultySource: 'lead' },
   plan: { preset: 'L2', leadDirect: false, leadModel: 'claude-sonnet', leadClass: 'sonnet', budgetUsd: 4, holdout: null },
   outcome: 'delegated', passed: true, acceptance: 'accepted',
   subtasks: [
-    { id: 'A', role: 'coder', slot: 0, attempts: 2, step: 's2', model: 'haiku', effort: 'high', ranModel: 'haiku', status: 'passed', verdict: null,
+    { id: 'A', role: 'coder', slot: 0, attempts: 2, step: 's2', model: 'haiku', effort: 'high', estimated: false, ranModel: 'haiku', status: 'passed', verdict: null,
       stepChanges: [{ at: ISO(19), requestId: 'r-2', subtaskId: 'A', role: 'coder', slot: 0, from: 's1', to: 's2', direction: 'up', reason: 'miss', detail: 'wrong_result' }],
       scope: ['src/**'], unscoped: false, files: null,
       checks: [{ kind: 'test', attempt: 1, result: 'failed', testsPassed: 11, testsFailed: 1 }, { kind: 'test', attempt: 2, result: 'ok', testsPassed: 12, testsFailed: 0 }],
       repro: null, review: null, time: { startedAt: ISO(20), stoppedAt: ISO(19), runMs: 41_000, verifyMs: 8000 }, cost: { usd: 0.18, state: 'actual' } },
-    { id: 'R', role: 'reviewer', slot: 0, attempts: 1, step: 's3', model: 'sonnet', effort: 'medium', ranModel: null, status: 'passed', verdict: 'accept',
+    { id: 'R', role: 'reviewer', slot: 0, attempts: 1, step: 'opus-medium', model: 'opus', effort: 'medium', estimated: true, ranModel: null, status: 'passed', verdict: 'accept',
       stepChanges: [], scope: [], unscoped: false, files: null, checks: [], repro: null, review: null,
       time: { startedAt: ISO(19), stoppedAt: ISO(18), runMs: 15_000, verifyMs: null }, cost: { usd: 0.09, state: 'actual' } },
   ],
@@ -210,8 +229,19 @@ const savingsOf = (period: string) => ({
 const teamOf = (period: string) => ({
   period, since: ISO(60), until: ISO(0), profile: { value: 'balanced', source: 'default' }, leadClass: 'sonnet', delegateFrom: { value: 'L1', source: 'default' },
   roles: [
-    { role: 'coder', levels: [{ level: 'L1', count: 1, step: 's1', model: 'haiku', effort: 'low', source: 'default' }, { level: 'L2', count: 2, step: 's1', model: 'haiku', effort: 'low', source: 'own' }],
+    // decision 225: a level and difficulty an entry, with the start cell the router computed (L2 and L3 the same here)
+    { role: 'coder', levels: [
+      { level: 'L1', difficulty: 'routine', count: 1, step: 's1', model: 'haiku', effort: 'low', estimated: false, source: 'default' },
+      { level: 'L1', difficulty: 'moderate', count: 1, step: 's3', model: 'sonnet', effort: 'medium', estimated: false, source: 'default' },
+      { level: 'L1', difficulty: 'hard', count: 1, step: 's5', model: 'opus', effort: 'high', estimated: false, source: 'default' },
+      ...(['L2', 'L3'] as const).flatMap(level => [
+        { level, difficulty: 'hard', count: 2, step: 's5', model: 'opus', effort: 'high', estimated: false, source: 'default' },
+        { level, difficulty: 'routine', count: 2, step: 'haiku-medium', model: 'haiku', effort: 'medium', estimated: true, source: 'own' },
+        { level, difficulty: 'moderate', count: 2, step: 's3', model: 'sonnet', effort: 'medium', estimated: false, source: 'default' },
+      ]),
+    ],
       stats: { subtasks: 22, passed: 20, failed: 2, passRate: 20 / 22, avgCostUsd: 0.18, avgRunMs: 42_000, stepUps: 2, stepDowns: 1 } },
+    // as an older router sends it: a level an entry, no difficulty
     { role: 'reviewer', levels: [{ level: 'L2', count: 1, step: 's3', model: 'sonnet', effort: 'medium', source: 'default' }],
       stats: { subtasks: 6, passed: 6, failed: 0, passRate: 1, avgCostUsd: 0.09, avgRunMs: 15_000, stepUps: 0, stepDowns: 0 } },
   ],
@@ -242,7 +272,7 @@ const SETTINGS = {
 }
 
 /** A helper that answers each tab with its fixture, and an apply with `applied`; the inputs the applies were given. */
-function tabsEngine(on: On, env: Record<string, string> = {}, applied: unknown = { ok: true, changed: ['profile'], nextStart: [], notes: [], revision: { config: 'c-2', presets: 'p-1' } }) {
+function tabsEngine(on: On, env: Record<string, string> = {}, applied: unknown = { ok: true, changed: ['profile'], nextStart: [], notes: [], revision: { config: 'c-2', presets: 'p-1' } }, work: unknown = WORK) {
   const spawned: string[][] = []
   const inputs: string[] = []
   const clock = mock.clock(on, { now: 1_000_000 })
@@ -263,7 +293,7 @@ function tabsEngine(on: On, env: Record<string, string> = {}, applied: unknown =
     yield say({ type: 'office', reach: 'ok', view: { request: null, subtasks: [], costUsd: 0, costEstimated: false, costUnknown: false, sessionCostUsd: 0, limits: null } })
     const which = arg('--tab'), p = arg('--period') ?? '7d'
     if (which === 'work') {
-      yield say({ type: 'work', data: WORK })
+      yield say({ type: 'work', data: work })
       const id = arg('--detail')
       if (id) yield say({ type: 'work-detail', id, data: DETAIL })
     }
@@ -290,15 +320,20 @@ test('Work: the first line says what runs and how today went; running requests f
   must('headline', await ui.find({ type: 'Text', text: /1 running · today 4 done, 1 failed · \$1\.82/ }))
   const rows = await ui.findAll({ type: 'Button', text: /L[0-3]/ })
   must('running first', rows[0]?.key === 'req-r-3')
-  must('level it ran at, the file it changed', await ui.find({ key: 'req-r-2', text: /L1→L2 feature +src\/slug\.ts \+30 -4, 2 more files/ }))
+  must('level it ran at, its difficulty, the file it changed', await ui.find({ key: 'req-r-2', text: /L1→L2 moderate feature +src\/slug\.ts \+30 -4, 2 more files/ }))
+  must('a hard one', await ui.find({ key: 'req-r-3', text: /L2 +hard +bugfix/ }))
+  must('a request from before: no difficulty, the columns kept', await ui.find({ key: 'req-r-1', text: /L0 {13}docs/ }))
   must('a failed one', await ui.find({ key: 'req-r-1', text: /✗/ }))
+  for (const r of await ui.findAll({ type: 'Button', text: /L[0-3]/ })) must(`${r.key} within the frame`, [...(r.text ?? '')].length <= 118)
   await ui.press({ key: 'req-r-2' })
   await settle()
   must('the helper asks for it', spawned.some(a => a.includes('--detail') && a.includes('r-2')))
-  must('how it went', await ui.find({ type: 'Text', text: /L1→L2 feature ✓ passed · 1:32 · \$0\.420/ }))
-  must('how it was judged', await ui.find({ type: 'Text', text: /judged L1 by rule multi-file 82% · L1→L2 \(replanned\)/ }))
+  must('how it went', await ui.find({ type: 'Text', text: /L1→L2 hard feature ✓ passed · 1:32 · \$0\.420/ }))
+  must('how it was judged', await ui.find({ type: 'Text', text: /judged L1 by rule multi-file 82% · L1→L2 \(replanned\) · difficulty hard, by the lead/ }))
   must('the timeline', await ui.find({ type: 'Text', text: /^coder A +█+ +\d+s ✓$/ }))
-  must('a worker with its step up and tests', await ui.find({ type: 'Text', text: /s1→s2 miss · 12 passed/ }))
+  must('a worker with its cell, its step up and tests', await ui.find({ type: 'Text', text: /^A coder Haiku · high \(s2\) · passed · 2 tries · Haiku low→high miss · 12 passed/ }))
+  must('a worker on an estimated cell', await ui.find({ type: 'Text', text: /^R reviewer Opus · medium est\. · accept/ }))
+  must('the step changes as cells', await ui.find({ type: 'Text', text: /Steps {2}↑1: coder Haiku low→high \(miss\)/ }))
   must('a file with its stat bar', await ui.find({ type: 'Text', text: /\+{6,}-+ \+30 -4/ }))
   must('tests', await ui.find({ type: 'Text', text: /12 passed/ }))
   must('no prompt text', !(await ui.find({ type: 'Text', text: /secret/ })))
@@ -333,10 +368,30 @@ test('Team: each role with its pass rate as a bar and its models per level; step
   const { ui } = await openTab($, clock, 'team')
   must('headline', await ui.find({ type: 'Text', text: /Profile balanced · 2 roles · 93% of 28 passed · ↑2 ↓1/ }))
   must('coder', await ui.find({ type: 'Text', text: /coder +█+.* 91% of 22 · \$0\.180 · 42s · ↑2 ↓1/ }))
-  must('levels and where they come from', await ui.find({ type: 'Text', text: /L1 s1 Haiku low · L2 2x s1 Haiku low \(own\)/ }))
-  must('a step change', await ui.find({ type: 'Text', text: /coder A s1→s2 miss \(wrong result\)/ }))
+  // decision 225: each level's start cells routine to hard, the difficulty before each; L2 and L3 the same, one line
+  must('a level\'s cells by difficulty', await ui.find({ type: 'Text', text: /^ {2}L1 routine Haiku · low \(s1\) · moderate Sonnet · medium \(s3\) · hard Opus · high \(s5\)$/ }))
+  must('levels with the same cells share a line, with where they come from', await ui.find({ type: 'Text', text: /^ {2}L2, L3 2x routine Haiku · medium est\. \(own\) · moderate Sonnet · medium \(s3\) · hard Opus · high \(s5\)$/ }))
+  must('an older router: the levels on one line', await ui.find({ type: 'Text', text: /^ {2}L2 Sonnet · medium \(s3\)$/ }))
+  must('a step change', await ui.find({ type: 'Text', text: /coder A Haiku low→high miss \(wrong result\)/ }))
   must('triage at the bottom', await ui.find({ type: 'Text', text: /34 requests: level held 82% · team fit 76% · start step 71%/ }))
   must('a rule to look at', await ui.find({ type: 'Text', text: /rule docs-small: its level may be too low \(5 requests\)/ }))
+  await ui.unmount()
+})
+
+test('decision 225: in a narrow dock the Team tab puts a level\'s cells on more lines, each within the frame, and the Work list keeps four cells for the difficulty', async ($, on) => {
+  const { clock } = tabsEngine(on)
+  // the dock of a 120 x 30 terminal: 53 across, the frames 51
+  const { ui, settle } = await openTab($, clock, 'team', { bodyColumns: 53, scroll: { offset: 0, bodyRows: 40 } })
+  const cells = await ui.findAll({ type: 'Text', text: /routine|moderate|hard/ })
+  must('the cells drawn', cells.length >= 3)
+  for (const c of cells) must(`within 51: ${c.text}`, [...(c.text ?? '')].length <= 51)
+  must('the first line', await ui.find({ type: 'Text', text: /^ {2}L1 routine Haiku · low \(s1\)$/ }))
+  must('the next ones under it', await ui.find({ type: 'Text', text: /^ {5}moderate Sonnet · medium \(s3\)$/ }))
+  await ui.press({ key: 'tab-work' })
+  await settle()
+  must('the short badge', await ui.find({ key: 'req-r-2', text: /L1→L2 mod +feat/ }))
+  must('hard is short already', await ui.find({ key: 'req-r-3', text: /L2 +hard +bug/ }))
+  for (const r of await ui.findAll({ type: 'Button', text: /L[0-3]/ })) must(`${r.key} within 51`, [...(r.text ?? '')].length <= 51)
   await ui.unmount()
 })
 
@@ -405,12 +460,39 @@ test('the tabs in a narrow dock and in the classic console: short labels, one-ce
   must('short label', await ui.find({ key: 'tab-settings', text: /Config/ }))
   must('one-cell marks', await ui.find({ key: 'req-r-1', text: /^x / }))
   must('no two-cell marks', !(await ui.find({ type: 'Button', text: /[●○✓✗→]/ })))
+  must('the short badge after the one-cell arrow', await ui.find({ key: 'req-r-2', text: /L1->L2 mod / }))
+  for (const r of await ui.findAll({ type: 'Button', text: /L[0-3]/ })) must(`${r.key} within 45`, [...(r.text ?? '')].length <= 45)
   await ui.press({ key: 'tab-savings' })
   await clock.advance(1500)
   await ui.advance(1500)
   must('a bar of one-cell marks', await ui.find({ type: 'Text', text: /#+\.+/ }))
   await ui.unmount()
 })
+
+// an open request that waits for the user: the longest state a row holds
+const WAITING = { ...WORK, open: [...WORK.open, { ...WORK.open[0]!, requestId: 'r-4', state: 'awaiting_user', kind: 'feature' }] }
+for (const [name, env] of [['a terminal', {}], ['the classic console', { OS: 'Windows_NT' }]] as const) {
+  test(`the Work list at 47 columns and narrower (${name}): every row within the frame, the open ones too`, async ($, on) => {
+    const { clock } = tabsEngine(on, env, undefined, WAITING)
+    await $.command.run({ command: 'office', args: '' })
+    for (const columns of [47, 40, 32, 24]) {
+      const width = columns - 2
+      const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: columns, scroll: { offset: 0, bodyRows: 30 } }, surface: 'terminal' })
+      await ui.press({ key: 'tab-work' })
+      await clock.advance(1500)
+      await ui.advance(1500)
+      for (const id of ['r-1', 'r-2', 'r-3', 'r-4']) {
+        const row = await ui.find({ key: `req-${id}` })
+        must(`${columns}: ${id} drawn`, row)
+        must(`${columns}: ${id} within ${width}: "${row?.text}"`, [...(row?.text ?? '')].length <= width)
+      }
+      // at 47 the waiting row keeps its whole state word (the kind gives way first); narrower, the word is cut
+      if (columns === 47) must('the whole state at 47', await ui.find({ key: 'req-r-4', text: /waiting for you +\$0\.420$/ }))
+      if (columns === 40) must('the state cut at 40', await ui.find({ key: 'req-r-4', text: /waiting f…/ }))
+      await ui.unmount()
+    }
+  })
+}
 
 test('in a narrow dock (a 120-column terminal) the members sit at small desks, and a click picks the one under it', async ($, on) => {
   engine(on)

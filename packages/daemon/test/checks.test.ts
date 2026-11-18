@@ -16,7 +16,7 @@ import { officeView } from '../src/office.ts';
 import { workDetail } from '../src/tabs.ts';
 import { resolveVerifyCommands } from '../src/verify-source.ts';
 import { hasPackageScript, ifPresentScript, runVerify, type VerifyCommand } from '../src/verify.ts';
-import { makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, write, type HookInput } from './helpers.ts';
+import { pinRoutine, makeRepo, postHook, rmrf, rows, startTestDaemon, tmpDir, write, type HookInput } from './helpers.ts';
 
 const PLUGIN_DIR = fileURLToPath(new URL('../../../plugin', import.meta.url));
 const TEST_FILE = "import { test } from 'node:test';\ntest('one', () => {});\ntest('two', () => {});\n";
@@ -120,6 +120,7 @@ test('the lead\'s line, the office and the Work tab tell that project\'s verify 
   };
   try {
     await post({ hook_event_name: 'UserPromptSubmit', prompt: 'Refactor the validation module across multiple files and add an audit log' });
+    pinRoutine(d);
     assert.deepEqual(await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_ck',
       tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] fix\n[scope: src/**, test/**]', model: 'haiku', effort: 'low' } }), {});
     await post({ hook_event_name: 'SubagentStart', agent_id: 'c1', agent_type: 'do-it-all-claude-code:coder' });
