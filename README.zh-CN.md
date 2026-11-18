@@ -4,12 +4,18 @@
 ![Claude Code 2.1.325+](https://img.shields.io/badge/Claude%20Code-2.1.325%2B-d97757)
 ![Node 24+](https://img.shields.io/badge/Node-24%2B-339933)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+[![cost per passed task: -12%](https://img.shields.io/badge/cost%20per%20passed%20task-%E2%88%9212%25-2ea44f)](docs/measurements/decision213-fair-remeasure.md)
 
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
 用 Opus 或 Sonnet 跑 Claude Code 时，主会话几乎什么都自己做，连便宜得多的模型也能改对的改动也不例外。
 这个项目是一个 Claude Code 插件加一个小的本地守护进程，用来改变这一点。每来一个请求，它就决定主会话是
 直接处理，还是把活儿交给几个跑在便宜模型上的子代理，主会话只做计划和检查。
+
+> **一览**（30 个任务，其中 20 个来自 SWE-bench Verified；Sonnet 5.5 主会话；每个跑一次；[详情](docs/measurements/decision213-fair-remeasure.md)）
+> - 每个通过的任务比直接用 Claude Code 便宜 12%。通过数 24 对 22，差距在每次运行的波动范围内。
+> - 主会话自己完成的任务，花费与直接用 Claude Code 基本相同。
+> - 代价是更慢：在基准自带的任务上，团队多花了 65% 的时间，因为每次交接都要启动工作者并运行检查。
 
 测量结果和测法都在 [docs/measurements](docs/measurements/)。
 

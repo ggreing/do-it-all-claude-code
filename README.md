@@ -4,6 +4,7 @@
 ![Claude Code 2.1.325+](https://img.shields.io/badge/Claude%20Code-2.1.325%2B-d97757)
 ![Node 24+](https://img.shields.io/badge/Node-24%2B-339933)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+[![cost per passed task: -12%](https://img.shields.io/badge/cost%20per%20passed%20task-%E2%88%9212%25-2ea44f)](docs/measurements/decision213-fair-remeasure.md)
 
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
@@ -11,6 +12,11 @@ If you run Claude Code on Opus or Sonnet, the main session does almost everythin
 edits that a much cheaper model would get right. This project is a Claude Code plugin plus a small local
 daemon that changes that. For each request it decides whether the main session should just do it, or
 hand the work to a few subagents running on cheaper models while the main session plans and checks.
+
+> **At a glance** (30 tasks, 20 of them from SWE-bench Verified; Sonnet 5.5 main session; one run each; [details](docs/measurements/decision213-fair-remeasure.md))
+> - A passed task cost 12% less than with plain Claude Code. 24 of 30 passed against 22, a gap within run-to-run variance.
+> - Where the main session did the work itself, it cost about the same as plain Claude Code.
+> - It is slower: on the bench's own tasks the team took 65% longer, since each hand-off starts a worker and runs the checks.
 
 Measurements, and how we made them, are in [docs/measurements](docs/measurements/).
 

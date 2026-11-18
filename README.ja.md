@@ -4,6 +4,7 @@
 ![Claude Code 2.1.325+](https://img.shields.io/badge/Claude%20Code-2.1.325%2B-d97757)
 ![Node 24+](https://img.shields.io/badge/Node-24%2B-339933)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+[![cost per passed task: -12%](https://img.shields.io/badge/cost%20per%20passed%20task-%E2%88%9212%25-2ea44f)](docs/measurements/decision213-fair-remeasure.md)
 
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
@@ -11,6 +12,11 @@ Claude Code を Opus や Sonnet で動かすと、メインセッションがほ
 安いモデルでも問題なく直せるような修正まで全部です。このプロジェクトは、それを変えるための Claude Code
 プラグインと小さなローカルデーモンです。リクエストごとに、メインセッションがそのまま処理するか、安い
 モデルで動くサブエージェント数体に作業を渡してメインセッションは計画と確認に回るかを決めます。
+
+> **ひと目で**（タスク 30 件、うち 20 件は SWE-bench Verified・Sonnet 5.5 のメインセッション・各 1 回、[詳細](docs/measurements/decision213-fair-remeasure.md)）
+> - 通過したタスク 1 件あたりのコストは、素の Claude Code より 12% 低くなりました。通過数は 24 対 22 で、実行ごとのばらつきの範囲内です。
+> - メインセッションが自分で処理したタスクでは、コストは素の Claude Code とほぼ同じでした。
+> - その代わり遅くなります。ベンチ独自のタスクではチームのほうが 65% 長くかかりました。作業を渡すたびにワーカーを起動し、チェックを走らせるためです。
 
 測定結果と測り方は [docs/measurements](docs/measurements/) にあります。
 

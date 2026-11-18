@@ -47,4 +47,4 @@ The router-off runs here had no Agent tool, and the router-on runs had no router
 `--strict-mcp-config`). A user's session has both: without the Agent tool, router off saves about 5 points on
 small requests that a real session would not; without the MCP tools, router on skips about 2,400 tokens of tool
 definitions a real session carries, and its lead cannot report a one-file request and keep it. The re-measure
-(decision 213) runs both arrangements as a user's session would.
+(decision 213) runs both arrangements as a user's session would: [results](decision213-fair-remeasure.md).

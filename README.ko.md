@@ -4,6 +4,7 @@
 ![Claude Code 2.1.325+](https://img.shields.io/badge/Claude%20Code-2.1.325%2B-d97757)
 ![Node 24+](https://img.shields.io/badge/Node-24%2B-339933)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+[![cost per passed task: -12%](https://img.shields.io/badge/cost%20per%20passed%20task-%E2%88%9212%25-2ea44f)](docs/measurements/decision213-fair-remeasure.md)
 
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
@@ -11,6 +12,11 @@ Claude Code를 Opus나 Sonnet으로 쓰면 메인 세션이 거의 모든 일을
 해낼 수정까지 전부요. 이 프로젝트는 그걸 바꾸는 Claude Code 플러그인과 작은 로컬 데몬입니다.
 요청이 들어올 때마다 메인 세션이 그냥 처리할지, 아니면 싼 모델로 도는 서브에이전트 몇 개에게 일을
 맡기고 메인 세션은 계획과 확인만 할지를 정합니다.
+
+> **한눈에 보기** (과제 30개, 그중 20개는 SWE-bench Verified · Sonnet 5.5 메인 세션 · 과제마다 한 번씩, [자세히](docs/measurements/decision213-fair-remeasure.md))
+> - 통과한 과제 하나에 드는 비용이 그냥 Claude Code보다 12% 적었습니다. 통과 수는 24개 대 22개로, 실행마다 생기는 편차 안의 차이입니다.
+> - 메인 세션이 직접 처리한 과제는 그냥 Claude Code와 비용이 거의 같았습니다.
+> - 대신 느립니다. 벤치 자체 과제에서는 팀이 65% 더 오래 걸렸습니다. 일을 넘길 때마다 작업자를 띄우고 검사를 돌리기 때문입니다.
 
 측정 결과와 측정 방법은 [docs/measurements](docs/measurements/)에 있습니다.
 
