@@ -1,6 +1,6 @@
 {
   "name": "@do-it-all-claude-code/daemon",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "Local router daemon: hook event API, local auth, ledger (node:sqlite), session verification",
   "license": "BUSL-1.1",
@@ -12,7 +12,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@do-it-all-claude-code/core": "0.5.0",
-    "@do-it-all-claude-code/adapter-claude-code": "0.5.0"
+    "@do-it-all-claude-code/core": "0.5.1",
+    "@do-it-all-claude-code/adapter-claude-code": "0.5.1"
   }
 }

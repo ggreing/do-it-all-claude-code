@@ -9,7 +9,8 @@
 // this is a no-op. Bytes are compared and unchanged files skipped, so a repeat `setup`/`start` is cheap. Copies
 // are additive (a downgrade may leave a newer file behind; harmless — spawning only needs dist/*.js).
 //
-// Only `dist/` is copied: that is all the spawn paths need. The plugin TEMPLATE for generating <home>/plugin
+// Only `dist/` and `package.json` are copied: that is all the spawn paths need, and the version is read from
+// package.json. The plugin TEMPLATE for generating <home>/plugin
 // still comes from the package (outside the home — review L5 forbids a template inside the router home).
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,19 +29,25 @@ export function copyTreeIfChanged(from: string, to: string): string[] {
       const dstPath = path.join(dstDir, ent.name);
       if (ent.isDirectory()) { walk(srcPath, dstPath); continue; }
       if (!ent.isFile()) continue;                       // skip symlinks and special files in the source
-      const data = fs.readFileSync(srcPath);
-      let st: fs.Stats | null = null;
-      try { st = fs.lstatSync(dstPath); } catch { /* missing */ }
-      if (st?.isSymbolicLink()) { fs.rmSync(dstPath, { force: true }); st = null; }   // never follow a link
-      if (st?.isFile()) { try { if (fs.readFileSync(dstPath).equals(data)) continue; } catch { /* rewrite */ } }
-      const tmp = `${dstPath}.tmp-${process.pid}`;
-      fs.writeFileSync(tmp, data, { mode: 0o600 });
-      fs.renameSync(tmp, dstPath);
-      written.push(dstPath);
+      if (copyFileIfChanged(srcPath, dstPath)) written.push(dstPath);
     }
   };
   walk(from, to);
   return written;
+}
+
+/** Copy one file the way copyTreeIfChanged does (skip when the bytes match, never follow a link). True when written. */
+export function copyFileIfChanged(srcPath: string, dstPath: string): boolean {
+  const data = fs.readFileSync(srcPath);
+  let st: fs.Stats | null = null;
+  try { st = fs.lstatSync(dstPath); } catch { /* missing */ }
+  if (st?.isSymbolicLink()) { fs.rmSync(dstPath, { force: true }); st = null; }   // never follow a link
+  if (st?.isFile()) { try { if (fs.readFileSync(dstPath).equals(data)) return false; } catch { /* rewrite */ } }
+  fs.mkdirSync(path.dirname(dstPath), { recursive: true, mode: 0o700 });
+  const tmp = `${dstPath}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, data, { mode: 0o600 });
+  fs.renameSync(tmp, dstPath);
+  return true;
 }
 
 export interface AppCopyResult {
@@ -53,13 +60,24 @@ export interface AppCopyResult {
 }
 
 /**
- * Copy this install's bundled `dist/` into <home>/app/dist. A no-op in the workspace. Run by `setup` so the
- * daemon and proxy spawn from a stable location the router owns.
+ * Copy this install's bundled `dist/` and its `package.json` into <home>/app. A no-op in the workspace. Run by
+ * `setup` so the daemon and proxy spawn from a stable location the router owns.
  */
 export function copyAppToHome(home: string = routerHome()): AppCopyResult {
   const src = resolveLayout(import.meta.url);
   const root = homeAppDir(home);
   if (src.mode !== 'packaged') return { copied: false, root, written: [] };
-  const written = copyTreeIfChanged(path.join(src.root, 'dist'), path.join(root, 'dist'));
-  return { copied: true, root, written };
+  return { copied: true, root, written: copyAppFiles(src.root, root) };
+}
+
+/**
+ * The files of a packaged install the home copy needs: `dist/`, and `package.json`, which the CLI and the daemon
+ * read their version from (`../package.json` beside `dist/`). Without it the copy reports 0.0.0, and an update
+ * check offers the release that is already running (0.5.0).
+ */
+export function copyAppFiles(pkgRoot: string, appRoot: string): string[] {
+  const written = copyTreeIfChanged(path.join(pkgRoot, 'dist'), path.join(appRoot, 'dist'));
+  const pkgTo = path.join(appRoot, 'package.json');
+  if (copyFileIfChanged(path.join(pkgRoot, 'package.json'), pkgTo)) written.push(pkgTo);
+  return written;
 }

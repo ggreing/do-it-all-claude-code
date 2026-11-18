@@ -5,6 +5,18 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-11-18
+
+### Fixed
+
+- **The installed copy reports its version.** `setup` copied the engine into the router home without its
+  `package.json`, so the daemon and the CLI that run from that copy reported version 0.0.0: in the status
+  line and `doctor`, and, with the update check on, a note offering 0.5.0 to a machine already running it.
+  The copy now includes `package.json`; run `npx do-it-all-claude-code@latest setup` again to refresh it.
+- **Installing from the marketplace needs no SSH key.** The marketplace pointed the plugin at the repository
+  in its short form, which Claude Code fetched over SSH; without a GitHub SSH key the plugin install failed.
+  It is now fetched over HTTPS.
+
 ## [0.5.0] — 2026-11-18
 
 ### Added
@@ -330,7 +342,8 @@ First public pre-release.
   (or the dashboard shows a short page telling you to). `agentic-router doctor` reports the build
   state.
 
-[Unreleased]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.2.0...v0.3.0

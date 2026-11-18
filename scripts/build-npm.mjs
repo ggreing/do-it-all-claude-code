@@ -210,6 +210,7 @@ async function main() {
     'app copied to home (app/dist/cli.js)': fs.existsSync(appCli),
     'plugin generated + local marketplace manifest': fs.existsSync(genManifest),
     'status line written to the isolated settings': statusLineSet,
+    [`home copy reports ${VERSION} (app/package.json)`]: fs.existsSync(appCli) && run(`node ${q(appCli)} --version`, work, setupEnv).out.trim() === VERSION,
   };
   for (const [name, ok] of Object.entries(setupChecks)) console.log(`    [${ok ? 'ok' : 'FAIL'}] ${name}`);
   const setupOk = Object.values(setupChecks).every(Boolean);

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { builtinModules } from 'node:module';
 import {
   MARKETPLACE_NAME, PLUGIN_NAME, installPlan, installPlugin, marketplaceFile, marketplaceRoot, uninstallPlugin,
@@ -17,7 +17,7 @@ import {
 import { copyHelpersToHome, keyHelper, localTokenHelper, proxyEntry } from '../src/apimode.ts';
 import { cliEntry, daemonEntry, isOurChildCmd } from '../src/daemonctl.ts';
 import { homeAppCheck, windowsTerminalCheck } from '../src/doctor.ts';
-import { copyTreeIfChanged } from '../src/appcopy.ts';
+import { copyAppFiles, copyTreeIfChanged } from '../src/appcopy.ts';
 import { CLI_VERSION } from '../src/update.ts';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -162,4 +162,22 @@ test('copyTreeIfChanged copies only changed files and never follows a symlink at
     assert.deepEqual(copyTreeIfChanged(src, dst).map(p => path.basename(p)), ['top.txt']);
     assert.equal(fs.readFileSync(path.join(dst, 'top.txt'), 'utf8'), 'changed');
   } finally { fs.rmSync(src, { recursive: true, force: true }); fs.rmSync(dst, { recursive: true, force: true }); }
+});
+
+test('the home app copy carries package.json, so it reports its version (0.5.0 reported 0.0.0)', () => {
+  const pkg = fs.mkdtempSync(path.join(os.tmpdir(), 'diacc-pkg-'));
+  const app = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'diacc-home-')), 'app');
+  try {
+    fs.mkdirSync(path.join(pkg, 'dist'));
+    fs.writeFileSync(path.join(pkg, 'dist', 'cli.js'), 'cli');
+    fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'do-it-all-claude-code', version: '9.8.7', type: 'module' }));
+    fs.mkdirSync(path.join(pkg, 'plugin'));
+    fs.writeFileSync(path.join(pkg, 'plugin', 'x.md'), 'template');
+    const first = copyAppFiles(pkg, app).map(p => path.relative(app, p).replace(/\\/g, '/')).sort();
+    assert.deepEqual(first, ['dist/cli.js', 'package.json'], 'dist/ and package.json, not the plugin template');
+    // what the CLI and the daemon read: ../package.json beside dist/
+    const version = (JSON.parse(fs.readFileSync(new URL('../package.json', pathToFileURL(path.join(app, 'dist', 'cli.js'))), 'utf8')) as { version: string }).version;
+    assert.equal(version, '9.8.7');
+    assert.deepEqual(copyAppFiles(pkg, app), [], 'a repeat setup writes nothing');
+  } finally { fs.rmSync(pkg, { recursive: true, force: true }); fs.rmSync(path.dirname(app), { recursive: true, force: true }); }
 });
