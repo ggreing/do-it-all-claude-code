@@ -5,8 +5,17 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-18
+
 ### Added
 
+- **The team office.** `/office` opens a panel inside the Claude Code terminal (it replaces the browser
+  dashboard). The request's team sits at desks as small characters, and the member you pick has its session
+  below. Click a member and it reacts in one of eleven ways (it nods, waves, hops, spins, hides behind the desk,
+  peeks out from behind its monitor, and more); click again quickly for a bigger one. Five tabs: Office, Work,
+  Savings, Team and Settings (keys `o w s t c`). When the pane is short the desks get smaller, then fall back to
+  one row of characters and a line of names, and to a list only when there is no room at all. On Windows the
+  classic console cannot draw the characters; `doctor` and the README point to Windows Terminal.
 - **Profiles.** `do-it-all-claude-code config set profile save|balanced|quality` (or the team office's Settings
   tab) moves a set of values at once: where delegation starts, each level's team and its start steps, whether
   a slot steps down after easy results, and the per-request budgets (save 0.6 of the default, quality 1.5).
@@ -41,6 +50,11 @@ All notable changes to this project are documented here. This project adheres to
 
 ### Changed
 
+- **License: Business Source License 1.1.** From this release the code is under BSL 1.1 (`BUSL-1.1`), not
+  Apache-2.0. You can use it for free, including at work to build, test and run your own software. Offering it,
+  or a product whose value comes mainly from it, to others for a fee (selling, licensing, hosting, a managed
+  service) needs a commercial license. Each version turns into Apache-2.0 four years after its release. 0.4.0
+  and earlier stay under Apache-2.0. See `LICENSE` and `NOTICE`.
 - **Writers that share your checkout are verified together.** When two writers with separate scopes work in
   the same work tree and one finishes first, the router checks only its scope and holds the build and tests
   until the last of them stops: a test run in between would judge the other's half-made changes. A pass of
@@ -316,7 +330,8 @@ First public pre-release.
   (or the dashboard shows a short page telling you to). `agentic-router doctor` reports the build
   state.
 
-[Unreleased]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.1.0...v0.2.0
