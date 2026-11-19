@@ -191,8 +191,8 @@ test('decision 85: a task notification brings the subtask\'s verify result to th
   const passed = await post({ hook_event_name: 'UserPromptSubmit', prompt: notification('ag-r', 12764) });
   assert.equal(passed.hookSpecificOutput?.additionalContext,
     `[do-it-all-claude-code] subtask A (coder @s1, model=haiku, effort=low): verify passed — scope ok; cost $${FIXTURE_USD.toFixed(4)} (verify ran no tests for this change; the router has nothing more to check here — do not run tests of your own).`
-    // decision 145: the one tool that matters for a passed writer, by its full name
-    + ' If the result is wrong although verify passed, do not fix it yourself: call mcp__plugin_do-it-all-claude-code_router__router_request_escalation (load it with ToolSearch first) for this subtask, then dispatch it again.');
+    // decision 232 (item 6): a pass with no reviewer/tester pending needs no report; decision 145: the one tool that matters, by its full name
+    + ' No router_report_result is needed for a pass — answer the user. If the result is wrong although verify passed, do not fix it yourself: call mcp__plugin_do-it-all-claude-code_router__router_request_escalation (load it with ToolSearch first) for this subtask, then dispatch it again.');
 
   // a miss (two failed attempts), set up directly in the ledger
   await post(agentCall('B'));

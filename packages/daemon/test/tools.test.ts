@@ -187,7 +187,7 @@ test('router_report_triage re-plans upward exactly as the first Agent call does,
   assert.equal(r.ok, true);
   assert.deepEqual([r.result?.recorded, r.result?.replanned, r.result?.level, r.result?.leadDirect], [true, true, 'L2', false]);
   // decision 231: the answer's `calls` field lists each role's subagent type and per-difficulty cell, computed with checkability (here checkable)
-  assert.match(r.result?.calls, /subagent_type "do-it-all-claude-code:coder": routine haiku\/low, moderate haiku\/low, hard sonnet\/medium/);
+  assert.match(r.result?.calls, /subagent_type "do-it-all-claude-code:coder"; routine haiku\/low, moderate haiku\/low, hard sonnet\/medium/);
   assert.match(r.result?.brief, /subagent_type "do-it-all-claude-code:coder"/);
   const row = rows(d, "SELECT level, preset, budget_usd, team, triage, replanned_from, lead_triage FROM requests WHERE session_id = 'tri'")[0]!;
   assert.deepEqual([row.level, row.preset, row.budget_usd, row.team], [refRow.level, refRow.preset, refRow.budget_usd, refRow.team]);
@@ -214,7 +214,7 @@ test('router_report_triage: L3 by the lead\'s word, a direct judgement only reco
   await a.post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
   const up = await a.tool('router_report_triage', { kind: 'team', level: 'L3', files: 25, confidence: 0.7 });
   assert.deepEqual([up.result?.replanned, up.result?.level], [true, 'L3']);
-  assert.deepEqual(await a.post(a.call('D', 'architect', 'sonnet', 'high', 'docs/**')), {});
+  assert.deepEqual(await a.post(a.call('D', 'architect', 'sonnet', 'medium', 'docs/**')), {});   // decision 232: architect moderate -> s3
 
   // an automatic L2 with L3 signs (decision 119) -> L3; one without them stays
   const b = session(d, 'tri-signs', repo);
@@ -226,7 +226,7 @@ test('router_report_triage: L3 by the lead\'s word, a direct judgement only reco
   const plain = await c.tool('router_report_triage', { kind: 'team', level: 'L3', files: 25, confidence: 0.7 });
   assert.deepEqual([plain.result?.recorded, plain.result?.replanned, plain.result?.level, plain.result?.brief], [true, false, 'L2', undefined]);
   // decision 231: the answer carries each role's call values even when it does NOT re-plan (the brief, present only on a re-plan, no longer lists them)
-  assert.match(plain.result?.calls, /subagent_type "do-it-all-claude-code:coder": routine haiku\/low, moderate haiku\/low, hard sonnet\/medium/);
+  assert.match(plain.result?.calls, /subagent_type "do-it-all-claude-code:coder"; routine haiku\/low, moderate haiku\/low, hard sonnet\/medium/);
 
   // a smaller judgement never moves the plan down; it is kept as a label, with its level made to fit its kind
   const e = session(d, 'tri-down', repo);
@@ -283,7 +283,7 @@ test('router_report_result: a reviewer verdict must come from a finished reviewe
   await s.pass('B', 'b1');
   assert.equal((await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'reviewer', bySubtaskId: 'R' })).code, 'unknown_subtask');
   assert.match((await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'reviewer', bySubtaskId: 'B' })).message ?? '', /not_allowed: subtask B is a coder, not a reviewer/);
-  assert.deepEqual(await s.post(s.call('R', 'reviewer', 'sonnet', 'high', null)), {});
+  assert.deepEqual(await s.post(s.call('R', 'reviewer', 'sonnet', 'medium', null)), {});   // decision 232: reviewer moderate -> s3
   await s.post(s.start('r1', 'reviewer'));
   assert.match((await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'reviewer', bySubtaskId: 'R' })).message ?? '', /not_allowed: subtask R must be finished/);
   assert.deepEqual(await s.post(s.stop('r1', 'reviewer')), {});
@@ -343,7 +343,7 @@ test('router_request_escalation: a reviewer reject raises at once, also across a
   const requestId = rows(d, "SELECT id FROM requests WHERE session_id = 'esc-rev'")[0]!.id as string;
   d.ledger.setSlot(requestId, 'coder', 0, 's4', 1, new Date().toISOString());   // the slot was raised once before (s3 -> s4)
   await s.pass('A', 'a1', 'sonnet', 'high');
-  await s.pass('R', 'r1', 'sonnet', 'high', 'reviewer');
+  await s.pass('R', 'r1', 'sonnet', 'medium', 'reviewer');   // decision 232: reviewer moderate -> s3
   await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'reviewer', bySubtaskId: 'R' });
   const g = await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'review_reject' });
   assert.deepEqual([g.ok, g.result?.how, g.result?.from, g.result?.step, g.result?.model, g.result?.upCount], [true, 'review_reject', 's4', 's5', 'opus', 2]);   // decision 229: s4 -> s5
@@ -355,7 +355,7 @@ test('router_request_escalation: a reviewer reject raises at once, also across a
   await s.pass('A', 'a3', 'opus', 'high');
   assert.deepEqual((r => [r.result?.raised, r.result?.slot.step, r.result?.slot.upsLeft])(await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'lead' })), [true, 's6', 0]);   // decision 229: s5 -> s6
   await s.pass('A', 'a4', 'opus', 'xhigh');   // slot now s6 (opus-xhigh)
-  await s.pass('R2', 'r2', 'sonnet', 'high', 'reviewer');
+  await s.pass('R2', 'r2', 'sonnet', 'medium', 'reviewer');   // decision 232: reviewer moderate -> s3
   await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'reviewer', bySubtaskId: 'R2' });
   const lim = await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'review_reject' });
   assert.deepEqual([lim.ok, lim.code, lim.result?.why, lim.result?.step, lim.result?.upsLeft], [false, 'needs_user', 'limit', 's6', 0]);
@@ -566,7 +566,7 @@ test('decision 178: concurrent writers with disjoint scopes pass, with or withou
   assert.deepEqual(await s.post(writer('A', 'src/api/**', 'worktree')), {});
   assert.deepEqual(await s.post(writer('B', 'src/web/**')), {}, 'disjoint and in the same tree: allowed (decision 103 explains its changes)');
   // a reviewer alongside is not a writer
-  assert.deepEqual(await s.post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_p${++seq}`, tool_input: { subagent_type: 'do-it-all-claude-code:reviewer', prompt: '[subtask:R] look', model: 'sonnet', effort: 'high' } }), {});
+  assert.deepEqual(await s.post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_p${++seq}`, tool_input: { subagent_type: 'do-it-all-claude-code:reviewer', prompt: '[subtask:R] look', model: 'sonnet', effort: 'medium' } }), {});   // decision 232: reviewer moderate -> s3
   const rows2 = () => rows(d, "SELECT id FROM subtasks ORDER BY id").map(r => r.id);
   assert.deepEqual(rows2(), ['A', 'B', 'R']);
 }, {}));
@@ -578,7 +578,7 @@ for (const [label, pluginDir] of [['the plugin\'s role files', path.resolve(impo
     await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
     assert.match(denied(await s.post(s.call('A', 'coder', 'sonnet', 'medium', ''))), /subtask A: the \[scope: \.\.\.\] line is empty/);
     assert.match(denied(await s.post(s.call('T', 'tester', 'sonnet', 'medium', ''))), /subtask T: the \[scope: \.\.\.\] line is empty/);
-    assert.deepEqual(await s.post(s.call('R', 'reviewer', 'sonnet', 'high', '')), {});
+    assert.deepEqual(await s.post(s.call('R', 'reviewer', 'sonnet', 'medium', '')), {});   // decision 232: reviewer moderate -> s3
     const [r] = rows(d, "SELECT write_scope, unscoped FROM subtasks WHERE id = 'R'");
     assert.deepEqual([JSON.parse(String(r!.write_scope)), r!.unscoped], [[], 0], 'nothing writable, not the whole repository');
   }, pluginDir ? { config: { pluginDir } } : {}));
@@ -729,7 +729,7 @@ test('decision 230: a hard direct report on a lead-direct level hands the change
   const r = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 20, confidence: 0.8, difficulty: 'hard' });
   assert.deepEqual([r.result?.replanned, r.result?.level, r.result?.leadDirect, r.result?.difficulty], [true, 'L1', false, 'hard']);
   // decision 231: this repo is NOT checkable, so a source coder's hard cell is s5 (opus/high); the answer's `calls` says so
-  assert.match(r.result?.calls, /subagent_type "do-it-all-claude-code:coder": routine sonnet\/medium, moderate opus\/high, hard opus\/high/);
+  assert.match(r.result?.calls, /subagent_type "do-it-all-claude-code:coder"; routine sonnet\/medium, moderate opus\/high, hard opus\/high/);
   assert.deepEqual([d.ledger.latestRequest('ld')!.level, d.ledger.latestRequest('ld')!.team.leadDirect ?? false], ['L1', false]);
   // a coder below the hard cell is denied with s5; the hard cell (opus/high) is accepted
   assert.match(denied(await s.post(s.call('A', 'coder', 'sonnet', 'medium'))), /the coder runs at step s5/);

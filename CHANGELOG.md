@@ -31,6 +31,19 @@ All notable changes to this project are documented here. This project adheres to
 
 ### Changed
 
+- **Support roles cost less, testers start cheap, and the lead takes fewer turns.** (decision 232, from the
+  subscription validation.) Architect and reviewer now start at sonnet·medium at both routine and moderate (only
+  hard goes to opus·xhigh); a tester starts at haiku·low whatever the request's difficulty, unless its own subtask
+  is tagged hard (then sonnet·medium). The custom L1 lead had been doing 6–9 turns — Grep, router_report_triage,
+  Agent, a `git diff`, router_report_result — each re-reading its whole context, which is where its cost is. So:
+  when the checkability probe has settled by the time the brief is built, the brief now lists each role's
+  subagent type and per-difficulty model and effort, and the lead dispatches without a router_report_triage round
+  trip (a wrong call is still refused with the right values; router_report_triage stays for an L3 raise, a
+  hard-direct report, or one the lead chooses to make). The router's result line for a finished subtask now names
+  the files it changed (a short diff stat), so the lead need not run `git diff` to summarise; and on a pass with no
+  reviewer or tester still to judge it, the line says no router_report_result is needed — the lead just answers. The
+  one-time project-setup note is shorter. A request the router floors to hard now gets the Opus-worker budget
+  headroom at open, so it survives the lead skipping the report.
 - **Where a worker starts follows whether the router can CHECK its result, not the lead's difficulty.** The lead's
   up-front difficulty turned out to be almost always "moderate" and no signal, so the router now probes, once per
   repository and commit at the request's open and in the background (bounded, the repo's own test command run in a

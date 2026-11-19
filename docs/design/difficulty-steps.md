@@ -178,6 +178,29 @@ signal, so for a **source-changing coder** the table above is superseded by whet
   file **outside** its scope counts as a scope request even when its "Scope request:" line says none,
   so the lead can grant that path and dispatch once more.
 
+## 1b. Cheaper support, cheap testers, fewer lead turns (decision 232)
+
+The subscription validation (custom 10/10, but the L1 lead ≈ a whole old-router task) showed two things to
+tune: support roles ran one effort too rich at moderate, and the L1 lead spent most of its cost re-reading its
+standing context across 6–9 turns.
+
+- **Support cells:** architect and reviewer now start at **sonnet · medium (s3) at routine AND moderate**; only
+  hard is opus · xhigh (s6). The §1 `SUPPORT_CELL` moderate cell moved s4 → s3. ui-designer is unchanged.
+- **Tester:** a tester starts at **s1 (haiku · low) whatever the request's difficulty**, unless its own subtask
+  is tagged hard (then s3). This is `callStartCell`'s tester branch; the static §1 table (`startCellFor`) is
+  unchanged, so anything that reads the table (an office view) is unaffected.
+- **Fewer lead turns.** An L1 lead's turns were Grep → router_report_triage → Agent → `git diff` →
+  router_report_result, each re-reading the ~14k-token standing context. So: when the checkability probe has
+  **settled** by the time the brief is built (a cached repo+HEAD, or the SessionStart warm-up finished), the brief
+  lists each role's subagent type and per-difficulty cells (the shared `roleCallValues`, so the brief and the
+  router_report_triage answer cannot drift), and the lead dispatches with no report round trip. While the probe is
+  still `probing`, the brief keeps the decision-231 report line and the answer carries the values. router_report_triage
+  stays for an L3 raise, a hard-direct report, or a report the lead chooses. The result line for a finished subtask
+  **names the files it changed** (a short diff stat), so the lead need not run `git diff`; and on a pass with no
+  reviewer/tester still to judge it, the line says **no router_report_result is needed** — the lead just answers.
+  A request the router floors to hard gets the Opus-worker **budget** headroom at open (not only on a report), so
+  it survives the lead skipping router_report_triage.
+
 ## 2. How a slot moves on the grid (decision 229)
 
 Step-UP and step-DOWN are **asymmetric**: up goes in big, measured steps so a miss buys a real

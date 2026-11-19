@@ -27,11 +27,11 @@ async function withRepo(fn: (d: TestDaemon, repo: string, post: (h: HookInput) =
 let seq = 0;
 const dispatch = (tag: string, role = 'coder'): HookInput => ({
   hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_t${++seq}`,
-  // decision 231: moderate default, checkable repo (test harness) — a source coder/tester start at s1 (haiku/low),
-  // a ui-designer at s3 (sonnet/medium), reviewer/architect at s4 (sonnet/high)
+  // decision 231/232: moderate default, checkable repo (test harness) — a source coder/tester start at s1 (haiku/low);
+  // ui-designer, reviewer and architect at s3 (sonnet/medium; decision 232 moved support moderate from s4 to s3)
   tool_input: { subagent_type: `do-it-all-claude-code:${role}`, prompt: `[subtask:${tag}] work\n[scope: src/**]`,
     model: role === 'coder' || role === 'tester' ? 'haiku' : 'sonnet',
-    effort: role === 'reviewer' || role === 'architect' ? 'high' : role === 'ui-designer' ? 'medium' : 'low' },
+    effort: role === 'coder' || role === 'tester' ? 'low' : 'medium' },
 });
 const run = async (post: (h: HookInput) => Promise<Rec>, tag: string, agent: string, role: string, edit?: () => void): Promise<Rec> => {
   assert.deepEqual(await post(dispatch(tag, role)), {});

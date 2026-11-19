@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_PRESETS, DIFFICULTIES, GRID, applyPresetFile, cellOf, cellId, crossesTier, memberStartCell, modelJump, redact, startCellFor, stepDown, stepUp, topStep } from '@do-it-all-claude-code/core';
+import { DEFAULT_PRESETS, DIFFICULTIES, GRID, applyPresetFile, callStartCell, cellOf, cellId, crossesTier, memberStartCell, modelJump, redact, startCellFor, stepDown, stepUp, topStep } from '@do-it-all-claude-code/core';
 
 test('the grid has 4 models x 5 efforts, with the six legacy cells measured (decision 225)', () => {
   assert.equal(GRID.length, 20);
@@ -66,15 +66,36 @@ test('startCellFor is the decision-226 difficulty table, same at every level', (
   assert.equal(startCellFor('coder', 'routine'), 's1');
   assert.equal(startCellFor('coder', 'moderate'), 's3');
   assert.equal(startCellFor('coder', 'hard'), 's5');
-  assert.equal(startCellFor('tester', 'moderate'), 's3');
-  // architect/reviewer: coder's model one effort richer, floor sonnet-medium; hard -> opus-xhigh
+  assert.equal(startCellFor('tester', 'moderate'), 's3');   // the 226 table (the coder's cell); the LIVE tester cell is decision 232's, via callStartCell
+  // architect/reviewer (decision 232): sonnet-medium at routine AND moderate, opus-xhigh at hard
   assert.equal(startCellFor('architect', 'routine'), 's3');
-  assert.equal(startCellFor('reviewer', 'moderate'), 's4');
+  assert.equal(startCellFor('reviewer', 'moderate'), 's3');
   assert.equal(startCellFor('architect', 'hard'), 's6');
   // ui-designer: sonnet-medium, sonnet-medium, sonnet-high
   assert.equal(startCellFor('ui-designer', 'routine'), 's3');
   assert.equal(startCellFor('ui-designer', 'moderate'), 's3');
   assert.equal(startCellFor('ui-designer', 'hard'), 's4');
+});
+
+test('callStartCell: checkability drives a source coder; tester s1 unless tagged hard; support s3 at moderate (decisions 231, 232)', () => {
+  const at = (role: string, difficulty: string, o: Record<string, unknown> = {}) =>
+    callStartCell({ role: role as never, difficulty: difficulty as never, checkable: true, changesSource: false, tagged: false, ...o });
+  // decision 231: a source-changing coder follows checkability — checkable s1 (hard s3), not checkable s5 (routine s3)
+  assert.equal(at('coder', 'routine', { changesSource: true }), 's1');
+  assert.equal(at('coder', 'moderate', { changesSource: true }), 's1');
+  assert.equal(at('coder', 'hard', { changesSource: true }), 's3');
+  assert.equal(at('coder', 'moderate', { changesSource: true, checkable: false }), 's5');
+  assert.equal(at('coder', 'routine', { changesSource: true, checkable: false }), 's3');
+  // a non-source coder: its routine cell untagged, its tag's table cell tagged
+  assert.equal(at('coder', 'moderate'), 's1');
+  assert.equal(at('coder', 'hard', { tagged: true }), 's5');
+  // decision 232: a tester runs at s1 whatever the difficulty, unless its own subtask is tagged hard -> s3
+  for (const [d, tagged, cell] of [['routine', false, 's1'], ['moderate', false, 's1'], ['moderate', true, 's1'], ['hard', false, 's1'], ['hard', true, 's3']] as const)
+    assert.equal(at('tester', d, { tagged }), cell, `tester ${d} tagged=${tagged}`);
+  // decision 232: architect/reviewer at s3 for routine AND moderate, s6 at hard
+  assert.equal(at('reviewer', 'routine'), 's3');
+  assert.equal(at('architect', 'moderate'), 's3');
+  assert.equal(at('reviewer', 'hard'), 's6');
 });
 
 test('decision 226: a teams.yaml start wins by provenance (even equal to the default); an omitted one falls to the table', () => {

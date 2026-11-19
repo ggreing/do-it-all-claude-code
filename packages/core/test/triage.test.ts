@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_PRESETS as PRESETS0, L3_PLANNED_AS_L2, L3_SIGNS, L3_SIZE_RULE, RULE_CONFIDENCE_THRESHOLD, TEAM_SIZE_RULE, formatTriageContext, l3SignalRoles, promptFeatures, triage, uncertainLevel, withLeadModel } from '@do-it-all-claude-code/core';
+import { DEFAULT_PRESETS as PRESETS0, L3_PLANNED_AS_L2, L3_SIGNS, L3_SIZE_RULE, RULE_CONFIDENCE_THRESHOLD, TEAM_SIZE_RULE, formatTriageContext, l3SignalRoles, promptFeatures, roleCallValues, triage, uncertainLevel, withLeadModel } from '@do-it-all-claude-code/core';
 import type { Role, TeamPreset } from '@do-it-all-claude-code/core';
 
 // Briefs for delegated teams: L1 is lead-direct by default (decision 88), so tests of the team brief turn it off.
@@ -85,16 +85,16 @@ test('decisions 225, 230, 231: a team brief asks for the request\'s difficulty b
   const text = formatTriageContext(r, DEFAULT_PRESETS[r.level]);
   // the signals of docs/design/difficulty-steps.md, said once; a bug report in code the lead has not traced is hard,
   // and the router's floor counts when it is higher
-  assert.match(text, /^Difficulty: hard if any of these holds: the request reports wrong behaviour or an error in code you have not fully traced; no test reproduces the problem and one is not obvious; .*a first attempt is likely to be subtly wrong\. Routine if all hold: .*Otherwise moderate\. Difficulty is not size: a two-file change can be hard\. The router may set a floor from the request; the higher one is used\.$/m);
+  assert.match(text, /^Difficulty: hard if the request reports wrong behaviour or an error in code you have not fully traced, no test reproduces it and one is not obvious, .*or a first attempt is likely to be subtly wrong\. Routine only if .*Otherwise moderate\. Difficulty is not size\. The router may set a higher floor from the request\.$/m);
   assert.equal(text.match(/^Difficulty: /gm)!.length, 1);
-  assert.ok(text.includes('Before your first Agent call, call router_report_triage with kind "team", level "L2", files and confidence (your estimates) and the request\'s difficulty: its answer gives each call\'s model and effort.'));
+  assert.ok(text.includes('Before your first Agent call, call router_report_triage with kind "team", level "L2", files and confidence (estimates) and the difficulty: its answer gives each call\'s model and effort.'));
   assert.doesNotMatch(text, /values below are for moderate/);
   // before the Agent calls, which name each role's subagent type
   assert.ok(text.indexOf('router_report_triage') < text.indexOf('2. Call the Agent tool'));
   for (const role of ['architect', 'coder', 'reviewer', 'tester'] as const) assert.ok(text.includes(callOf(DEFAULT_PRESETS.L2, role)), role);
   // decision 231: no table of cells; the router's answer gives them
-  assert.ok(text.includes('   - coder (up to 2 in parallel, one subtask each): subagent_type "do-it-all-claude-code:coder"\n'), text);
-  assert.ok(text.includes('Model and effort: use the values in the router\'s answer for the role and that difficulty; a call with other values is refused with the right ones.'), text);
+  assert.ok(text.includes('   - coder (up to 2 at once, one subtask each): subagent_type "do-it-all-claude-code:coder"\n'), text);
+  assert.ok(text.includes('Use the values in the router\'s answer for the role and that difficulty.'), text);
   // the brief the report answers with: what was reported, the same roles, and no second request for it
   const after = formatTriageContext({ ...r, difficulty: 'hard', difficultySource: 'lead' }, DEFAULT_PRESETS[r.level]);
   assert.match(after, /^The request's difficulty is hard, as you reported\.$/m);
@@ -114,21 +114,63 @@ test('decision 230: the lead coordinates, tags each subtask with its difficulty 
   const text = formatTriageContext(r, DEFAULT_PRESETS[r.level]);
   // a thin lead: the first look sizes and grades the request; the worker finds the cause
   assert.match(text, /^Your first look only judges size and difficulty: read the request and make at most a couple of quick searches\. Do not trace the root cause, read source files in depth or draft the fix\./m);
-  assert.match(text, /the user's request verbatim, so do not copy it into a prompt; the worker investigates the code and finds the cause\./);
+  assert.match(text, /Every worker gets the user's request verbatim from the router, so do not copy it; the worker finds the cause\./);
   // decision 231: the notes say where to look, never how or where to fix; the acceptance check is behaviour
   assert.ok(text.includes('then the spec: the goal, where to look (the files and symbols the request names, what you saw; never how or where to fix it) and the acceptance check (the behaviour the request asks for, not a design).'), text);
   // a tag is the prompt's third line, in the router's syntax
-  assert.ok(text.includes('the third "[difficulty: routine|moderate|hard]" for a subtask you tag'), text);
+  assert.ok(text.includes('The prompt starts with the lines "[subtask:<ID>]", "[scope: <comma-separated globs it may write>]" and, if you tag it, "[difficulty: routine|moderate|hard]"; then the spec'), text);
   assert.match(text, /2\. Call the Agent tool once per subtask with these subagent types:\n/);
   // split by difficulty and tag the hard parts (decision 231): an untagged fix at the request's, untagged side work routine
-  assert.match(text, /Split by difficulty too, and tag the hard parts: for a bug, the fix is a coder subtask, at the request's difficulty when untagged and never below it; a reproduction, the changelog, running the checks and a summary need no tag: they run as routine\./);
+  assert.match(text, /Split by difficulty too and tag the hard parts: a bug's fix is a coder subtask at the request's difficulty \(untagged, and never below it\); a reproduction, the changelog, the checks and a summary need no tag and run as routine\./);
   // a parallel team says "together" in its writers line; a one-coder team in the split line
   assert.match(text, /sent in one message so they run at the same time/);
   const one = formatTriageContext({ level: 'L1', confidence: 0.9, source: 'rule', taskType: 'edit', preset: 'L1', budgetUsd: TEAM.L1.budgetUsd, rationale: 'x' }, TEAM.L1);
-  assert.match(one, /they run as routine\. Subtasks that do not need each other's result go out together, in one message\./);
+  assert.match(one, /run as routine\. Independent subtasks go out together, in one message\./);
   // decision 231: the lead does not check a worker's result itself
-  assert.match(text, /A report without that line is not verified yet: wait for the line\. Do not run or write checks of your own\./);
+  assert.match(text, /A report without that line is not verified yet\. Do not run or write checks of your own\./);
   assert.doesNotMatch(text, /run the build or the tests yourself/);
+});
+
+test('decision 232: once the router knows whether it can check results, the brief lists the values and asks for no report', () => {
+  const r = triage({ prompt: '모듈 단위로 리팩터링해줘' });
+  const coder = DEFAULT_PRESETS.L2.roles.find(m => m.role === 'coder')!;
+  // the values are callStartCell's for a tagged call, the same ones the router's answer gives
+  assert.equal(roleCallValues(coder, { checkable: true }), 'routine haiku/low, moderate haiku/low, hard sonnet/medium');
+  assert.equal(roleCallValues(coder, { checkable: false }), 'routine sonnet/medium, moderate opus/high, hard opus/high');
+  assert.equal(roleCallValues({ role: 'coder', count: 1, start: 's2', startSet: true }, { checkable: true }), 'haiku/high at every difficulty', 'a teams.yaml start');
+  for (const checkability of ['checkable', 'unchecked', 'no-tests'] as const) {
+    const text = formatTriageContext(r, DEFAULT_PRESETS[r.level], DEFAULT_PRESETS, { checkability });
+    const checkable = checkability === 'checkable';
+    for (const m of DEFAULT_PRESETS.L2.roles) {
+      assert.ok(text.includes(`subagent_type "do-it-all-claude-code:${m.role}"; ${roleCallValues(m, { checkable })}\n`), `${checkability} ${m.role}`);
+    }
+    assert.match(text, /^2\. Call the Agent tool once per subtask with these subagent types and values:$/m);
+    assert.ok(text.includes('"[subtask:<ID>]", "[scope: <comma-separated globs it may write>]" and "[difficulty: routine|moderate|hard]"; then the spec'), text);
+    assert.ok(text.includes('Tag each subtask with its difficulty and pass that difficulty\'s model and effort from the list; a call with other values is refused with the right ones.'), text);
+    assert.match(text, /Split by difficulty too: a bug's fix is a coder subtask at the request's difficulty; a reproduction, the changelog, the checks and a summary are routine\./);
+    // no report turn: the lead grades the parts itself and tags them
+    assert.doesNotMatch(text, /router_report_triage|router's answer/, checkability);
+    assert.match(text, /^Difficulty: hard if /m);
+  }
+  // still finding out: the report and its answer, as in decision 231
+  for (const checkability of ['probing', null, undefined] as const) {
+    const text = formatTriageContext(r, DEFAULT_PRESETS[r.level], DEFAULT_PRESETS, { checkability });
+    assert.match(text, /Before your first Agent call, call router_report_triage/, String(checkability));
+    assert.match(text, /subagent_type "do-it-all-claude-code:coder"\n/);
+  }
+  // the router's floor before any report: said where the lead tags the coder
+  const floor = formatTriageContext({ ...r, difficulty: 'hard', difficultySource: 'router' }, DEFAULT_PRESETS[r.level], DEFAULT_PRESETS, { checkability: 'checkable' });
+  assert.match(floor, /^The request's difficulty is hard \(the router's floor\): tag a coder that changes source code hard\.$/m);
+  assert.doesNotMatch(formatTriageContext(r, DEFAULT_PRESETS[r.level], DEFAULT_PRESETS, { checkability: 'checkable' }), /the router's floor/);
+  // the uncertain team brief lists them too; the L3 way up still reports
+  const unclear = triage({ prompt: 'Make the date picker remember the last chosen month' }, withLeadModel(DEFAULT_PRESETS, 'claude-opus-5-5'));
+  const opus = withLeadModel(DEFAULT_PRESETS, 'claude-opus-5-5');
+  const u = formatTriageContext(unclear, opus[unclear.level], opus, { checkability: 'checkable' });
+  assert.match(u, /^Call the Agent tool once per subtask \(A, B, \.\.\.\) with these subagent types and values:$/m);
+  assert.doesNotMatch(u, /Before your first Agent call/);
+  // (decision 232, B) the router's last line names the changed files: no git diff --stat of the lead's own
+  assert.match(floor, /When the last line has arrived, answer the user from the router's lines, which name the changed files/);
+  assert.doesNotMatch(floor, /git diff --stat/);
 });
 
 test('decision 225: a small change the lead keeps is handed on when it is hard, for a lead that is not Opus-class', () => {
@@ -143,7 +185,7 @@ test('decision 225: a small change the lead keeps is handed on when it is hard, 
   // the uncertain lead-direct brief: the signals and the invite, and the switch reports the difficulty first
   const unclear = triage({ prompt: '태스크에 댓글 기능 넣어줘' });
   const u = formatTriageContext(unclear, DEFAULT_PRESETS.L1, DEFAULT_PRESETS, { leadClass: 'haiku' });
-  assert.match(u, /^Difficulty: hard if any of these holds/m);
+  assert.match(u, /^Difficulty: hard if the request reports/m);
   assert.ok(u.includes(invite));
   assert.ok(u.includes('To switch, first call router_report_triage with kind "team", level "L2" or "L3" (the team you chose), files and confidence (your estimates) and difficulty: the router re-plans this request at that level.'), u);
   assert.ok(u.includes('Then call the Agent tool once per subtask with the subagent types and values its answer gives (the L2 team\'s types are below).'), u);
@@ -194,8 +236,8 @@ test('no brief asks for worktree isolation: parallel writers share the working t
   assert.match(brief('L1'), /Do not pass isolation/);
   for (const l of ['L1', 'L2', 'L3'] as const) assert.doesNotMatch(brief(l), /isolation "worktree"|merge their branches/);
   for (const l of ['L2', 'L3'] as const) {
-    assert.match(brief(l), /Do not pass isolation: the writers share the working tree/);
-    assert.match(brief(l), /runs the build and tests once, when the last one stops/);
+    assert.match(brief(l), /Do not pass isolation: writers share the working tree/);
+    assert.match(brief(l), /the build and tests run once, when the last one stops/);
   }
   assert.match(brief('L1'), /task-notification/);
 });

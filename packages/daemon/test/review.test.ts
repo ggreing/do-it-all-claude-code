@@ -76,9 +76,9 @@ function session(d: TestDaemon, sid: string, cwd: string) {
     assert.equal(r.status, 200, r.text);
     return r.body as Out;
   };
-  // decision 231: a checkable repo (test default) — a source coder at moderate and an untagged tester start at s1
-  // (haiku/low); reviewer/architect keep the 226 table at s4 (sonnet/high).
-  const steps: Record<string, [string, string]> = { coder: ['haiku', 'low'], tester: ['haiku', 'low'], reviewer: ['sonnet', 'high'], architect: ['sonnet', 'high'] };
+  // decision 231/232: a checkable repo (test default) — a source coder at moderate and an untagged tester start at s1
+  // (haiku/low); reviewer/architect run at the moderate support cell, which decision 232 moved to s3 (sonnet/medium).
+  const steps: Record<string, [string, string]> = { coder: ['haiku', 'low'], tester: ['haiku', 'low'], reviewer: ['sonnet', 'medium'], architect: ['sonnet', 'medium'] };
   /** Dispatches a subtask, lets it change `edit` (a writer) and stop with `report` as its last message; returns the lead's line about it. */
   const run = async (tag: string, role: string, report: string, edit?: string): Promise<string> => {
     const agent = `ag${++seq}`;

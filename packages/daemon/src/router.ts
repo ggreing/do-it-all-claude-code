@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ACCEPTANCE_RULE_VERSION, ACCEPT_WINDOW_PROMPTS, DEFAULT_DIFFICULTY, MAX_STEP_UPS, PRICING_PER_MTOK, PROVISIONAL_BUDGET_USD, ROUTER_TOOL_PREFIX, RouterToolCall, dissatisfactionRule, holdoutDraw, isReask, promptSimilarity, afterEasyPass, afterOtherResult, afterRaise, atDispatch, costUsd, decideEscalation, formatTriageContext, isRouterToolName, l3SignalRoles, ladderStep,
-  callStartCell, difficultyRank, effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, maxDifficulty, memberStartCell, modelJump, normalizeLeadTriage, parseRoleFile, profileNotch, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
+  difficultyRank, effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, maxDifficulty, memberStartCell, modelJump, normalizeLeadTriage, parseRoleFile, profileNotch, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleCallValues, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
   type Checkability, type Difficulty, type DifficultySource, type LeadModelClass, type Level, type ProjectIsolationInput, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
   type LadderId, type RouterEvent, type RouterToolErrorCode, type RouterToolName, type RouterToolResult, type Step, type TeamPreset, type TriageResult, type Usage,
   type UpdateNotice, type VerifySignal,
@@ -133,6 +133,8 @@ export class Router {
   readonly #abort = new AbortController();
   /** Decision 231: the checkability probe's verdict per repo + HEAD, so sibling requests of a repo reuse it (a pending probe is its Promise). */
   readonly #checkProbes = new Map<string, Checkability | Promise<Checkability>>();
+  /** Decision 232 (item 4): the latest checkability per session cwd, read synchronously when the brief is built so it can list the cells. */
+  readonly #checkByCwd = new Map<string, Checkability>();
   readonly #inflight = new Set<Promise<unknown>>();        // verify runs (outside the queue)
   readonly #snapshots = new Map<string, Promise<RequestSnapshot | undefined>>();   // T7: request start states being taken
   readonly #prompts = new PromptMemory();                   // decision 137: the last prompts of a session, in memory only
@@ -407,9 +409,12 @@ export class Router {
   }
 
   /** The brief for the lead; an uncertain triage also names the L2 team the lead would call (core). */
-  #triageContext(t: TriageResult, team: TeamPreset, cwd: string | undefined, leadModel: string | null, opts: { ask?: boolean } = {}): string {
+  #triageContext(t: TriageResult, team: TeamPreset, cwd: string | undefined, leadModel: string | null, opts: { ask?: boolean; checkability?: Checkability } = {}): string {
+    // Decision 232 (item 4): when the probe has settled the cwd's checkability, the brief lists each role's cells so the
+    // lead can dispatch without a router_report_triage round trip; while 'probing' it keeps the 231 report line.
+    const checkability = opts.checkability ?? this.#checkabilityForBrief(cwd);
     const parts = [formatTriageContext(t, team, this.#resolver.resolve(cwd, leadModel ?? undefined).presets,
-      { leadClass: leadModelClass(leadModel ?? undefined), fableOptIn: this.#config.fableOptIn === true, profile: profileOf(this.#config) })];   // decisions 225, 226
+      { leadClass: leadModelClass(leadModel ?? undefined), fableOptIn: this.#config.fableOptIn === true, profile: profileOf(this.#config), checkability })];   // decisions 225, 226, 232
     // the reproduce-first lines are about a coder subtask: a request the lead does itself, with no team to switch
     // to in its brief, does not carry them
     const noTeamInBrief = team.leadDirect === true && (t as { kind?: string }).kind !== 'uncertain';
@@ -493,8 +498,16 @@ export class Router {
       this.ledger.setOverriddenTriage(req.id, t);
       return this.ledger.getRequest(req.id)!;
     });
-    if (!when.closedAt) this.#opened(opened, ev, prompt);
-    return opened;
+    // Decision 232 (item 4): the lead now often skips router_report_triage (the brief lists the cells), so a request
+    // the router floored to HARD gets the Opus-worker budget headroom here, at open, not only on a report.
+    let req2 = opened;
+    if (!when.closedAt && opened.triage.difficulty === 'hard' && opened.triage.difficultySource === 'router'
+        && opened.team.leadDirect !== true && this.#config.budgetsUsd?.[opened.level] === undefined) {
+      const bumped = Math.round(Math.max(opened.budgetUsd, PROVISIONAL_BUDGET_USD.L2) * 1.5 * 100) / 100;
+      if (bumped > opened.budgetUsd) req2 = this.ledger.setRequestDifficulty(opened.id, 'hard', 'router', bumped);
+    }
+    if (!when.closedAt) this.#opened(req2, ev, prompt);
+    return req2;
   }
 
   /** T7: the work tree at the request's start (taken after the hook answers) and, opt-in, its prompt. */
@@ -521,22 +534,38 @@ export class Router {
    */
   #probeCheckability(req: RequestRow, cwd: string | undefined): void {
     if (!cwd || this.#config.forceCheckability) return;   // decision 231: forced value is stamped at createRequest; no probe
-    this.#track((async () => {
-      const root = await repoRoot(cwd).catch(() => undefined);
-      if (!root) return this.#stampCheckability(req, 'no-tests');   // not a git work tree: nothing to run here
-      const head = (await headRef(root).catch(() => '')) ?? '';
-      const key = `${root}@${head}`;
-      let got = this.#checkProbes.get(key);
-      if (got === undefined) {
-        const p = this.#runCheckProbe(root, head).catch(() => 'unchecked' as Checkability);
-        this.#checkProbes.set(key, p);
-        got = await p;
-        this.#checkProbes.set(key, got);
-      } else if (typeof got !== 'string') {
-        got = await got;
-      }
-      this.#stampCheckability(req, got);
-    })());
+    this.#track(this.#resolveCheckability(cwd).then(got => this.#stampCheckability(req, got)));
+  }
+
+  /** Decision 232 (item 4): start the probe at SessionStart so the first request's brief may already have the verdict. */
+  #warmCheckability(cwd: string | undefined): void {
+    if (!cwd || this.#config.forceCheckability) return;
+    this.#track(this.#resolveCheckability(cwd).then(() => {}, () => {}));
+  }
+
+  /** Decision 231/232: the checkability for a cwd, from the per repo+HEAD cache (probing it if new); also fills #checkByCwd. */
+  async #resolveCheckability(cwd: string): Promise<Checkability> {
+    const root = await repoRoot(cwd).catch(() => undefined);
+    if (!root) { this.#checkByCwd.set(cwd, 'no-tests'); return 'no-tests'; }   // not a git work tree: nothing to run here
+    const head = (await headRef(root).catch(() => '')) ?? '';
+    const key = `${root}@${head}`;
+    let got = this.#checkProbes.get(key);
+    if (got === undefined) {
+      const p = this.#runCheckProbe(root, head).catch(() => 'unchecked' as Checkability);
+      this.#checkProbes.set(key, p);
+      got = await p;
+      this.#checkProbes.set(key, got);
+    } else if (typeof got !== 'string') {
+      got = await got;
+    }
+    this.#checkByCwd.set(cwd, got);
+    return got;
+  }
+
+  /** Decision 232 (item 4): checkability to list in the brief, read synchronously; 'probing' until a prior probe (or SessionStart warm-up) settled this cwd. */
+  #checkabilityForBrief(cwd: string | undefined): Checkability {
+    if (this.#config.forceCheckability) return this.#config.forceCheckability;
+    return (cwd ? this.#checkByCwd.get(cwd) : undefined) ?? 'probing';
   }
 
   #stampCheckability(req: RequestRow, c: Checkability): void {
@@ -1333,7 +1362,7 @@ export class Router {
           ? 'already verified by the router: do not re-run the test suite'
           : files === '0' ? 'it changed no files, so there is nothing to test'
           : 'verify ran no tests for this change; the router has nothing more to check here — do not run tests of your own'}).`
-          + this.#passedNote(agent.requestId, sub, agentId) + leadNote(sub.repro);
+          + this.#changedStat(sub) + this.#passedNote(agent.requestId, sub, agentId) + leadNote(sub.repro);
       case 'failed': {
         // decision 230 (item 3): a moderate/hard subtask that could not be verified has one stronger attempt set up.
         const retry = this.#pendingUnverifiedRetry(agent.requestId, sub);
@@ -1364,7 +1393,7 @@ export class Router {
         if (sub.verdict === 'unverified') {
           const env = signals.filter(isEnvFailure).map(x => (x.detail ?? '').split('; verify cannot run')[0]);
           if (env.length) {
-            return `${head}: verify could not run in this environment (${env.join('; ')}); this is not counted as a failure${tail}. The router could not verify the result here: do not write or run checks of your own — read the change (git diff) and tell the user what was changed and that it was not tested here.`;
+            return `${head}: verify could not run in this environment (${env.join('; ')}); this is not counted as a failure${tail}. The router could not verify the result here: do not write or run checks of your own.${this.#changedStat(sub)} Tell the user what was changed and that it was not tested here.`;
           }
           // decision 212
           const stuck = signals.filter(isNotStarted).map(x => (x.detail ?? '').split('\n')[0]!.slice(0, 300));
@@ -1374,9 +1403,9 @@ export class Router {
             // lead to drop it — offer the scope widening and one more dispatch; otherwise it is left to the user, untested.
             return base + (this.#scopeAsked.has(agentId)
               ? ` Its report names a cause outside this subtask's scope: to pursue it, call ${ROUTER_TOOL_PREFIX}router_request_scope to grant that path, then dispatch subtask ${sub.id} once more with the same scope. Do not try to repair the test setup.`
-              : ' Do not dispatch the subtask again for this and do not try to repair the test setup: read the change (git diff), then tell the user what was changed and that the tests could not be run here.');
+              : ` Do not dispatch the subtask again for this and do not try to repair the test setup.${this.#changedStat(sub)} Tell the user what was changed and that the tests could not be run here.`);
           }
-          return `${head}: verify did not run (router was offline)${tail}. The router could not verify the result here: do not write or run checks of your own — read the change (git diff) and tell the user what was changed and that it was not tested here.`;
+          return `${head}: verify did not run (router was offline)${tail}. The router could not verify the result here: do not write or run checks of your own.${this.#changedStat(sub)} Tell the user what was changed and that it was not tested here.`;
         }
         if (sub.verdict === 'no_changes') {   // decision 145
           return `${head}: the ${sub.role} changed no file in its scope; verify ran on an unchanged tree, so this is not a pass${tail}.`
@@ -1871,6 +1900,7 @@ export class Router {
   // ------------------------------------------------------------------ session_start / stop
 
   #sessionStart(ev: RouterEvent, ctx: Ctx): RouterDecision {
+    if (!ev.spooled) this.#warmCheckability(ev.cwd);   // decision 232 (item 4): a head start so the first request's brief can list the cells
     const decision = this.#sessionStartContext(ev, ctx);
     // Decision 163: a newer release, at most once a day per version, for a live start only (not a replayed one).
     // It goes to the user as userMessage (systemMessage); it never joins the context the model reads.
@@ -2315,7 +2345,7 @@ export class Router {
         // Decision 231: the brief no longer prints per-role cells (the lead cannot derive them: checkability drives the
         // coder's), so the answer carries them — always, re-planned or not. A call with other values is refused with these.
         ...(now.team.leadDirect ? {} : { calls: this.#callValues(now) }),
-        ...(replanned ? { brief: this.#triageContext(now.triage, now.team, bind.cwd, now.leadModel) } : {}),
+        ...(replanned ? { brief: this.#triageContext(now.triage, now.team, bind.cwd, now.leadModel, { checkability: now.checkability ?? undefined }) } : {}),
       },
     };
   }
@@ -2326,20 +2356,10 @@ export class Router {
    * the other roles follow the 226 table. A user teams.yaml start overrides, as everywhere.
    */
   #callValues(req: RequestRow): string {
-    const checkable = isCheckable(req.checkability);
-    const notch = profileNotch(profileOf(this.#config));
-    const fableOptIn = this.#config.fableOptIn === true;
-    const diffs: Difficulty[] = ['routine', 'moderate', 'hard'];
-    const lines = req.team.roles.filter(r => r.count > 0).map(r => {
-      const cells = diffs.map(d => {
-        const cell = callStartCell({ role: r.role, difficulty: d, checkable, changesSource: r.role === 'coder', tagged: true },
-          { notch, fableOptIn, ...(r.startSet && r.start ? { override: r.start } : {}) });
-        const s = ladderStep(cell);
-        return `${s.alias}/${s.effort}`;
-      });
-      const values = cells.every(c => c === cells[0]) ? `${cells[0]} at every difficulty` : diffs.map((d, i) => `${d} ${cells[i]}`).join(', ');
-      return `   - ${r.role} — subagent_type "do-it-all-claude-code:${r.role}": ${values}`;
-    });
+    const opts = { checkable: isCheckable(req.checkability), notch: profileNotch(profileOf(this.#config)), fableOptIn: this.#config.fableOptIn === true };
+    // decision 232: the shared roleCallValues (core) is what the brief lists too, so the answer and the brief cannot drift.
+    const lines = req.team.roles.filter(r => r.count > 0).map(r =>
+      `   - ${r.role}: subagent_type "do-it-all-claude-code:${r.role}"; ${roleCallValues(r, opts)}`);
     const note = req.checkability === 'checkable' ? 'the router can check results here (tests run)'
       : req.checkability === 'probing' || req.checkability === null ? 'checking whether tests run here'
         : 'the router cannot check results here (tests do not run), so a source-changing coder starts on a stronger model';
@@ -2467,8 +2487,21 @@ export class Router {
     }
     if (!REVIEWED_ROLES.includes(sub.role)) return '';
     const asked = this.#scopeAsked.delete(agentId);
-    return ` If the result is wrong although verify passed, do not fix it yourself: call ${tool('router_request_escalation')} for this subtask, then dispatch it again.`
+    // Decision 232 (item 6): on a pass with no reviewer/tester still to judge it, the lead need not call
+    // router_report_result — it just answers the user. (A reject still goes through router_request_escalation.)
+    const judgePending = this.ledger.listSubtasks(requestId).some(s => (s.role === 'reviewer' || s.role === 'tester') && (s.status === 'pending' || s.status === 'running'));
+    const noReport = judgePending ? '' : ' No router_report_result is needed for a pass — answer the user.';
+    return noReport + ` If the result is wrong although verify passed, do not fix it yourself: call ${tool('router_request_escalation')} for this subtask, then dispatch it again.`
       + (asked ? ` Its report asks for paths outside its scope: to grant them, call ${tool('router_request_scope')}.` : '');
+  }
+
+  /** Decision 232 (item 5): the files a subtask changed, as a short stat, so the lead need not run `git diff` to summarise. */
+  #changedStat(sub: SubtaskRow): string {
+    const files = sub.changes?.files ?? [];
+    if (!files.length) return '';
+    const top = files.slice(0, 8).map(f => `${f.path} (${f.state === 'deleted' ? 'deleted' : f.state === 'new' ? 'new' : f.binary ? 'binary' : `+${f.added}/-${f.removed}`})`);
+    const more = files.length > top.length ? ` and ${files.length - top.length} more` : '';
+    return ` Changed ${files.length} file${files.length === 1 ? '' : 's'}: ${top.join(', ')}${more}.`;
   }
 
   /** router_report_result: the judgement of a finished subtask by the lead, or by a reviewer or tester subtask. */
@@ -2926,7 +2959,7 @@ export class Router {
       return `${s.id} ${s.role}#${s.slot} @${s.step} (model=${st.alias}, effort=${st.effort}) ${s.status}${s.verdict ? `/${s.verdict}` : ''}`;
     });
     return [
-      this.#triageContext(r.triage, r.team, undefined, r.leadModel),
+      this.#triageContext(r.triage, r.team, undefined, r.leadModel, { checkability: r.checkability ?? undefined }),
       `[do-it-all-claude-code] ledger (${why}): request ${r.id}, spent $${r.usedUsd.toFixed(4)} of $${r.budgetUsd}.`,
       subs.length ? `subtasks: ${subs.join('; ')}.` : 'no subtasks dispatched yet.',
       // decision 145: after a compaction or resume the lead's own copy of the plan may be gone; the router's is not
@@ -3047,13 +3080,11 @@ const REPRO_BRIEF = 'Reproduce first is on: a coder subtask for a bug fix or a n
   + 'for work a test cannot show put "[repro: off <reason>]" with a reason of refactor, docs, config, no-tests or not-testable. Without the line the router decides.';
 
 // decision 192 (Q3): the one-time project-setup note added to the first delegation in a project not yet set up.
-const PROJECT_SETUP_BRIEF = 'Project setup (first delegation here): this project is not set up for parallel isolation yet. '
-  + 'Either way, writers whose scopes share no file work at the same time in this checkout; a writer whose scope overlaps a running one is sent after it, and the build and tests run once, when the last writer stops. '
-  + 'With it ON, writers sent together may instead each get a git worktree of their own, when none of them needs a file that is not committed. '
-  + `Before you start delegating, ask the user once whether to turn it on. End that question to the user with "${AWAITING_USER_MARKER}" on its own line, `
-  + 'so the router counts the request as waiting for them. Then apply their answer with the router tool '
-  + `${ROUTER_TOOL_PREFIX}router_project_isolation (load it with ToolSearch first): only AFTER the user says yes, call it with { enable: true, userConfirmed: true }; if they say no, call { enable: false }. `
-  + 'The tool writes the project setup and names the files it changed — do not ask the user to run a terminal command (the CLI `do-it-all-claude-code project enable` is only a fallback). You will not be asked again for this project.';
+const PROJECT_SETUP_BRIEF = 'Project setup (first delegation here): parallel isolation is not set up for this project. '
+  + 'Without it, writers whose scopes share no file run at the same time in this checkout; with it, writers sent together may each get their own git worktree when none needs an uncommitted file. '
+  + `Before delegating, ask the user once whether to turn it on, and end that question with "${AWAITING_USER_MARKER}" on its own line. `
+  + `Then call ${ROUTER_TOOL_PREFIX}router_project_isolation (load it with ToolSearch first): { enable: true, userConfirmed: true } only after a yes, { enable: false } after a no. `
+  + 'Do not ask the user to run a terminal command. You will not be asked again for this project.';
 /** Audit #14: the fallback for pricing an unknown model's tokens when the subagent's step is not known. */
 const MOST_EXPENSIVE_MODEL = Object.entries(PRICING_PER_MTOK).sort((a, b) => b[1].output - a[1].output)[0]![0];
 

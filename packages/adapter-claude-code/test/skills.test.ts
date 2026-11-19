@@ -191,6 +191,14 @@ test('decision 231: the router sets the values, the lead says where to look and 
   assert.match(body, /When the line names no retry \(decision 231/);
 });
 
+test('decision 232: values listed in the brief need no report; the router\'s last line names the changed files', () => {
+  const body = read('skills/lead-orchestrator/SKILL.md');
+  assert.match(body, /When the brief lists each role's values \(decision 232: the router already knows whether the tests run\), tag each subtask with its difficulty and pass that difficulty's values; no report is needed\./);
+  assert.match(body, /When the brief already lists them \(decision 232\), you need it only to raise the level\./);
+  assert.match(body, /The router's last result line names the changed files \(decision 232\)/);
+  assert.doesNotMatch(body, /Confirm the edits landed with a single `git diff --stat`/);
+});
+
 test('decision 231: the coder diagnoses a bug before it fixes it', () => {
   const coder = read('agents/coder.md');
   assert.match(coder, /For a bug, the lead's notes on where to look are hypotheses\. Reproduce the problem first .*trace the cause, then fix it at the cause\./);

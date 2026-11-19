@@ -51,7 +51,8 @@ test('decision 192: a fresh project gets the one-time project-setup note on the 
   const first = (await out(d, ups('ps-a'))).hookSpecificOutput?.additionalContext ?? '';
   assert.match(first, /Project setup \(first delegation here\)/);
   assert.ok(first.includes(AWAITING_USER_MARKER), 'the note tells the lead to use the awaiting-user marker');
-  assert.ok(first.includes('do-it-all-claude-code project enable'), 'the note names the enable command');
+  assert.ok(first.includes('router_project_isolation'), 'the note names the router tool');
+  assert.ok(first.includes('Do not ask the user to run a terminal command'), 'the note keeps the no-terminal-command rule');
   // once per project: a later prompt (new session) in the same repo does not repeat it
   const second = (await out(d, ups('ps-b'))).hookSpecificOutput?.additionalContext ?? '';
   assert.doesNotMatch(second, /Project setup \(first delegation here\)/);
@@ -107,7 +108,7 @@ test('s1: brief injected, B denied (wrong step), A paired by order, verified, us
 
     const t = triage({ prompt: L1_PROMPT }, TEAM_L1_PRESETS);
     assert.equal(t.level, 'L1');
-    assert.equal(by('UserPromptSubmit')?.hookSpecificOutput?.additionalContext, formatTriageContext(t, TEAM_L1_PRESETS.L1, DEFAULT_PRESETS.L2));
+    assert.equal(by('UserPromptSubmit')?.hookSpecificOutput?.additionalContext, formatTriageContext(t, TEAM_L1_PRESETS.L1, DEFAULT_PRESETS.L2, { checkability: 'checkable' }));   // decision 232: the test harness forces checkable, so the brief lists the cells
     assert.deepEqual(by('PreToolUse:Agent'), {});
     const denyB = by('PreToolUse:Agent:B')?.hookSpecificOutput;
     assert.equal(denyB?.permissionDecision, 'deny');
