@@ -40,6 +40,25 @@ All notable changes to this project are documented here. This project adheres to
 
 ### Changed
 
+- **A coder runs only the tests of its change; the full checks stay the router's.** (decision 234.) Opus coders
+  cost well over twice a plain Opus subagent on the same bugs, mostly in extra Bash turns: lint runs, whole-suite
+  runs and repairs of a test setup that would not start. The coder now runs only the tests related to what it
+  changed, once or twice, never the whole suite, a command over about two minutes or one in the background, and
+  lint, format or type tools only when the project or the task names them. When the test runner does not start,
+  it says so and finishes instead of installing packages or setting `PYTHONPATH`. The router still runs the
+  build, typecheck, lint and tests when the coder finishes. A tester follows the same rules: the tests it wrote
+  and those of the code its spec names. The lead's acceptance check names the behaviour the request asks for, not
+  a test run; to point at a test it names one test file. The lead sends a tester only for tests the request asks
+  for, no longer to run the checks. The guard now enforces these limits: a worker may not start a Bash command in
+  the background or with a timeout over 180 s, and `timeout N …` (N ≤ 180 s) is allowed so a worker can bound its
+  own run; interpreter runtime options and a repo script named without an extension (`python -W ignore -c …`,
+  `python bin/test`) are allowed, and a pytest node id (`tests/x.py::test_y`) is no longer mistaken for a Windows
+  stream; `pip install` is allowed only inside the project — an active virtualenv under the repo, or
+  `--target`/`--prefix` inside it — never a global or user-site install. When a worker's turn ends without coming
+  back to fix its one verify failure, the router finalizes the subtask with the result it already has instead of
+  telling the lead "no verification result yet", so the lead does not re-run the long checks. And tests that did
+  not start, by an error in no file the worker changed, are finalized and handed to the lead on the first stop —
+  the worker is no longer bounced to attempt a fix that cannot make them start.
 - **Support roles cost less, testers start cheap, and the lead takes fewer turns.** (decision 232, from the
   subscription validation.) Architect and reviewer now start at sonnet·medium at both routine and moderate (only
   hard goes to opus·xhigh); a tester starts at haiku·low whatever the request's difficulty, unless its own subtask

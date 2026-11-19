@@ -85,6 +85,11 @@ const ENV_PREFIX_DENY = new Set(ROUTER_BASH_ENV_PREFIX_DENY);
 /** Interpreters that may run a repo script or inline code (decision 231, item 6); value = the kind of script it runs. */
 const INTERPRETERS = { node: 'node', python: 'py', python3: 'py', py: 'py' };
 const SCRIPT_EXT = { node: ['.js', '.mjs', '.cjs'], py: ['.py'] };
+// decision 234 (item 3): interpreter RUNTIME options that may precede -c/-e or a script. Mode-changing options
+// (python -m, node --test) have their own allowlist entries and are NOT skipped; -i (interactive) is not here.
+const PY_SKIP_FLAG = new Set(['-O', '-OO', '-B', '-s', '-S', '-E', '-I', '-u', '-q', '-b', '-bb', '-d', '-v', '-vv']);
+const PY_SKIP_VALUE = new Set(['-W', '-X']);   // these take a separate value
+const NODE_SKIP_RE = /^(?:--no-warnings|--no-deprecation|--trace-warnings|--trace-deprecation|--enable-source-maps|--preserve-symlinks|--experimental-[\w-]+|--max-old-space-size=\d+|--stack-size=\d+)$/;
 
 export const PACKAGE_INSTALL_PREFIXES = [
   'npm install', 'npm i ', 'npm ci', 'pnpm install', 'pnpm add', 'yarn install', 'yarn add',
@@ -119,6 +124,19 @@ export const isRouterToolName = (toolName) => typeof toolName === 'string' && to
 export const NEVER_GRANTABLE_WRITE_PATHS = ['.git/**', '**/.git/**', '.do-it-all-claude-code/**', '**/.do-it-all-claude-code/**', '.agentic-router/**', '**/.agentic-router/**'];
 
 const DENY_NOT_ALLOWED = 'this command is not on the router\'s Bash allowlist; ask the lead (the lead can run it, or the user can add it to .do-it-all-claude-code/policy.json).';
+
+// Decision 234 (item 1): a worker's Bash may not run in the background or wait past 180 s. A 600 s background
+// command expired the prompt cache and woke the worker after its turn limit; the lead must not run long checks.
+export const MAX_WORKER_TIMEOUT_MS = 180_000;
+/** The same cap as a GNU `timeout N …` duration (decision 234 item 3): N seconds, 180 at most. */
+export const MAX_WORKER_TIMEOUT_SEC = MAX_WORKER_TIMEOUT_MS / 1000;
+const WORKER_BG_DENY = '[router] blocked: a worker may not start a command in the background (run_in_background); run it in the foreground and keep it short.';
+const WORKER_TIMEOUT_DENY = '[router] blocked: a worker\'s Bash timeout over 180s is not allowed; run only the tests of your change (well under 2 minutes).';
+/** A GNU `timeout` DURATION in seconds (optional suffix s/m/h/d), or null when it is not a plain duration. */
+function timeoutSeconds(d) {
+  const m = /^(\d+(?:\.\d+)?)([smhd]?)$/.exec(String(d));
+  return m ? Number(m[1]) * { '': 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2]] : null;
+}
 
 // ---------------------------------------------------------------- paths (mirror of core/paths.ts)
 export function routerHome() {
@@ -372,7 +390,11 @@ export function windowsPathProblem(p, platform = process.platform, bases = []) {
     if (base.length > skip && /^[a-z]:\//.test(base) && (lower === base || lower.startsWith(base + '/'))) skip = base.length;
   }
   const rest = skip ? norm.slice(skip) : s.replace(/^[A-Za-z]:/, '');
-  if (rest.includes(':')) return 'an NTFS stream name (":" inside the path)';
+  // decision 234 (item 3): a pytest node id (file.py::Class::test[param]) uses "::", which is not an NTFS stream.
+  // Strip the ::selectors before the stream check, but only after a .py/.pyi file and only when they carry no "$"
+  // (so an alternate-data-stream form like file.py::$DATA is still refused).
+  const nodeId = /^(.*\.(?:py|pyi))(?:::[^:\\/$]+)+$/i.exec(rest);
+  if ((nodeId ? nodeId[1] : rest).includes(':')) return 'an NTFS stream name (":" inside the path)';
   for (const seg of rest.split(/[\\/]+/)) {
     if (/^[^\\/]{1,8}~\d{1,3}(?:\.[^\\/.]{0,3})?$/.test(seg)) return `an 8.3 short name (${seg})`;
     if (seg !== '.' && seg !== '..' && seg !== '...' && /[. ]$/.test(seg)) return 'a path segment ending in a dot or a space';
@@ -496,8 +518,9 @@ export const GUARD_EXTRA_DENY_OPTIONS = {
   'npm install': ['--registry', '-g', '--global', '--location', '--prefix', '--userconfig', '--globalconfig'], 'npm i': ['--registry', '-g', '--global', '--location', '--prefix', '--userconfig', '--globalconfig'], 'npm ci': ['--registry', '-g', '--global', '--location', '--prefix', '--userconfig', '--globalconfig'],
   'pnpm install': ['--registry', '-g', '--global', '--dir', '-C'], 'pnpm add': ['--registry', '-g', '--global', '--dir', '-C'],
   'yarn install': ['--registry', '--cwd', '--modules-folder', '--global-folder'], 'yarn add': ['--registry', '--cwd', '--modules-folder', '--global-folder'],
-  'pip install': ['-i', '--index-url', '--extra-index-url', '-f', '--find-links', '--trusted-host', '-t', '--target', '--prefix', '--root', '--user'],
-  'pip3 install': ['-i', '--index-url', '--extra-index-url', '-f', '--find-links', '--trusted-host', '-t', '--target', '--prefix', '--root', '--user'],
+  // decision 234 (item 5): the registry stays fixed; --target/--prefix/--user/--root/-g are gated in classifyBash (install inside the project)
+  'pip install': ['-i', '--index-url', '--extra-index-url', '-f', '--find-links', '--trusted-host'],
+  'pip3 install': ['-i', '--index-url', '--extra-index-url', '-f', '--find-links', '--trusted-host'],
 };
 /** Allowed commands that only read (and git, which has its own option list). Every other allowed command builds, tests or installs, and can write files. Must equal core. */
 export const GUARD_READ_ONLY_COMMANDS = ['cd', 'pwd', 'ls', 'dir', 'cat', 'type', 'head', 'tail', 'grep', 'rg', 'find', 'wc', 'echo', 'printf', 'diff', 'sort', 'uniq', 'cut', 'tr', 'which', 'where', 'true', 'false', 'test', 'set', 'git'];
@@ -758,8 +781,9 @@ function deniedOption(tok, denied) {
 /**
  * Returns a deny reason for a router subagent's Bash command, or null when nothing recognised as bad was
  * found (which is not a statement that the command is safe).
- * opts: { userHome, routerHome, legacyRouterHome, bashAllow, cwd, root, denyExec, msys } (bashAllow = the accepted project policy's
- * extension; msys = { tmp, root } overrides where Git Bash's /tmp and / point, for tests).
+ * opts: { userHome, routerHome, legacyRouterHome, bashAllow, cwd, root, denyExec, msys, virtualEnv } (bashAllow = the accepted project
+ * policy's extension; msys = { tmp, root } overrides where Git Bash's /tmp and / point, for tests; virtualEnv =
+ * the VIRTUAL_ENV value, for the decision 234 pip-install-inside-the-project check).
  */
 export function classifyBash(command, opts = {}) {
   const userHome = opts.userHome ?? os.homedir();
@@ -844,6 +868,27 @@ export function classifyBash(command, opts = {}) {
     }
     if (pfx > 0) words = words.slice(pfx);
     if (words.length === 0) return DENY_NOT_ALLOWED;   // only assignments, no command to run
+    // decision 234 (item 3): `timeout N <allowed command>` with N <= 180s lets a worker bound its own run; the
+    // inner command is then checked as usual below. A longer bound, or an option that is not a recognised timeout
+    // option, is refused. --kill-after's grace is capped the same way.
+    if (baseName(words[0]) === 'timeout') {
+      let k = 1;
+      while (k < words.length && /^-/.test(stripOuterQuotes(words[k])) && stripOuterQuotes(words[k]) !== '-') {
+        const o = stripOuterQuotes(words[k]);
+        const durOf = v => { const s = timeoutSeconds(v); return s !== null && s <= MAX_WORKER_TIMEOUT_SEC; };
+        if (/^(?:-k|--kill-after)=/.test(o)) { if (!durOf(o.slice(o.indexOf('=') + 1))) return `${DENY_NOT_ALLOWED} (timeout --kill-after must be ${MAX_WORKER_TIMEOUT_SEC}s or less)`; k += 1; }
+        else if (/^--signal=/.test(o)) k += 1;
+        else if (o === '-k' || o === '--kill-after') { if (!durOf(stripOuterQuotes(words[k + 1] ?? ''))) return `${DENY_NOT_ALLOWED} (timeout --kill-after must be ${MAX_WORKER_TIMEOUT_SEC}s or less)`; k += 2; }
+        else if (o === '-s' || o === '--signal') k += 2;
+        else if (/^(?:--preserve-status|--foreground|-v|--verbose)$/.test(o)) k += 1;
+        else return `${DENY_NOT_ALLOWED} (timeout option ${o} is not allowed)`;
+      }
+      const secs = timeoutSeconds(stripOuterQuotes(words[k] ?? ''));
+      if (secs === null) return `${DENY_NOT_ALLOWED} (timeout needs a duration, e.g. timeout 120 ...)`;
+      if (secs > MAX_WORKER_TIMEOUT_SEC) return `${DENY_NOT_ALLOWED} (a timeout over ${MAX_WORKER_TIMEOUT_SEC}s is not allowed; keep a worker's command under 2 minutes)`;
+      words = words.slice(k + 1);
+      if (words.length === 0) return DENY_NOT_ALLOWED;   // `timeout N` with no command to run
+    }
     if (/[\\/]/.test(stripOuterQuotes(words[0]))) return `${DENY_NOT_ALLOWED} (the command is given by a path; only bare command names are checked)`;
     const cmd0 = baseName(words[0]);
     if (WRAPPERS.has(cmd0)) return `${DENY_NOT_ALLOWED} (it starts with the wrapper "${cmd0}")`;
@@ -854,10 +899,24 @@ export function classifyBash(command, opts = {}) {
     const interp = INTERPRETERS[cmd0];
     let codeForm = false, scriptForm = false;
     if (interp) {
-      const a1 = stripOuterQuotes(words[1] ?? '');
-      if ((interp === 'py' && a1 === '-c') || (interp === 'node' && a1 === '-e')) codeForm = true;
-      else if (a1 && !a1.startsWith('-') && SCRIPT_EXT[interp].some(e => a1.toLowerCase().endsWith(e))) {
-        if (unsafePathArg(words[1])) return 'this command runs a script given by an argument that cannot be checked safely; it is not allowed.';
+      // decision 234 (item 3): skip recognised leading runtime options (e.g. `python -W ignore`, `node
+      // --no-warnings`) to reach the -c/-e code marker or the script argument. A mode-changing option (python -m,
+      // node --test) is NOT skipped, so those keep matching their own allowlist entries below.
+      let j = 1;
+      while (j < words.length) {
+        const a = stripOuterQuotes(words[j]);
+        if (!a.startsWith('-') || a === '-') break;
+        if ((interp === 'py' && a === '-c') || (interp === 'node' && a === '-e')) { codeForm = true; break; }
+        if (interp === 'py' && PY_SKIP_VALUE.has(a)) { j += 2; continue; }
+        if (interp === 'py' && PY_SKIP_FLAG.has(a)) { j += 1; continue; }
+        if (interp === 'node' && NODE_SKIP_RE.test(a)) { j += 1; continue; }
+        break;   // an option we do not skip: let the allowlist handle the whole command
+      }
+      const a1 = !codeForm && j < words.length ? stripOuterQuotes(words[j]) : '';
+      // decision 231 (item 6) + decision 234 (item 3): a repo script, named with a known extension OR as a path
+      // (`python bin/test`), which must resolve inside the repository.
+      if (a1 && !a1.startsWith('-') && (SCRIPT_EXT[interp].some(e => a1.toLowerCase().endsWith(e)) || pathLikeArg(words[j]))) {
+        if (unsafePathArg(words[j])) return 'this command runs a script given by an argument that cannot be checked safely; it is not allowed.';
         const forms = resolvePathArgForms(a1, vcwd, userHome, opts.msys);
         if (!opts.root || forms.some(abs => !isUnder(abs, opts.root))) return 'this command runs a script outside the repository, which is not allowed.';
         scriptForm = true;
@@ -882,8 +941,10 @@ export function classifyBash(command, opts = {}) {
     let entry;
     if (cmd0 === 'set') {
       if (!(words.length >= 2 && /^[-+]/.test(stripOuterQuotes(words[1])))) return DENY_NOT_ALLOWED;   // bare `set` dumps env
-    } else if (scriptForm) {
-      // decision 231: a repo script (its path checked above); the per-arg checks below still apply to its arguments
+    } else if (codeForm || scriptForm) {
+      // decision 231/234: inline code (-c/-e, possibly after runtime options) or a repo script (its path checked
+      // above). The allowlist-entry match is bypassed — the interpreter form is what makes it allowed — but the
+      // per-arg checks below still apply (to a script's arguments; the code form skips them, guarded by SECRET_VAR_RE).
     } else if (!(entry = allow.find(e => entryMatches(words, e))) && !ROUTER_BASH_ALLOW_EXACT.some(e => exactMatches(words, e))) {
       // decision 222: a version query only as written; "node -v -e …" is not one
       return DENY_NOT_ALLOWED;
@@ -975,13 +1036,36 @@ export function classifyBash(command, opts = {}) {
     if (install) {
       const tool = /pip|uv|poetry/.test(install) ? 'pip' : 'npm';
       const skip = install.trim().split(/\s+/).length;
+      // decision 234 (item 5): pip installs only inside the project — an active virtualenv under the repo, or
+      // --target/--prefix inside the repo. A global or user-site install (no venv, --user, -g/--global, --root,
+      // or a target outside the repo) is refused; the dc6 worker that ran `pip install more-itertools` into the
+      // user's site-packages is the case this blocks. uv and poetry manage their own project envs, so they pass.
+      if (['pip install', 'pip3 install', 'python -m pip install'].includes(install)) {
+        let targetInRepo = false;
+        for (let i = skip; i < words.length; i++) {
+          const tok = stripOuterQuotes(words[i]);
+          if (/^(?:--user|-g|--global|--root)(?:=|$)/.test(tok))
+            return `this pip install uses ${tok.split('=')[0]}, a global or user-site install, which is not allowed; install inside the project (a repo virtualenv, or --target/--prefix inside the repo).`;
+          const optPath = /^(?:-t|--target|--prefix)=(.+)$/.exec(tok)?.[1]
+            ?? ((tok === '-t' || tok === '--target' || tok === '--prefix') ? stripOuterQuotes(words[i + 1] ?? '') : null);
+          if (optPath !== null && optPath !== '') {
+            if (unsafePathArg(optPath) || !opts.root || resolvePathArgForms(optPath, vcwd, userHome, opts.msys).some(abs => !isUnder(abs, opts.root)))
+              return 'this pip install writes to a --target/--prefix outside the repository, which is not allowed.';
+            targetInRepo = true;
+          }
+        }
+        const venv = opts.virtualEnv;
+        const repoVenv = typeof venv === 'string' && venv !== '' && !!opts.root && isUnder(venv, opts.root);
+        if (!targetInRepo && !repoVenv)
+          return 'pip install needs a project virtualenv (activate a venv inside the repo) or --target/--prefix inside it; a global or user-site install is not allowed.';
+      }
       for (let i = skip; i < words.length; i++) {
         const tok = stripOuterQuotes(words[i]);
         if (tok.startsWith('-')) {
           if (/=.*(?::\/\/|^git[+@])/i.test(tok)) return `this install uses a package source that is not a registry name (${tok.slice(0, 60)}), which is not allowed.`;
           continue;
         }
-        if (i > 0 && /^(?:-r|--requirement|-c|--constraint|-e|--editable|--prefix|-C)$/.test(stripOuterQuotes(words[i - 1]))) continue;   // a file or directory, already checked as a path
+        if (i > 0 && /^(?:-r|--requirement|-c|--constraint|-e|--editable|--prefix|-t|--target|-C)$/.test(stripOuterQuotes(words[i - 1]))) continue;   // a file or directory, already checked as a path
         const problem = installArgProblem(tool, tok);
         if (problem) return `this install uses ${problem}, which is not allowed.`;
       }
@@ -1314,9 +1398,14 @@ export function evaluate(hookInput, opts = {}) {
   const bases = trustedBases(cwd, root, userHome, stateHome);
 
   if (tool === 'Bash') {
+    // Decision 234 (item 1): no background command, and no wait past 180 s. Both re-woke a worker past its turn
+    // limit and expired the prompt cache; the full checks are the router's, run under its own limits at the stop.
+    if (input.run_in_background === true) return { deny: WORKER_BG_DENY };
+    const timeout = typeof input.timeout === 'number' ? input.timeout : NaN;
+    if (Number.isFinite(timeout) && timeout > MAX_WORKER_TIMEOUT_MS) return { deny: WORKER_TIMEOUT_DENY };
     const command = input.command || '';
     const policy = readAcceptedPolicy(root, stateHome);       // decision 142: a project policy counts only once the user accepted it
-    const reason = classifyBash(command, { userHome, routerHome: stateHome, legacyRouterHome: stateHomes[1] ?? null, bashAllow: policy?.bashAllow ?? [], cwd, root, denyExec: [proxyBinDir] });
+    const reason = classifyBash(command, { userHome, routerHome: stateHome, legacyRouterHome: stateHomes[1] ?? null, bashAllow: policy?.bashAllow ?? [], cwd, root, denyExec: [proxyBinDir], virtualEnv: opts.virtualEnv ?? process.env.VIRTUAL_ENV });
     if (reason) return { deny: `[router] ${reason}` };
     const scriptDirs = packageScriptDirs(command, cwd, userHome);
     if (scriptDirs.length && [root, ...scriptDirs].some(d => packageScriptsChanged(root, d)))

@@ -423,7 +423,9 @@ export function l3SignalRoles(l2: TeamPreset, l3: TeamPreset, difficulty: Diffic
 // how to fix, the coder implemented just that, and nobody diagnosed. Notes say where to look; acceptance is behaviour.
 // Decision 232: every line of the brief is re-read in each of the lead's calls, so each rule is said once; that a call
 // with other values is refused is in the report's answer and in the refusal itself.
-const SPEC = 'then the spec: the goal, where to look (the files and symbols the request names, what you saw; never how or where to fix it) and the acceptance check (the behaviour the request asks for, not a design).';
+// Decision 234: an acceptance check worded as a test run ("run the existing tests") sent workers into whole-suite runs;
+// checking is the router's, so the check names behaviour and at most one test file.
+const SPEC = 'then the spec: the goal, where to look (the files and symbols the request names, what you saw; never how or where to fix it) and the acceptance check (the behaviour the request asks for, not a design and not a test run, which is the router\'s; to point at a test, name one test file).';
 const PROMPT_SHAPE = `   The prompt starts with the lines "[subtask:<ID>]", "[scope: <comma-separated globs it may write>]" and, if you tag it, "[difficulty: routine|moderate|hard]"; ${SPEC} Use the values in the router's answer for the role and that difficulty.`;
 // Decision 232: with the values in the brief the lead reports no request difficulty, so every subtask says its own.
 const PROMPT_SHAPE_LISTED = `   The prompt starts with the lines "[subtask:<ID>]", "[scope: <comma-separated globs it may write>]" and "[difficulty: routine|moderate|hard]"; ${SPEC} Tag each subtask with its difficulty and pass that difficulty's model and effort from the list; a call with other values is refused with the right ones.`;
@@ -445,8 +447,8 @@ const reportedLine = (t: TriageResult, d: Difficulty): string => t.difficultySou
 // Decision 231: untagged, a coder that changes source runs at the request's difficulty and the rest (tests, docs, checks)
 // at routine, so the lead tags the hard parts.
 const splitLine = (parallel: boolean, listed = false): string => `   ${listed
-  ? 'Split by difficulty too: a bug\'s fix is a coder subtask at the request\'s difficulty; a reproduction, the changelog, the checks and a summary are routine.'
-  : 'Split by difficulty too and tag the hard parts: a bug\'s fix is a coder subtask at the request\'s difficulty (untagged, and never below it); a reproduction, the changelog, the checks and a summary need no tag and run as routine.'}${parallel ? '' : ' Independent subtasks go out together, in one message.'}`;
+  ? 'Split by difficulty too: a bug\'s fix is a coder subtask at the request\'s difficulty; a reproduction, the changelog and a summary are routine.'
+  : 'Split by difficulty too and tag the hard parts: a bug\'s fix is a coder subtask at the request\'s difficulty (untagged, and never below it); a reproduction, the changelog and a summary need no tag and run as routine.'} The router runs the checks: a tester only for tests the request asks for.${parallel ? '' : ' Independent subtasks go out together, in one message.'}`;
 // Decision 232: the router's floor, said where the lead tags the coder (a lower tag would be refused).
 const floorLine = (d: Difficulty): string => `The request's difficulty is ${d} (the router's floor): tag a coder that changes source code ${d}.`;
 // Decision 230: the first look judges size and difficulty only; the worker gets the request verbatim and traces the cause.

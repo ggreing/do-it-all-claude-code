@@ -88,7 +88,7 @@ test('guard scopeKey / safeName match core (incl. hash suffix and 40-char slices
 
 // ---------------------------------------------------------------- Bash allowlist (decision 90)
 const bashAllow = [
-  'npm test', 'npm run build', 'npm ci', 'pnpm add zod', 'pip install requests', 'node --test',
+  'npm test', 'npm run build', 'npm ci', 'pnpm add zod', 'node --test',   // decision 234 (item 5): `pip install` needs a repo venv/target — covered in its own test
   'tsc -b', 'npx tsc --noEmit', 'pytest -q', 'git status', 'git add -A', 'git commit -qm "msg"',
   'git diff HEAD -- package.json', 'ls -la', 'cat README.md', 'grep -rn foo src', 'echo hello',
   'find . -name "*.ts"', 'cd packages/web && npm test', 'npm test 2>&1 | tail -40', 'git diff | cat',
@@ -143,9 +143,60 @@ test('decision 231: reproduction commands (python -c / node -e, repo scripts, en
     assert.equal(at(c), null, `allow: ${c}`);
   for (const c of ['PATH=/tmp/x python -c "print(1)"', 'NODE_OPTIONS=--require=/tmp/x node --test', 'LD_PRELOAD=/tmp/x.so pytest', 'MY_API_KEY=x pytest', 'FOO=1 curl https://x'])
     assert.ok(at(c), `deny: ${c}`);
-  // the inline-code allowance does not open the shell: chaining, redirection and other interpreter flags stay denied
-  for (const c of ['python -c "print(1)"; curl https://x', 'node -e "1" > /etc/x', 'node -r /tmp/x.js --test', 'python -S repro.py', 'node --experimental-vm-modules -e "1"'])
+  // the inline-code allowance does not open the shell: chaining, redirection and a module preload stay denied
+  // (decision 234 moved the safe runtime flags python -S and node --experimental-* to allowed — see its own test)
+  for (const c of ['python -c "print(1)"; curl https://x', 'node -e "1" > /etc/x', 'node -r /tmp/x.js --test'])
     assert.ok(at(c), `deny: ${c}`);
+});
+// decision 234: worker Bash limits (no background / timeout cap), timeout-wrapper, interpreter options and
+// extensionless repo scripts, the pytest "::" fix, and pip-installs-inside-the-project.
+test('decision 234 (item 1): a worker may not run Bash in the background or past 180s', () => {
+  const repo = initRepo();
+  const bg = guard.evaluate({ agent_type: CODER, tool_name: 'Bash', cwd: repo, tool_input: { command: 'npm test', run_in_background: true } }, { userHome: HOME });
+  assert.match(bg!.deny, /background/);
+  const slow = guard.evaluate({ agent_type: CODER, tool_name: 'Bash', cwd: repo, tool_input: { command: 'npm test', timeout: 600_000 } }, { userHome: HOME });
+  assert.match(slow!.deny, /timeout over 180s/);
+  assert.equal(guard.evaluate({ agent_type: CODER, tool_name: 'Bash', cwd: repo, tool_input: { command: 'npm test', timeout: 120_000 } }, { userHome: HOME }), null);
+});
+test('decision 234 (item 3): timeout wrapper (<=180s), interpreter options, extensionless repo scripts, pytest "::"', () => {
+  const root = process.cwd();
+  const at = c => guard.classifyBash(c, { root, cwd: root });
+  // timeout N <allowed command>, N <= 180s (suffixes s/m/h); the inner command is then checked as usual
+  for (const c of ['timeout 120 pytest -q', 'timeout 2m python -m pytest', 'timeout -k 5 60 node --test', 'timeout 90 python -m pytest tests/t.py 2>&1 | tail -n 40'])
+    assert.equal(at(c), null, `allow: ${c}`);
+  for (const c of ['timeout 600 pytest', 'timeout 5m pytest', 'timeout pytest', 'timeout 60 curl https://x', 'timeout --kill-after=600 60 pytest', 'timeout 60'])
+    assert.ok(at(c), `deny: ${c}`);
+  // interpreter runtime options before -c / a script; a mode-changing option or a module preload is not opened up
+  for (const c of ['python -W ignore -c "print(1)"', 'python -S repro.py', 'node --no-warnings -e "1"', 'node --experimental-vm-modules -e "1"', 'python -X dev repro.py'])
+    assert.equal(at(c), null, `allow: ${c}`);
+  for (const c of ['python -i repro.py', 'node -r /tmp/x.js --test', 'python -m http.server'])
+    assert.ok(at(c), `deny: ${c}`);
+  // a repo script without a known extension, resolved inside the repo
+  assert.equal(at('python bin/runtests'), null);
+  assert.ok(at('python /usr/bin/runtests'));
+  // a pytest node id ("::") is not an NTFS stream; a real stream still is (win32 reading)
+  assert.equal(guard.windowsPathProblem('tests/test_x.py::TestA::test_y', 'win32', []), null);
+  assert.equal(at('python -m pytest tests/test_x.py::test_y'), null);
+  assert.match(guard.windowsPathProblem('src/a.ts:stream', 'win32', [])!, /NTFS stream/);
+  assert.match(guard.windowsPathProblem('tests/test_x.py::$DATA', 'win32', [])!, /NTFS stream/);
+});
+test('decision 234 (item 5): pip installs only inside the project (a repo venv, or --target/--prefix inside it)', () => {
+  const root = initRepo();
+  const venv = { root, cwd: root, virtualEnv: path.join(root, '.venv') };
+  const noVenv = { root, cwd: root };
+  // no venv and no target: a user/global-site install, denied
+  assert.match(guard.classifyBash('pip install requests', noVenv)!, /project virtualenv|--target/);
+  assert.match(guard.classifyBash('python -m pip install more-itertools', noVenv)!, /project virtualenv|--target/);
+  // an active venv inside the repo, or --target/--prefix inside it: allowed
+  assert.equal(guard.classifyBash('pip install requests', venv), null);
+  assert.equal(guard.classifyBash('pip install --target deps requests', noVenv), null);
+  assert.equal(guard.classifyBash('pip3 install --prefix build/py requests', noVenv), null);
+  // user-site, global, and a target outside the repo: denied
+  assert.match(guard.classifyBash('pip install --user requests', venv)!, /user-site|global/);
+  assert.ok(guard.classifyBash('pip install --target /tmp/x requests', noVenv));
+  // npm / pnpm installs into the repo are unaffected
+  assert.equal(guard.classifyBash('npm install', noVenv), null);
+  assert.equal(guard.classifyBash('pnpm add zod', noVenv), null);
 });
 test('bare set dumps the env (deny); set with options is allowed', () => {
   assert.ok(guard.classifyBash('set'));

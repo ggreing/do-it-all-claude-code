@@ -12,7 +12,7 @@ import * as guard from '../../../plugin/hooks/guard.mjs';
 const CODER = 'do-it-all-claude-code:coder';
 const WIN = process.platform === 'win32';
 
-interface World { base: string; repo: string; home: string; state: string; opts: { userHome: string; routerHome: string } }
+interface World { base: string; repo: string; home: string; state: string; opts: { userHome: string; routerHome: string; virtualEnv: string } }
 function world(): World {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ar-guard-')));
   const repo = path.join(base, 'repo'), home = path.join(base, 'home'), state = path.join(home, '.do-it-all-claude-code');
@@ -26,7 +26,9 @@ function world(): World {
   const rec = (subtaskId: string, scope: object) => JSON.stringify({ sessionId: 's1', subtaskId, role: 'coder', slot: 0, step: 's1', pairing: 'confirmed', scope });
   fs.writeFileSync(path.join(state, 'agents', 'ag1.json'), rec('A', { allowed: ['src/**'], protected: guard.PROTECTED_WRITE_PATHS }));
   fs.writeFileSync(path.join(state, 'agents', 'ag2.json'), rec('B', { allowed: ['**'], protected: guard.PROTECTED_WRITE_PATHS, unscoped: true }));
-  return { base, repo, home, state, opts: { userHome: home, routerHome: state } };
+  // decision 234 (item 5): an active virtualenv under the repo, so a plain `pip install` is allowed here; the
+  // pip-outside-the-project denials (--user, --target outside the repo) are asserted in their own cases below.
+  return { base, repo, home, state, opts: { userHome: home, routerHome: state, virtualEnv: path.join(repo, '.venv') } };
 }
 const done = (w: World) => fs.rmSync(w.base, { recursive: true, force: true });
 const call = (w: World, tool: string, tool_input: Record<string, unknown>, agent = 'ag1') =>

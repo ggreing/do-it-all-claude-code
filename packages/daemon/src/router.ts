@@ -375,6 +375,10 @@ export class Router {
         // before the result lines are made: a killed or failed status and a cost estimate change what they say
         this.#notificationStatus(agentId, ev, prompt);
         this.#notificationEstimate(agentId, prompt, latest);
+        // decision 234 (item 2): the worker's turn ended without coming back to fix its one verify failure; finalize
+        // it with the verify result now, so the lead gets a real line (not "no verification result yet") and does
+        // not run the long checks itself.
+        this.#finalizeStuckFailOnce(agentId, this.#at());
       }
       const notes = waiting.map(n => this.#leadNoteText(n));
       if (agentId) {
@@ -1101,6 +1105,31 @@ export class Router {
   }
 
   /**
+   * Decision 234 (item 2): a subtask the router blocked to fix after one verify failure (status 'running', verdict
+   * 'fail_once') whose worker does not come back with a fix — it hit its turn limit, or its stop/notification
+   * arrives with no new fix — is finalized now with the verify result the router already has, so the lead is never
+   * told "no verification result yet" and never runs the long checks itself. Not-started / env / no-failure signals
+   * leave it unverified (with decision 230's one stronger retry when it applies); a real verify failure is a miss,
+   * raising the slot as any miss does. A no-op unless the subtask is still a dangling fail_once.
+   */
+  #finalizeStuckFailOnce(agentId: string, at: string): void {
+    const agent = this.ledger.getAgent(agentId);
+    if (!agent?.requestId || !agent.subtaskId) return;
+    const sub = this.ledger.getSubtask(agent.requestId, agent.subtaskId);
+    if (!sub || sub.status !== 'running' || sub.verdict !== 'fail_once') return;
+    const failed = this.ledger.listSignals(agent.requestId, sub.id)
+      .filter(x => x.agentId === agentId && x.attempt === agent.stopCount && !x.ok && !isEnvFailure(x));
+    this.ledger.updateAgent(agentId, { stoppedAt: at });
+    if (!failed.length || failed.every(isNotStarted)) {
+      if (this.#unverifiedRetry(agent.requestId, sub, at)) return;
+      this.ledger.updateSubtask(agent.requestId, sub.id, { status: 'hitl', verdict: 'unverified' }, at);
+    } else {
+      this.#stepUpAfterMiss(agent.requestId, sub, at);
+    }
+    this.#log.info('fail_once subtask finalized: the worker did not return to fix it (decision 234 item 2)', { agentId, subtaskId: sub.id, step: sub.step });
+  }
+
+  /**
    * Decision 225/230/231: a moderate/hard subtask that came back unverified (verify never ran) jumps the slot one
    * MODEL up, once per slot per request and within the request budget, before it is left to the lead. A routine
    * subtask is left unverified as before. Decision 231 (item 3): this blind retry fires ONLY when the subtask ran
@@ -1427,9 +1456,12 @@ export class Router {
       case 'cancelled':
         return `${head}: the subagent was stopped before it finished; verify did not run${tail}. Its slot is free; dispatch it again if it is still needed.`;
       default:
+        // Decision 234 (item 2): never send the lead to run the checks itself. A fail_once reaching here was
+        // blocked once and has not come back with a fix; report what the router already found and keep the checks
+        // the router's. (The notification path finalizes such a subtask, so this is a safety net.)
         return sub.verdict === 'fail_once'
-          ? `${head}: verification failed once and the subagent was asked to fix it; no final result yet${tail}.`
-          : `${head}: no verification result yet (status ${sub.status})${tail}.`;
+          ? `${head}: verify failed once here and the subagent did not come back to fix it${firstFailure ? ` (${firstFailure})` : ''}${tail}. The router checked it — do not run the tests yourself; dispatch a fresh attempt or report to the user.`
+          : `${head}: the subagent has no verifiable result yet (status ${sub.status})${tail}. Do not run the tests yourself; wait for its result or dispatch a fresh attempt.`;
     }
   }
 
@@ -1601,21 +1633,22 @@ export class Router {
         return NONE;
       }
       const fails = agent.failCount + 1;
+      // Decision 234 (item 4), superseding decision 212's two-attempt flow: tests that did not start, by an error
+      // in no file this subtask changed (isNotStarted is set only then — verify.ts), do not get a worker fix-bounce.
+      // A fix cannot make them start, and bouncing the worker to try cost 1–2 turns per run. Finalize unverified on
+      // the FIRST stop and tell the lead directly; the slot keeps its step. Decision 230's one stronger retry for a
+      // moderate/hard subtask still applies. An error in a file it changed is an ordinary failure, bounced below.
+      if (failed.every(isNotStarted)) {
+        this.ledger.updateAgent(agentId, { stopCount: attempt, failCount: fails, stoppedAt: at });
+        if (this.#unverifiedRetry(agent.requestId, sub, at)) return NONE;
+        this.ledger.updateSubtask(agent.requestId, sub.id, { status: 'hitl', verdict: 'unverified' }, at);
+        this.#log.warn('tests did not start (error outside the subtask\'s changes): left unverified without a fix bounce', { agentId, subtaskId: sub.id, step: sub.step });
+        return NONE;
+      }
       if (fails === 1 && ev.stopHookActive !== true) {
         this.ledger.updateAgent(agentId, { stopCount: attempt, failCount: fails });
         this.ledger.updateSubtask(agent.requestId, sub.id, { verdict: 'fail_once' }, at);
         return { block: { reason: blockReason(sub.id, failed, agent.snapshot?.isolated === false) } };
-      }
-      // Decision 212: the tests did not start, before and after the subagent's fix attempt, by an error that is in
-      // no file it changed. A stronger model does not make them start: the slot keeps its step, the subtask is left
-      // unverified and the lead is told once.
-      if (failed.every(isNotStarted) && this.#notStartedBefore(agent.requestId, sub.id, agentId, attempt)) {
-        this.ledger.updateAgent(agentId, { stopCount: attempt, failCount: fails, stoppedAt: at });
-        // decision 230 (item 3): a moderate/hard subtask that could not be verified gets one retry on a stronger cell before the hand-back.
-        if (this.#unverifiedRetry(agent.requestId, sub, at)) return NONE;
-        this.ledger.updateSubtask(agent.requestId, sub.id, { status: 'hitl', verdict: 'unverified' }, at);
-        this.#log.warn('the tests did not start, before and after a fix attempt: subtask left unverified, step kept', { agentId, subtaskId: sub.id, step: sub.step });
-        return NONE;
       }
       this.ledger.updateAgent(agentId, { stopCount: attempt, failCount: fails, stoppedAt: at });
       this.#stepUpAfterMiss(agent.requestId, sub, at);
@@ -1624,12 +1657,6 @@ export class Router {
       this.#log.error('subagent_stop finish failed', { agentId, error: errorText(e) });
       return NONE;
     }
-  }
-
-  /** Decision 212: this agent's stop before `attempt` also failed only because the tests did not start. */
-  #notStartedBefore(requestId: string, subtaskId: string, agentId: string, attempt: number): boolean {
-    const before = this.ledger.listSignals(requestId, subtaskId).filter(x => x.agentId === agentId && x.attempt === attempt - 1 && !x.ok && !isEnvFailure(x));
-    return before.length > 0 && before.every(isNotStarted);
   }
 
   /** Decision 89: a router subagent's stop replayed from the spool was never verified; the lead is told. */
@@ -3157,6 +3184,6 @@ function blockReason(subtaskId: string, failed: VerifySignal[], shared: boolean)
     // decision 212: an error that kept the tests from starting may have nothing to do with the change
     failed.every(isNotStarted)
       ? 'The tests did not start, and the error is in no file you changed. If your change causes it all the same (an import, a name another file uses), fix that and finish again. If it does not, do not work around it or change the test setup: say in your report that the tests cannot start here, with the error line, and finish.'
-      : 'Fix these, re-run the checks, then finish again. If the work needs files outside your scope, do not edit them: list them under "Scope request" in your report.',
+      : 'Fix these, re-run the related tests, then finish again. If the work needs files outside your scope, do not edit them: list them under "Scope request" in your report.',
   ].join('\n');
 }

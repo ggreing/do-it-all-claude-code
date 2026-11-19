@@ -116,16 +116,21 @@ test('decision 230: the lead coordinates, tags each subtask with its difficulty 
   assert.match(text, /^Your first look only judges size and difficulty: read the request and make at most a couple of quick searches\. Do not trace the root cause, read source files in depth or draft the fix\./m);
   assert.match(text, /Every worker gets the user's request verbatim from the router, so do not copy it; the worker finds the cause\./);
   // decision 231: the notes say where to look, never how or where to fix; the acceptance check is behaviour
-  assert.ok(text.includes('then the spec: the goal, where to look (the files and symbols the request names, what you saw; never how or where to fix it) and the acceptance check (the behaviour the request asks for, not a design).'), text);
+  // decision 234: and not a test run (the router's); a test is pointed at by one file
+  assert.ok(text.includes('then the spec: the goal, where to look (the files and symbols the request names, what you saw; never how or where to fix it) and the acceptance check (the behaviour the request asks for, not a design and not a test run, which is the router\'s; to point at a test, name one test file).'), text);
+  assert.doesNotMatch(text, /run the existing tests|sanity run/i);
   // a tag is the prompt's third line, in the router's syntax
   assert.ok(text.includes('The prompt starts with the lines "[subtask:<ID>]", "[scope: <comma-separated globs it may write>]" and, if you tag it, "[difficulty: routine|moderate|hard]"; then the spec'), text);
   assert.match(text, /2\. Call the Agent tool once per subtask with these subagent types:\n/);
   // split by difficulty and tag the hard parts (decision 231): an untagged fix at the request's, untagged side work routine
-  assert.match(text, /Split by difficulty too and tag the hard parts: a bug's fix is a coder subtask at the request's difficulty \(untagged, and never below it\); a reproduction, the changelog, the checks and a summary need no tag and run as routine\./);
+  assert.match(text, /Split by difficulty too and tag the hard parts: a bug's fix is a coder subtask at the request's difficulty \(untagged, and never below it\); a reproduction, the changelog and a summary need no tag and run as routine\./);
+  // decision 234: the checks are the router's, so no tester subtask just to run them
+  assert.match(text, /run as routine\. The router runs the checks: a tester only for tests the request asks for\./);
+  assert.doesNotMatch(text, /the changelog, the checks/);
   // a parallel team says "together" in its writers line; a one-coder team in the split line
   assert.match(text, /sent in one message so they run at the same time/);
   const one = formatTriageContext({ level: 'L1', confidence: 0.9, source: 'rule', taskType: 'edit', preset: 'L1', budgetUsd: TEAM.L1.budgetUsd, rationale: 'x' }, TEAM.L1);
-  assert.match(one, /run as routine\. Independent subtasks go out together, in one message\./);
+  assert.match(one, /run as routine\. The router runs the checks: a tester only for tests the request asks for\. Independent subtasks go out together, in one message\./);
   // decision 231: the lead does not check a worker's result itself
   assert.match(text, /A report without that line is not verified yet\. Do not run or write checks of your own\./);
   assert.doesNotMatch(text, /run the build or the tests yourself/);
@@ -147,7 +152,7 @@ test('decision 232: once the router knows whether it can check results, the brie
     assert.match(text, /^2\. Call the Agent tool once per subtask with these subagent types and values:$/m);
     assert.ok(text.includes('"[subtask:<ID>]", "[scope: <comma-separated globs it may write>]" and "[difficulty: routine|moderate|hard]"; then the spec'), text);
     assert.ok(text.includes('Tag each subtask with its difficulty and pass that difficulty\'s model and effort from the list; a call with other values is refused with the right ones.'), text);
-    assert.match(text, /Split by difficulty too: a bug's fix is a coder subtask at the request's difficulty; a reproduction, the changelog, the checks and a summary are routine\./);
+    assert.match(text, /Split by difficulty too: a bug's fix is a coder subtask at the request's difficulty; a reproduction, the changelog and a summary are routine\. The router runs the checks: a tester only for tests the request asks for\./);
     // no report turn: the lead grades the parts itself and tags them
     assert.doesNotMatch(text, /router_report_triage|router's answer/, checkability);
     assert.match(text, /^Difficulty: hard if /m);

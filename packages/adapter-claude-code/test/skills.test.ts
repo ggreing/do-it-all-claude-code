@@ -176,7 +176,7 @@ test('decision 231: the router sets the values, the lead says where to look and 
   assert.match(body, /starts once on Opus at high effort/);
   // untagged: a source-changing coder at the request's difficulty, the rest routine
   assert.match(body, /tag the hard parts/);
-  assert.match(body, /Untagged, a coder that changes source code runs at the request's difficulty, and a tag never puts it below that; any other untagged subtask \(a test, the changelog, running the checks, a summary\) runs as routine/);
+  assert.match(body, /Untagged, a coder that changes source code runs at the request's difficulty, and a tag never puts it below that; any other untagged subtask \(a test, the changelog, a summary\) runs as routine/);
   // the notes say where to look, never how or where to fix; acceptance is the request's behaviour
   assert.match(body, /\*\*never how or where to fix it\*\* \(decision 231\)/);
   assert.match(body, /The acceptance check is the behaviour the request asks for, not a design/);
@@ -203,6 +203,31 @@ test('decision 231: the coder diagnoses a bug before it fixes it', () => {
   const coder = read('agents/coder.md');
   assert.match(coder, /For a bug, the lead's notes on where to look are hypotheses\. Reproduce the problem first .*trace the cause, then fix it at the cause\./);
   assert.match(coder, /If the cause is outside your allowed paths, do not work around it inside them: name it under Scope request and stop\./);
+});
+
+test('decision 234: the coder runs only the related tests, and the lead asks for behaviour, not a test run', () => {
+  const coder = read('agents/coder.md');
+  assert.doesNotMatch(coder, /run the build, typecheck, lint and tests yourself/);
+  assert.doesNotMatch(coder, /confirms the build and tests/);
+  assert.match(coder, /Run only the tests related to what you changed .*once or twice\. Never run the whole suite or a command that takes over about 2 minutes, and never start a command in the background\./);
+  assert.match(coder, /Run lint, format or type tools only when the project or the task names them\./);
+  assert.match(coder, /If the test runner does not start here .*do not repair the environment: no `pip install`, no `PYTHONPATH` or plugin tricks\. Say so under Remaining issues and finish\./);
+  // the router still runs the full checks when the coder finishes
+  assert.match(coder, /When your session ends, the router runs the build, typecheck, lint and tests/);
+  assert.doesNotMatch(coder, /npm test 2>&1/);
+  const body = read('skills/lead-orchestrator/SKILL.md');
+  assert.match(body, /not a design and not a test run \(decision 234\): checking is the router's job, so never write "run the existing tests to check" or invite a quick sanity run; to point at a test, name one test file\./);
+  assert.doesNotMatch(body, /Acceptance: npm test passes/);
+  // no tester subtask just to run the checks
+  assert.match(body, /send a tester only for tests the request asks for, never to run the checks\./);
+  assert.doesNotMatch(body, /running the checks|a tester running the checks/);
+  // the tester follows the same rules as the coder
+  const tester = read('agents/tester.md');
+  assert.match(tester, /Run only the tests you wrote and those of the code the spec names, once or twice\. Never run the whole suite or a command that takes over about 2 minutes, and never start a command in the background\./);
+  assert.match(tester, /If the test runner does not start here .*do not repair the environment: no `pip install`, no `PYTHONPATH` or plugin tricks\./);
+  assert.match(tester, /install the project's dependencies if they are missing, inside the project .*Install nothing outside it\./);
+  assert.match(tester, /When your session ends, the router runs the tests/);
+  assert.doesNotMatch(tester, /npm test 2>&1|broke a test that passed before/);
 });
 
 test('router skill documents both commands', () => {

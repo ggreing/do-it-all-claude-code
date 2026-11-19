@@ -255,21 +255,15 @@ const notify = async (f: Flow) => (await f.post({ hook_event_name: 'UserPromptSu
 const subtask = (f: Flow) => rows(f.d, 'SELECT status, verdict, step FROM subtasks')[0];
 const coderSlot = (f: Flow) => rows(f.d, "SELECT step, up_count FROM slots WHERE role = 'coder' AND slot = 0")[0];
 
-test('decision 230: a moderate subtask whose tests never start ends unverified, and the router sets up one stronger retry before the hand-back', async () => {
+test('decision 234 (item 4) + 230: a moderate subtask whose tests never start is finalized on the FIRST stop (no fix-bounce), with one stronger retry set up', async () => {
   const f = await flow([[REMOVED_ALIAS, 2]]);
   try {
     write(f.repo, 'pkg/core/variable.py', 'A = 2\n');
-    const first = await stop(f, false);
-    assert.equal(first.decision, 'block');
-    assert.match(first.reason ?? '', /- test: sh tools\/pytest\.sh '[^']+': tests did not start: pkg\/tests\/test_variable\.py - AttributeError: `np\.unicode_` was remov\.\.\. \(pytest: collection error; exit 2\)/);
-    assert.match(first.reason ?? '', /The tests did not start, and the error is in no file you changed\. If your change causes it all the same .* fix that and finish again\. If it does not, do not work around it or change the test setup/);
-    assert.doesNotMatch(first.reason ?? '', /Fix these, re-run the checks/);
-    assert.deepEqual(subtask(f), { status: 'running', verdict: 'fail_once', step: 's1' });
-
-    assert.deepEqual(await stop(f, true), {});
-    // decision 230 (item 3): a moderate subtask that ends unverified gets one stronger retry (the slot jumps a model)
-    // before it is handed back — overriding decision 212's "keep the step" for a moderate/hard subtask (routine still keeps it).
-    // decision 231 (item 3): it started below s5 (s1), so the retry fires.
+    // decision 234 (item 4): the tests did not start, by an error in no file the subtask changed, so a fix cannot
+    // make them start — the worker is not bounced. The first stop finalizes it and tells the lead directly.
+    assert.deepEqual(await stop(f, false), {});
+    // decision 230 (item 3): a moderate subtask that ends unverified gets one stronger retry (the slot jumps a
+    // model) before the hand-back. decision 231 (item 3): it started below s5 (s1), so the retry fires.
     assert.deepEqual(subtask(f), { status: 'failed', verdict: 'fail_once', step: 's1' });
     assert.deepEqual(coderSlot(f), { step: 's3', up_count: 1 });   // modelJump s1 (haiku) -> s3 (sonnet)
     assert.equal(rows(f.d, 'SELECT COUNT(*) AS c FROM step_changes')[0]!.c, 1);
@@ -287,7 +281,7 @@ test('an import the subagent broke is its failure: the block asks for a fix, and
     const first = await stop(f, false);
     assert.equal(first.decision, 'block');
     assert.match(first.reason ?? '', /- test: sh tools\/pytest\.sh '[^']+': exit 4/);
-    assert.match(first.reason ?? '', /Fix these, re-run the checks, then finish again/);
+    assert.match(first.reason ?? '', /Fix these, re-run the related tests, then finish again/);   // decision 234: related tests, not the whole suite
     assert.doesNotMatch(first.reason ?? '', /tests did not start/i);
     assert.deepEqual(await stop(f, true), {});
     assert.deepEqual(subtask(f), { status: 'failed', verdict: 'miss', step: 's1' });
@@ -296,30 +290,33 @@ test('an import the subagent broke is its failure: the block asks for a fix, and
   } finally { await f.close(); }
 });
 
-test('only a repeat counts: a subagent that breaks the import and then meets the machine\'s error is still a miss; one that fixes it and passes, passes', async () => {
-  // first its own error (an ordinary failure), then an error outside its change: not "before and after"
+test('decision 234 (item 4): a not-started result is finalized on any stop, with no "repeat" requirement — an in-change failure is still bounced first', async () => {
+  // the worker breaks the import (an in-change failure, bounced once to fix), then its tests do not start by an
+  // error outside its change: that stop finalizes it (decision 230 retry), it is not bounced a second time nor
+  // treated as a plain miss — decision 212's two-attempt requirement for not-started is superseded by item 4.
   const mixed = await flow([[BROKEN_BY_CHANGE, 4], [REMOVED_ALIAS, 2]]);
   try {
     write(mixed.repo, 'pkg/core/assumptions.py', 'B = 2\n');
     assert.equal((await stop(mixed, false)).decision, 'block');
     assert.deepEqual(await stop(mixed, true), {});
-    assert.deepEqual(subtask(mixed), { status: 'failed', verdict: 'miss', step: 's1' });
-    assert.deepEqual(coderSlot(mixed), { step: 's2', up_count: 1 });   // decision 231: miss from s1 raises to s2
+    assert.deepEqual(subtask(mixed), { status: 'failed', verdict: 'fail_once', step: 's1' });
+    assert.deepEqual(coderSlot(mixed), { step: 's3', up_count: 1 });   // moderate -> one stronger retry (modelJump), not a miss step-up
   } finally { await mixed.close(); }
-  // tests that ran and failed, then tests that do not start: also a miss
-  const failedFirst = await flow([[TESTS_FAILED, 1], [REMOVED_ALIAS, 2]]);
+});
+
+test('decision 234 (item 2): a verify failure the worker was asked to fix but never came back to is finalized on its notification, not left as "no result yet"', async () => {
+  const f = await flow([[TESTS_FAILED, 1]]);
   try {
-    write(failedFirst.repo, 'pkg/core/variable.py', 'A = 2\n');
-    assert.match((await stop(failedFirst, false)).reason ?? '', /Fix these, re-run the checks/);
-    assert.deepEqual(await stop(failedFirst, true), {});
-    assert.deepEqual(subtask(failedFirst), { status: 'failed', verdict: 'miss', step: 's1' });
-  } finally { await failedFirst.close(); }
-  // the tests do not start once, the subagent's next stop runs them: a pass
-  const recovered = await flow([[REMOVED_ALIAS, 2], ['2 passed in 0.10s\n', 0]]);
-  try {
-    write(recovered.repo, 'pkg/core/variable.py', 'A = 2\n');
-    assert.equal((await stop(recovered, false)).decision, 'block');
-    assert.deepEqual(await stop(recovered, true), {});
-    assert.deepEqual(subtask(recovered), { status: 'passed', verdict: 'meet', step: 's1' });
-  } finally { await recovered.close(); }
+    write(f.repo, 'pkg/core/variable.py', 'A = 2\n');
+    // first stop: a real verify failure (a test ran and failed) -> the worker is blocked once to fix it
+    assert.equal((await stop(f, false)).decision, 'block');
+    assert.deepEqual(subtask(f), { status: 'running', verdict: 'fail_once', step: 's1' });
+    // the worker's turn ends without coming back (its task-notification arrives, no second stop): the router
+    // finalizes the subtask with the verify result it already has; the lead line is a real result, not "no result yet".
+    const line = await notify(f);
+    assert.doesNotMatch(line, /no verification result yet|no final result yet/);
+    assert.match(line, /verify failed again after one fix attempt \(miss\)/);
+    assert.deepEqual(subtask(f), { status: 'failed', verdict: 'miss', step: 's1' });
+    assert.deepEqual(coderSlot(f), { step: 's2', up_count: 1 });   // finalized as a miss, slot raised s1 -> s2
+  } finally { await f.close(); }
 });
