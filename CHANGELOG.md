@@ -141,6 +141,14 @@ All notable changes to this project are documented here. This project adheres to
   with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`; the task's timeout and the cost cap end a run that hangs. A record
   lists the workers Claude Code stopped (`killedWorkers`) and keeps the end of the process's stderr
   (`stderrTail`). If you run the router under `claude -p` yourself, set that variable for work that takes longer.
+- **Bench: a `subagent` arrangement.** `scripts/measure107.ts --arrangements subagent` runs plain Claude Code, no
+  plugin and no router, with a fixed instruction before the task: hand the whole task, word for word, to one
+  general-purpose subagent (`--subagent-model`, default opus, at `--subagent-effort`, default high) and do nothing
+  else; `--lead` is the main session. It shows what a model does as a subagent of Claude Code with no router around
+  it, next to the same model alone (`direct`) and under the router (`auto`). A record carries `subagent`: what the
+  Agent call asked for, the models the subagent's messages ran on, what the main session did itself, and where the
+  run was not that hand-off. The stream does not show the effort a subagent ran at, so the record has the value
+  the call carried. Works with a key and with `--subscription`.
 - **Parallel writers share the checkout.** When a change has independent parts, the lead now sends one coder
   for each part in one message, in the working tree, and the router runs the build and tests once, when the last
   of them stops. A subtask the architect's plan marks `after: none` is such a part. Before, the brief asked for a

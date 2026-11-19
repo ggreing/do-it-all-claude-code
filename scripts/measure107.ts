@@ -2,10 +2,10 @@
 // Output: bench/results/measure107/{runs.jsonl,tasks.jsonl,ledger.jsonl}
 // in the format the triage scorer reads (packages/core/src/triage-eval-cli.ts regret runs.jsonl --tasks tasks.jsonl).
 //
-//   node scripts/measure107.ts --api-key-helper "<keychain cmd>" [--tasks id,id] [--arrangements direct,team-L2,team-L3,auto]
+//   node scripts/measure107.ts --api-key-helper "<keychain cmd>" [--tasks id,id] [--arrangements direct,subagent,team-L2,team-L3,auto]
 //        [--lead opus] [--effort high] [--budget 50] [--cap-scale 1] [--out dir] [--work dir] [--dry-run] [--setup-only] [--only-plan]
 //        [--reproduce-first on|observe|off] [--profile save|balanced|quality] [--direct-no-agent-tool] [--no-router-mcp]
-//        [--daemon-port <n>]
+//        [--daemon-port <n>] [--subagent-model opus] [--subagent-effort high]
 //   node scripts/measure107.ts --subscription --out <a folder of its own> [--max-percent 80] [--no-meter] [--no-transcripts] [the options above]
 //
 // - direct   : plain Claude Code, no plugin (the lead does the work alone) = router OFF. It has the Agent tool, as
@@ -13,6 +13,15 @@
 //              without the router, so leaving it out made the router look about 5 points more expensive on small
 //              requests. --direct-no-agent-tool runs it without the tool, as the measurements before decision 213
 //              did; each direct record says which (`agentTool`).
+// - subagent : plain Claude Code, no plugin, as direct is (always with the Agent tool), and the task comes after a
+//              fixed instruction (bench/src/kpi/subagent.ts, decision 233): hand the whole task, word for word, to
+//              one general-purpose subagent on --subagent-model (opus) at --subagent-effort (high), and do nothing
+//              else. --lead is the main session's model. It shows what a model does as a subagent of Claude Code
+//              with no router around it. The record is a direct run's plus `subagent`: what the Agent call
+//              carried, the models the subagent's messages ran on, what the main session did itself, and
+//              `problems` where the run was not that hand-off (it is recorded all the same). The stream does not
+//              show the effort a subagent ran at: the record has the value the call carried. The cost is split
+//              between the two (costLeadUsd, costSubagentsUsd) when they ran on different models.
 // - team-L2/3: plugin + daemon with config.forceLevel = L2 / L3 (decision 107 harness switch)
 // - auto     : plugin + daemon as a user runs it (Phase-3 KPI): automatic triage, the lead's own choice of roles,
 //              the default budgets and step rules, no forced level; holdoutRate 0 so no request is held out.
@@ -83,6 +92,7 @@ import { ALLOWED_SINCE_222, RUN_ENV, claudeArgs } from '../bench/src/kpi/run-arg
 import { analysePhases, type LedgerTiming, type StreamLine } from '../bench/src/kpi/phases.ts';
 import { mcpSeen, routerMcpReady } from '../bench/src/kpi/router-mcp.ts';
 import { leadTurns } from '../bench/src/kpi/session.ts';
+import { SUBAGENT_EFFORTS, SUBAGENT_MODELS, handOffPrompt, subagentCostSplit, subagentLine, subagentSeen } from '../bench/src/kpi/subagent.ts';
 import { loginSeen, meterLine, meterMoved, meterStop, readMeter, subscriptionRunEnv, subscriptionRunSettings, transcriptUnread, transcriptsLine } from '../bench/src/kpi/subscription.ts';
 import type { Reading } from '../bench/src/subscription/meter.ts';
 import { loadSubConfig } from '../bench/src/subscription/plan.ts';
@@ -131,8 +141,14 @@ const PROFILE = arg('profile');
 if (flag('profile') && PROFILE === undefined) { console.error(`--profile needs a value: ${PROFILES.join(', ')}`); process.exit(2); }
 if (PROFILE !== undefined && !(PROFILES as readonly string[]).includes(PROFILE)) { console.error(`--profile must be one of ${PROFILES.join(', ')}, not ${PROFILE}`); process.exit(2); }
 const CAP: Record<string, number> = Object.fromEntries(Object.entries({ L1: 2, L2: 5, L3: 10 }).map(([k, v]) => [k, v * CAP_SCALE]));
-type Arrangement = 'direct' | 'team-L2' | 'team-L3' | 'auto';
-const KNOWN: Arrangement[] = ['direct', 'team-L2', 'team-L3', 'auto'];
+type Arrangement = 'direct' | 'subagent' | 'team-L2' | 'team-L3' | 'auto';
+const KNOWN: Arrangement[] = ['direct', 'subagent', 'team-L2', 'team-L3', 'auto'];
+/** The arrangements with the plugin and a daemon; direct and subagent are plain Claude Code. */
+const routerOn = (a: Arrangement): boolean => a !== 'direct' && a !== 'subagent';
+// decision 233: the subagent the main session of a `subagent` run hands the task to
+const SUBAGENT = { model: arg('subagent-model', 'opus')!, effort: arg('subagent-effort', 'high')! };
+if (!SUBAGENT_MODELS.includes(SUBAGENT.model)) { console.error(`--subagent-model must be one of ${SUBAGENT_MODELS.join(', ')} (what the Agent tool takes), not ${SUBAGENT.model}`); process.exit(2); }
+if (!SUBAGENT_EFFORTS.includes(SUBAGENT.effort)) { console.error(`--subagent-effort must be one of ${SUBAGENT_EFFORTS.join(', ')} (what the Agent tool takes), not ${SUBAGENT.effort}`); process.exit(2); }
 const unknownArr = arrangements.filter(a => !KNOWN.includes(a));
 if (unknownArr.length) { console.error(`unknown arrangements: ${unknownArr.join(', ')} (known: ${KNOWN.join(', ')})`); process.exit(2); }
 
@@ -160,12 +176,13 @@ if (arrangements.includes('team-L3')) for (const lv of ['L3', 'L2', 'L1']) for (
 
 console.log(`plan: ${order.length} runs, lead ${LEAD}/${EFFORT}, budget $${BUDGET} (spent so far $${spent().toFixed(2)}), out ${OUT}`);
 if (arrangements.includes('direct')) console.log(`  direct runs ${DIRECT_AGENT_TOOL ? 'with' : 'without'} the Agent tool`);
-if (arrangements.some(a => a !== 'direct')) console.log(`  router runs ${ROUTER_MCP ? 'with' : 'without'} the router's MCP server, profile ${PROFILE ?? `${DEFAULT_PROFILE} (the router's default)`}`);
+if (arrangements.includes('subagent')) console.log(`  subagent runs: the main session (${LEAD}/${EFFORT}) hands the whole task to one general-purpose subagent on ${SUBAGENT.model}/${SUBAGENT.effort}; no plugin, no router`);
+if (arrangements.some(routerOn)) console.log(`  router runs ${ROUTER_MCP ? 'with' : 'without'} the router's MCP server, profile ${PROFILE ?? `${DEFAULT_PROFILE} (the router's default)`}`);
 console.log(`  every run may also use ${ALLOWED_SINCE_222.join(', ')} without a prompt (decision 222; runs before it could not)`);
 if (SUB) {
   console.log('  on the subscription login of this machine\'s Claude Code, no API key: every $ is the API-priced estimate Claude Code reports, and the budget and the caps count in it');
   console.log(METER ? `  /usage is read before each run: no run starts with a meter at ${MAX_PERCENT}% or more` : '  no /usage readings (--no-meter): a limit warning in a run stops the measurement after it');
-  if (arrangements.some(a => a !== 'direct')) console.log(TRANSCRIPTS ? '  router runs keep their transcript (the daemon reads it), in Claude Code\'s own projects folder' : '  router runs write no transcript (--no-transcripts): the router works from estimates');
+  if (arrangements.some(routerOn)) console.log(TRANSCRIPTS ? '  router runs keep their transcript (the daemon reads it), in Claude Code\'s own projects folder' : '  router runs write no transcript (--no-transcripts): the router works from estimates');
 }
 for (const [t, a] of order) console.log(`  ${t.id.padEnd(32)} ${t.level} ${a.padEnd(8)} cap $${CAP[t.level]}${doneKeys.has(`${t.id}|${a}`) ? '  (done)' : ''}`);
 if (flag('only-plan')) process.exit(0);
@@ -184,8 +201,8 @@ const cli = (home: string, ...a: string[]) => execFileSync(process.execPath, [pa
   { env: cliEnv(home), encoding: 'utf8' });
 const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8', maxBuffer: 64 << 20 });
 
-/** On the subscription login: a router run keeps its transcript unless --no-transcripts; a direct run has no reader of one. */
-const keepsTranscript = (a: Arrangement): boolean => a !== 'direct' && TRANSCRIPTS;
+/** On the subscription login: a router run keeps its transcript unless --no-transcripts; a direct or subagent run has no reader of one. */
+const keepsTranscript = (a: Arrangement): boolean => routerOn(a) && TRANSCRIPTS;
 
 function settingsFor(): string {
   return SUB ? subscriptionRunSettings() : JSON.stringify({ apiKeyHelper: HELPER, permissions: { deny: CREDENTIAL_DENY } });
@@ -200,8 +217,8 @@ async function runClaude(repo: string, configDir: string, prompt: string, a: Arr
   // after the run (mcpSeen).
   // The command line itself is bench/src/kpi/run-args.ts, shared with scripts/measure-session.ts (what a run may
   // do without a prompt is there too, decision 222).
-  const args = claudeArgs({ lead: LEAD, effort: EFFORT, capUsd, settings: settingsFor(), ...(a !== 'direct' ? { pluginDir: path.join(ROOT, 'plugin') } : {}),
-    agentTool: a !== 'direct' || DIRECT_AGENT_TOOL, strictMcp: a === 'direct' || !ROUTER_MCP, noSessionPersistence: SUB && !keepsTranscript(a) });
+  const args = claudeArgs({ lead: LEAD, effort: EFFORT, capUsd, settings: settingsFor(), ...(routerOn(a) ? { pluginDir: path.join(ROOT, 'plugin') } : {}),
+    agentTool: a !== 'direct' || DIRECT_AGENT_TOOL, strictMcp: !routerOn(a) || !ROUTER_MCP, noSessionPersistence: SUB && !keepsTranscript(a) });
   // decision 218: Claude Code names the model to the hooks of an interactive session only (SessionStart), so a
   // -p run tells the router through ANTHROPIC_MODEL, which the relay hook passes on with the prompt. It is the
   // value of --model, so the run itself is the same; every arrangement gets it, router off included.
@@ -302,10 +319,15 @@ function routerFacts(home: string) {
  * measurement takes the level's average for its arrangement.
  */
 function printEstimate(): void {
-  const priorFile = path.join(ROOT, 'bench', 'results', LEAD === 'opus' ? 'measure107' : 'measure107-sonnet', 'runs.jsonl');
-  const prior = fs.existsSync(priorFile) ? fs.readFileSync(priorFile, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l) as { taskId: string; arrangement: string; level: string; costUsd: number; wallSeconds: number }) : [];
-  const basisOf = (a: Arrangement) => (a === 'auto' ? 'team-L2' : a);
-  const levelAvg = (level: string, a: string) => {
+  const priorFileOf = (model: string) => path.join(ROOT, 'bench', 'results', model === 'opus' ? 'measure107' : 'measure107-sonnet', 'runs.jsonl');
+  const readPrior = (file: string) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l) as { taskId: string; arrangement: string; level: string; costUsd: number; wallSeconds: number }) : [];
+  const priorFile = priorFileOf(LEAD);
+  const leadPrior = readPrior(priorFile);
+  // a subagent run is priced as a direct run of the subagent's model, which does the work (the main session's few
+  // turns come on top)
+  const subPrior = arrangements.includes('subagent') ? readPrior(priorFileOf(SUBAGENT.model)) : [];
+  const basisOf = (a: Arrangement) => (a === 'auto' ? 'team-L2' : a === 'subagent' ? 'direct' : a);
+  const levelAvg = (level: string, a: string, prior: typeof leadPrior) => {
     const rs = prior.filter(r => r.level === level && r.arrangement === a);
     return rs.length ? { usd: rs.reduce((s, r) => s + Number(r.costUsd), 0) / rs.length, sec: rs.reduce((s, r) => s + Number(r.wallSeconds), 0) / rs.length } : { usd: CAP[level]! / 4, sec: 300 };
   };
@@ -314,11 +336,12 @@ function printEstimate(): void {
   for (const [t, a] of order) {
     if (doneKeys.has(`${t.id}|${a}`)) continue;
     const basis = basisOf(a);
+    const prior = a === 'subagent' ? subPrior : leadPrior;
     const hit = prior.find(r => r.taskId === t.id && r.arrangement === basis);
-    const e = hit ? { usd: Number(hit.costUsd), sec: Number(hit.wallSeconds) } : levelAvg(t.level, basis);
+    const e = hit ? { usd: Number(hit.costUsd), sec: Number(hit.wallSeconds) } : levelAvg(t.level, basis, prior);
     const tot = (totals[a] ??= { usd: 0, sec: 0, n: 0 });
     tot.usd += e.usd; tot.sec += e.sec; tot.n++;
-    console.log(`  ${t.id.padEnd(32)} ${t.level} ${a.padEnd(8)} ~$${e.usd.toFixed(2).padStart(5)} ~${String(Math.round(e.sec)).padStart(4)} s  (${hit ? `measured ${basis}` : `${t.level} average of ${basis}`})`);
+    console.log(`  ${t.id.padEnd(32)} ${t.level} ${a.padEnd(8)} ~$${e.usd.toFixed(2).padStart(5)} ~${String(Math.round(e.sec)).padStart(4)} s  (${hit ? `measured ${basis}` : `${t.level} average of ${basis}`}${a === 'subagent' ? ` of ${SUBAGENT.model}` : ''})`);
   }
   const all = Object.values(totals).reduce((s, x) => ({ usd: s.usd + x.usd, sec: s.sec + x.sec, n: s.n + x.n }), { usd: 0, sec: 0, n: 0 });
   for (const [a, x] of Object.entries(totals)) console.log(`  ${a.padEnd(8)} ${String(x.n).padStart(2)} runs  ~$${x.usd.toFixed(2)}  ~${(x.sec / 60).toFixed(0)} min`);
@@ -367,7 +390,7 @@ for (const [task, a] of order) {
   fs.appendFileSync(path.join(ws.repo, '.git', 'info', 'exclude'), '\n.claude/\n.bench-hidden/\n');
   let home: string | undefined;
   let ranProfile: string | undefined;   // the profile in the run's router config (router arrangements only)
-  if (a !== 'direct') {
+  if (routerOn(a)) {
     home = path.join(root, 'router-home');
     cli(home, 'init', '--yes', '--no-plugin', '--claude-settings', path.join(root, 'cs.json'), '--project', root);
     const cfgFile = path.join(home, 'config.json');
@@ -399,7 +422,8 @@ for (const [task, a] of order) {
   if (flag('setup-only')) { console.log(`setup-only ${key} in ${ws.repo}`); if (home) cli(home, 'stop'); continue; }
   console.log(`run ${key} (cap $${cap.toFixed(2)})`);
   const streamFile = path.join(OUT, 'streams', `${key.replace(/[^A-Za-z0-9_.-]/g, '_')}.jsonl`);
-  const r = await runClaude(ws.repo, ws.configDir, ws.prompt, a, cap, task.limits.timeoutSec, home, streamFile);
+  // decision 233: a subagent run's prompt is the hand-off instruction, then the task as it is
+  const r = await runClaude(ws.repo, ws.configDir, a === 'subagent' ? handOffPrompt(ws.prompt, SUBAGENT) : ws.prompt, a, cap, task.limits.timeoutSec, home, streamFile);
   const costUsd = Number(r.out?.total_cost_usd ?? 0);
   fs.appendFileSync(ledgerFile, JSON.stringify({ key, costUsd, at: new Date().toISOString(), ...(SUB ? { subscription: true } : {}) }) + '\n');
   if (home) { try { cli(home, 'stop'); } catch { /* already down */ } }
@@ -417,7 +441,7 @@ for (const [task, a] of order) {
   // decision 213: the session must hold the router's MCP server in a router run that asked for it, and no other
   // server in any run. A run that does not is not the arrangement being measured: its cost is in the ledger, it
   // gets no record (so it is run again), and the measurement stops here.
-  const mcp = mcpSeen(r.lines, a !== 'direct' && ROUTER_MCP);
+  const mcp = mcpSeen(r.lines, routerOn(a) && ROUTER_MCP);
   if (mcp.problem) { console.error(`stopped after ${key} ($${costUsd.toFixed(3)} spent on it): ${mcp.problem}`); process.exit(3); }
   const facts = home ? routerFacts(home) : {};
   const phases = analysePhases(r.lines, r.ms, home ? routerTiming(home, r.startedAt) : null);
@@ -433,12 +457,16 @@ for (const [task, a] of order) {
   if (METER) { reading = await meter(`after ${key}`); console.log(`/usage: ${meterLine(reading)}`); }
   const killed = killedWorkers(r.lines);
   const models = Object.entries(r.out?.modelUsage ?? {}).map(([m, u]: [string, any]) => ({ model: m, costUsd: Number(u.costUSD ?? 0) }));
+  // decision 233: what the stream shows of the hand-off, and the cost of each side when their models differ
+  const handOff = a === 'subagent' ? subagentSeen(r.lines, ws.prompt, SUBAGENT) : null;
+  const split = handOff ? subagentCostSplit(handOff, r.out?.modelUsage, costUsd) : null;
   const rec = {
     taskId: task.id, arrangement: a, level: task.level, leadModel: LEAD, leadEffort: EFFORT, rep: 1, allowedSince222: true,
     passed: graded.pass, grade: graded.detail, costUsd, wallSeconds: Math.round(r.ms / 1000),
-    costLeadUsd: a === 'direct' ? costUsd : (facts as any).costLeadUsd, costSubagentsUsd: a === 'direct' ? 0 : (facts as any).costSubagentsUsd,
+    costLeadUsd: a === 'direct' ? costUsd : handOff ? split?.leadUsd : (facts as any).costLeadUsd, costSubagentsUsd: a === 'direct' ? 0 : handOff ? split?.subagentUsd : (facts as any).costSubagentsUsd,
     // over every result line of the run: a lead woken by its background workers writes one per turn, and num_turns counts one turn
-    leadCalls: leadTurns(r.lines), models, ...stats, ...(a === 'direct' ? { outcome: 'router-off', levelChosen: null, agentTool: DIRECT_AGENT_TOOL } : { routerMcp: ROUTER_MCP, profile: ranProfile }), ...facts,
+    leadCalls: leadTurns(r.lines), models, ...stats, ...(routerOn(a) ? { routerMcp: ROUTER_MCP, profile: ranProfile } : { outcome: 'router-off', levelChosen: null, agentTool: a === 'subagent' || DIRECT_AGENT_TOOL }), ...facts,
+    ...(handOff ? { subagent: handOff } : {}),
     mcp: { seen: mcp.seen, servers: mcp.servers.map(s => `${s.name} (${s.status})`), routerTools: mcp.routerTools },
     // decision 226: costUsd and the other $ of this record are then API-priced estimates
     ...(login ? { subscription: true, apiKeySource: login.apiKeySource, claudeVersion: login.version, transcript: keepsTranscript(a), limitEvents: login.limitEvents, meters: METER ? meterMoved(before, reading) : null } : {}),
@@ -450,12 +478,13 @@ for (const [task, a] of order) {
   };
   fs.appendFileSync(runsFile, JSON.stringify(rec) + '\n');
   const f = facts as { levelChosen?: string | null; outcome?: string | null; leadEdits?: number; noChanges?: number };
-  const routed = a === 'direct' ? '' : ` ${f.levelChosen ?? '?'} ${f.outcome ?? '?'}${f.leadEdits ? ` lead-edits=${f.leadEdits}` : ''}${f.noChanges ? ` no-changes=${f.noChanges}` : ''}`
+  const routed = a === 'direct' ? '' : handOff ? (split ? ` main session $${split.leadUsd.toFixed(3)} / subagent $${split.subagentUsd.toFixed(3)}` : ' (no split of the cost: the main session and the subagent are not on two models)') : ` ${f.levelChosen ?? '?'} ${f.outcome ?? '?'}${f.leadEdits ? ` lead-edits=${f.leadEdits}` : ''}${f.noChanges ? ` no-changes=${f.noChanges}` : ''}`
     // the router's own rows: the lead's from its transcript (none read, none recorded), the workers' from theirs or an estimate
     + ` lead ${rec.costLeadUsd === undefined ? 'not recorded' : `$${Number(rec.costLeadUsd).toFixed(3)}`} / workers $${Number(rec.costSubagentsUsd ?? 0).toFixed(3)}`;
   console.log(`  -> ${graded.pass ? 'PASS' : 'FAIL'} ${graded.detail} $${costUsd.toFixed(3)} ${rec.wallSeconds}s${routed}; spent $${spent().toFixed(2)} / $${BUDGET}`);
   const ws1 = phases.workers;
   console.log(`     phases: startup ${phases.startupSeconds ?? '?'}s, lead before 1st worker ${phases.leadBeforeFirstWorkerSeconds ?? '-'}s, ${ws1.length} worker(s) active ${phases.workersActiveSeconds ?? '-'}s (start delays ${ws1.map(w => w.startDelaySeconds ?? '?').join('/') || '-'}s), lead wrap-up ${phases.leadFinishSeconds ?? '-'}s, verify ${phases.verify.totalSeconds}s, hooks ${phases.hooks.totalSeconds}s x${phases.hooks.count}`);
+  if (handOff) { console.log(`     ${subagentLine(handOff)}`); for (const p of handOff.problems) console.log(`     not the hand-off asked for: ${p}`); }
   if (killed.length) console.log(`     ${killed.length} worker(s) stopped by Claude Code before finishing (${killed.map(k => `${k.agent ?? 'agent'} at ${k.atSeconds}s`).join(', ')}): the change may be incomplete, and the router has no stop for them`);
   // decision 226: the run is recorded; what it showed about the login's limits decides whether another may start
   if (login?.warning) console.log(`     ${login.warning}`);

@@ -3,7 +3,9 @@
 // model in its environment, the names of the environment variables it got (never their values, but for the config
 // folder's and the print-mode background wait ceiling's) and the start of the prompt on stdin to calls.jsonl. A
 // step's `stderr` text is written to stderr. A line's text may carry {{t}} for the
-// milliseconds since it started and {{session}} for the session id on its command line.
+// milliseconds since it started, {{session}} for the session id on its command line, and {{task}} for the prompt
+// on stdin after a "--- task ---" line (the whole prompt when it has none), as a session that hands its task on
+// would repeat it.
 // scenario.json is a list of steps, or { calls: [steps of the 1st call, steps of the 2nd, ...] } for a session of
 // several processes (the last list repeats). A step may `copy` a folder onto the working directory before its
 // line, which stands in for the edits a real session makes.
@@ -29,9 +31,11 @@ const lists = usage ? scenario.usage ?? [[]] : Array.isArray(scenario) ? [scenar
 const steps = lists[Math.min(nth, lists.length - 1)];
 const flagAt = Math.max(args.indexOf('--session-id'), args.indexOf('--resume'));
 const session = flagAt >= 0 ? args[flagAt + 1] ?? '' : '';
+const MARK = '--- task ---\n';
+const task = JSON.stringify(prompt.includes(MARK) ? prompt.slice(prompt.indexOf(MARK) + MARK.length) : prompt).slice(1, -1);
 for (const step of steps) {
   if (step.pauseMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, step.pauseMs);
   if (step.copy) fs.cpSync(step.copy, process.cwd(), { recursive: true, force: true });
   if (step.stderr) fs.writeSync(2, step.stderr);
-  if (step.line) fs.writeSync(1, JSON.stringify(step.line).replace('{{t}}', String(Date.now() - t0)).replace('{{session}}', session) + '\n');
+  if (step.line) fs.writeSync(1, JSON.stringify(step.line).replace('{{t}}', String(Date.now() - t0)).replace('{{session}}', session).replace('{{task}}', () => task) + '\n');
 }

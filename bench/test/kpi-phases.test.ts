@@ -13,6 +13,7 @@ import { killedWorkers, runCaptured, stderrTail, TIMING_FLAGS } from '../src/kpi
 import { RUN_ENV } from '../src/kpi/run-args.ts';
 import { ROUTER_TOOL_PREFIX, mcpSeen } from '../src/kpi/router-mcp.ts';
 import { projectFolderName, projectFolderOf, subscriptionRunEnv, transcriptUnread, transcriptsLine } from '../src/kpi/subscription.ts';
+import { TASK_MARK, handOffPrompt, subagentCostSplit, subagentLine, subagentSeen } from '../src/kpi/subagent.ts';
 import { freePort, noPluginCalls, safeEnv, type SafeEnv } from './kpi-safe-env.ts';
 
 const BENCH = fileURLToPath(new URL('..', import.meta.url));
@@ -377,7 +378,7 @@ const runSteps = (init: Record<string, unknown> = {}, limit: Record<string, unkn
   { pauseMs: 30, line: { type: 'rate_limit_event', rate_limit_info: limit } },
   { pauseMs: 30, line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 2, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 } } } },
 ];
-interface FakeCall { args: string[]; cwd: string; usage: boolean; env: string[]; configDir: string | null; anthropicModel: string | null; bgWaitCeiling: string | null }
+interface FakeCall { args: string[]; cwd: string; usage: boolean; env: string[]; configDir: string | null; anthropicModel: string | null; bgWaitCeiling: string | null; prompt: string }
 
 /** A measure107 run on the subscription login with the fake claude; the parent's environment holds credential variables. */
 function subRun(name: string, scenario: { calls: unknown[][]; usage?: unknown[][] }, extra: string[] = [], arrangement = 'direct') {
@@ -527,4 +528,137 @@ test('measure107 --subscription, a router run: the plugin and its transcript as 
   // --no-transcripts: the plan says what that costs
   const plan = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'measure107.ts'), '--subscription', '--no-transcripts', '--only-plan', '--arrangements', 'auto', '--tasks', 'c-l1-01', '--out', path.join(tmp, 'out-nt'), '--work', s.work], { encoding: 'utf8', timeout: 60_000 });
   assert.match(plan.stdout, /router runs write no transcript \(--no-transcripts\): the router works from estimates/);
+});
+
+// ---- decision 233: the subagent arrangement (plain Claude Code; the main session hands the whole task to one subagent)
+
+const TASK = 'Fix the case.\n\nThe failing test is in test/case.test.ts; keep the other tests passing.';
+const ASK = { model: 'opus', effort: 'high' };
+const mainMsg = (t: number, ...content: unknown[]) => L(t, { type: 'assistant', parent_tool_use_id: null, message: { model: 'claude-sonnet-5-5', content } });
+const subMsg = (t: number, model: string) => L(t, { type: 'assistant', parent_tool_use_id: 'ag', message: { model, content: [tool(`w${t}`, 'Read', { file_path: 'src/case.ts' })] } });
+
+test('the subagent arrangement: the prompt hands the task on unchanged; the stream says what the call carried, what ran and what the main session did itself', () => {
+  const p = handOffPrompt(TASK, ASK);
+  assert.ok(p.endsWith(`\n${TASK_MARK}\n${TASK}`), 'the task is the end of the prompt, as it was written');
+  assert.match(p, /^Do not work on the task below yourself\./);
+  assert.match(p, /exactly one Agent tool call: subagent_type "general-purpose", model "opus", effort "high", and as its prompt the whole task, which is everything below the line "--- task ---", word for word/);
+  assert.match(p, /Do not read, search or edit files and do not run commands yourself, before the call or after it/);
+  // the hand-off as asked (a prompt that differs in white space only is the same task)
+  const good = subagentSeen([
+    mainMsg(1000, tool('ag', 'Agent', { description: 'Do the task', subagent_type: 'general-purpose', model: 'opus', effort: 'high', prompt: TASK.replace('\n\n', '\r\n\r\n') })),
+    subMsg(2000, 'claude-opus-5-5'), done(2100, 'w2000', 'ag'), subMsg(3000, 'claude-opus-5-5'), done(4000, 'ag'),
+    mainMsg(5000, { type: 'text', text: 'The subagent fixed it.' }),
+  ], TASK, ASK);
+  assert.deepEqual(good, {
+    asked: { subagentType: 'general-purpose', model: 'opus', effort: 'high' },
+    calls: [{ subagentType: 'general-purpose', model: 'opus', effort: 'high', background: null, taskVerbatim: true, addedChars: 0, error: null }],
+    ranModels: [{ model: 'claude-opus-5-5', messages: 2 }], leadModels: ['claude-sonnet-5-5'], leadOwnTools: {}, problems: [],
+  });
+  assert.equal(subagentLine(good), 'subagent: asked general-purpose opus/high; the call carried opus/high; ran on claude-opus-5-5 (2 messages); the task handed over word for word');
+  // the cost of each side, from the cost per model: a model neither named (a helper call) counts with the main session
+  const split = subagentCostSplit(good, { 'claude-sonnet-5-5': { costUSD: 0.02 }, 'claude-opus-5-5[1m]': { costUSD: 0.3 }, 'claude-haiku-5-5': { costUSD: 0.001 } }, 0.321)!;
+  assert.deepEqual([split.leadUsd, split.subagentUsd].map(x => Math.round(x * 1000) / 1000), [0.021, 0.3]);
+  // not as asked: the main session read a file first, rewrote the task, left the model out and named another effort;
+  // the subagent then ran on the main session's model, so the cost cannot be split
+  const off = subagentSeen([
+    mainMsg(500, tool('r', 'Read', { file_path: 'src/case.ts' })), done(600, 'r'),
+    mainMsg(1000, tool('ag', 'Agent', { subagent_type: 'general-purpose', effort: 'medium', run_in_background: true, prompt: 'Please fix the case in src/case.ts' })),
+    subMsg(2000, 'claude-sonnet-5-5'),
+  ], TASK, ASK);
+  assert.deepEqual([off.calls[0]!.model, off.calls[0]!.effort, off.calls[0]!.background, off.calls[0]!.taskVerbatim, off.leadOwnTools], [null, 'medium', true, false, { Read: 1 }]);
+  assert.deepEqual(off.problems, [
+    'an Agent call asked for general-purpose no model/medium, not general-purpose opus/high',
+    'an Agent call did not carry the task word for word',
+    'a subagent ran on claude-sonnet-5-5, not on opus',
+    'the main session worked itself (Read x1)',
+  ]);
+  assert.equal(subagentCostSplit(off, { 'claude-sonnet-5-5': { costUSD: 0.1 } }, 0.1), null);
+  assert.match(subagentLine(off), /the call carried no model\/medium; ran on claude-sonnet-5-5 \(1 messages\); the task NOT handed over word for word$/);
+  // the task with a line of the main session's own before it: handed over, and the record says how much was added
+  const added = subagentSeen([mainMsg(1000, tool('ag', 'Agent', { subagent_type: 'general-purpose', model: 'opus', effort: 'high', prompt: `Task:\n${TASK}` })), subMsg(2000, 'claude-opus-5-5')], TASK, ASK);
+  assert.deepEqual([added.calls[0]!.taskVerbatim, added.calls[0]!.addedChars, added.problems], [true, 6, ['an Agent call added 6 characters to the task']]);
+  // a call the tool refused (an input it does not take) and no other; and no call at all
+  const refused = subagentSeen([
+    mainMsg(1000, tool('ag', 'Agent', { subagent_type: 'general-purpose', model: 'opus', effort: 'high', prompt: TASK })),
+    L(1100, { type: 'user', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: 'ag', is_error: true, content: [{ type: 'text', text: 'InputValidationError: unrecognized key "effort"' }] }] } }),
+  ], TASK, ASK);
+  assert.deepEqual([refused.calls[0]!.error, refused.problems], ['InputValidationError: unrecognized key "effort"', ['the Agent tool refused a call (InputValidationError: unrecognized key "effort")']]);
+  const none = subagentSeen([mainMsg(1000, tool('e', 'Edit', { file_path: 'src/case.ts' })), done(1100, 'e')], TASK, ASK);
+  assert.deepEqual(none.problems, ['the main session made no Agent call: the task was not handed to a subagent', 'the main session worked itself (Edit x1)']);
+  assert.match(subagentLine(none), /the call carried nothing; ran on nothing seen; no hand-off$/);
+});
+
+test('measure107, the subagent arrangement: plain Claude Code with the hand-off instruction before the task, on the subscription login and with a key', () => {
+  // a main session that does as told: one Agent call with the task as it got it, a subagent on Opus, then the result
+  const handOff = [
+    ...runSteps().slice(0, 2),
+    { line: { type: 'assistant', parent_tool_use_id: null, message: { model: 'claude-sonnet-5-5', content: [{ type: 'tool_use', id: 'ag', name: 'Agent', input: { description: 'Do the task', subagent_type: 'general-purpose', model: 'opus', effort: 'high', prompt: '{{task}}' } }] } } },
+    { pauseMs: 30, line: { type: 'assistant', parent_tool_use_id: 'ag', message: { model: 'claude-opus-5-5', content: [{ type: 'tool_use', id: 'w1', name: 'Read', input: { file_path: 'src/case.ts' } }] } } },
+    { line: { type: 'user', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: 'ag', content: 'done' }] } } },
+    { pauseMs: 30, line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.05, num_turns: 2, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 }, 'claude-opus-5-5': { costUSD: 0.04 } } } },
+  ];
+  // --direct-no-agent-tool is about the direct arrangement: a subagent run has the Agent tool all the same
+  const s = subRun('subagent', { calls: [handOff], usage: [usageSteps(10)] }, ['--direct-no-agent-tool'], 'subagent');
+  assert.equal(s.r.status, 0, s.text);
+  const run = s.runs[0]!;
+  // plain Claude Code: no plugin, no MCP server, no router home, no transcript; the main session is --lead
+  assert.ok(!run.args.includes('--plugin-dir') && run.args.includes('--strict-mcp-config') && run.args.includes('--no-session-persistence'), run.args.join(' '));
+  assert.deepEqual([run.args[run.args.indexOf('--model') + 1], run.args[run.args.indexOf('--tools') + 1], run.anthropicModel], ['sonnet', 'Read,Edit,Write,Glob,Grep,Bash,Agent', 'sonnet']);
+  assert.ok(!run.env.includes('DO_IT_ALL_CLAUDE_CODE_HOME') && run.env.includes('CLAUDE_CODE_SKIP_PROMPT_HISTORY') && !run.env.includes('ANTHROPIC_API_KEY'));
+  // nothing in the run's environment makes the Agent tool drop `model` or `effort` from its input
+  for (const k of ['CLAUDE_CODE_EFFORT_LEVEL', 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_SUBAGENT_EFFORT']) assert.ok(!run.env.includes(k), k);
+  assert.ok(!fs.existsSync(path.join(s.work, 'c-l1-01-subagent', 'router-home')), 'no router home for a run without the router');
+  assert.match(run.prompt, /^Do not work on the task below yourself\. Your only job in this session is to hand/);
+  const [rec] = records(s.out);
+  assert.deepEqual([rec!.arrangement, rec!.outcome, rec!.agentTool, rec!.subscription, rec!.transcript, rec!.leadModel, rec!.routerMcp], ['subagent', 'router-off', true, true, false, 'sonnet', undefined]);
+  // the fake session repeated what stood after the mark: it is the task of tasks.jsonl, word for word
+  const sub = rec!.subagent as { asked: unknown; calls: Array<Record<string, unknown>>; ranModels: unknown; leadModels: unknown; leadOwnTools: unknown; problems: string[] };
+  assert.deepEqual(sub.asked, { subagentType: 'general-purpose', model: 'opus', effort: 'high' });
+  assert.deepEqual(sub.calls, [{ subagentType: 'general-purpose', model: 'opus', effort: 'high', background: null, taskVerbatim: true, addedChars: 0, error: null }]);
+  assert.deepEqual([sub.ranModels, sub.leadModels, sub.leadOwnTools, sub.problems], [[{ model: 'claude-opus-5-5', messages: 1 }], ['claude-sonnet-5-5'], {}, []]);
+  assert.deepEqual([rec!.costUsd, Math.round(rec!.costLeadUsd * 1000) / 1000, rec!.costSubagentsUsd], [0.05, 0.01, 0.04]);
+  assert.ok(fs.existsSync(path.join(s.out, 'patches', 'c-l1-01_subagent.diff')) && fs.existsSync(path.join(s.out, 'streams', 'c-l1-01_subagent.jsonl')));
+  assert.match(s.text, /subagent runs: the main session \(sonnet\/high\) hands the whole task to one general-purpose subagent on opus\/high; no plugin, no router/);
+  assert.match(s.text, /-> (PASS|FAIL) .* main session \$0\.010 \/ subagent \$0\.040;/);
+  assert.match(s.text, /subagent: asked general-purpose opus\/high; the call carried opus\/high; ran on claude-opus-5-5 \(1 messages\); the task handed over word for word/);
+  assert.doesNotMatch(s.text, /not the hand-off asked for|transcripts of the router runs|router runs /);
+
+  // with a key, and a main session that did the task itself: recorded all the same, and the record and the console say so
+  const fakeDir = path.join(tmp, 'fake-own');
+  fs.mkdirSync(fakeDir);
+  const fake = path.join(fakeDir, 'kpi-fake-claude.mjs');
+  fs.copyFileSync(path.join(BENCH, 'test', 'kpi-fake-claude.mjs'), fake);
+  fs.writeFileSync(path.join(fakeDir, 'scenario.json'), JSON.stringify([
+    { line: { type: 'system', subtype: 'init' } },
+    { line: { type: 'assistant', parent_tool_use_id: null, message: { model: 'claude-sonnet-5-5', content: [{ type: 'tool_use', id: 'r', name: 'Read', input: { file_path: 'src/case.ts' } }] } } },
+    { line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 2, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 } } } },
+  ]));
+  const out = path.join(tmp, 'out-own');
+  const script = path.join(ROOT, 'scripts', 'measure107.ts');
+  const own = spawnSync(process.execPath, [script, '--api-key-helper', 'not-a-real-helper', '--arrangements', 'subagent', '--subagent-model', 'sonnet', '--subagent-effort', 'medium', '--tasks', 'c-l1-01', '--lead', 'sonnet', '--out', out, '--work', path.join(tmp, 'work-own')], {
+    encoding: 'utf8', timeout: 240_000, env: safeEnv(tmp, 'own', { BENCH_CLAUDE_BIN: fake }).env,
+  });
+  assert.equal(own.status, 0, own.stdout + own.stderr);
+  const call = JSON.parse(fs.readFileSync(path.join(fakeDir, 'calls.jsonl'), 'utf8').trim().split('\n')[0]!) as FakeCall;
+  assert.ok(!call.args.includes('--plugin-dir') && call.args.includes('--strict-mcp-config') && !call.args.includes('--no-session-persistence'));
+  const [ownRec] = records(out);
+  assert.deepEqual([ownRec!.subagent.asked, ownRec!.subagent.calls, ownRec!.subagent.leadOwnTools, ownRec!.costLeadUsd, ownRec!.costSubagentsUsd, ownRec!.subscription],
+    [{ subagentType: 'general-purpose', model: 'sonnet', effort: 'medium' }, [], { Read: 1 }, undefined, undefined, undefined]);
+  assert.match(own.stdout, /hands the whole task to one general-purpose subagent on sonnet\/medium/);
+  assert.match(own.stdout, /-> (PASS|FAIL) .* \(no split of the cost: the main session and the subagent are not on two models\);/);
+  assert.match(own.stdout, /not the hand-off asked for: the main session made no Agent call: the task was not handed to a subagent\n\s+not the hand-off asked for: the main session worked itself \(Read x1\)/);
+
+  // what the Agent tool does not take is refused before anything starts; the estimate prices a subagent run as a
+  // direct run of the subagent's model
+  const plan = (...extra: string[]) => spawnSync(process.execPath, [script, '--arrangements', 'subagent', '--tasks', 'c-l1-01', '--lead', 'sonnet', '--out', path.join(tmp, 'out-plan233'), '--work', path.join(tmp, 'work-own'), ...extra], { encoding: 'utf8', timeout: 60_000 });
+  for (const [bad, said] of [[['--subagent-model', 'claude-opus-5-5'], /--subagent-model must be one of sonnet, opus, haiku, fable \(what the Agent tool takes\), not claude-opus-5-5/], [['--subagent-effort', 'ultra'], /--subagent-effort must be one of low, medium, high, xhigh, max/]] as Array<[string[], RegExp]>) {
+    const r = plan('--only-plan', ...bad);
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, said);
+  }
+  const dry = plan('--dry-run');
+  assert.equal(dry.status, 0, dry.stdout + dry.stderr);
+  // (the earlier measurements are not part of a checkout: with them the cell is the measured one, without them the level's average)
+  assert.match(dry.stdout, /c-l1-01\s+L1 subagent\s+~\$\s*\d+\.\d\d\s+~\s*\d+ s {2}\((measured direct|L1 average of direct) of opus\)/);
+  assert.match(spawnSync(process.execPath, [script, '--only-plan', '--arrangements', 'nobody', '--out', path.join(tmp, 'out-plan233')], { encoding: 'utf8', timeout: 60_000 }).stderr, /unknown arrangements: nobody \(known: direct, subagent, team-L2, team-L3, auto\)/);
 });
