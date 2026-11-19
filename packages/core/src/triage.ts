@@ -22,7 +22,7 @@
 // repository signals predicted the size of the fix (AUC 0.45-0.64), so stage 1 does not guess.
 import { DEFAULT_PRESETS, type LeadModelClass } from './presets.ts';
 import { DEFAULT_PROFILE, memberStartCell, type Profile } from './profiles.ts';
-import { DEFAULT_DIFFICULTY, DIFFICULTIES, ladderStep } from './ladder.ts';
+import { DEFAULT_DIFFICULTY } from './ladder.ts';
 import { difficultyFloor } from './difficulty-floor.ts';
 import type { Difficulty, LadderId, Level, Role, TaskType, TeamPreset, TriageResult } from './types.ts';
 
@@ -377,13 +377,11 @@ export function uncertainLevel(presets: Record<Level, TeamPreset>): Level {
   return presets.L1.leadDirect || presets.L2.leadDirect ? 'L1' : 'L2';
 }
 
-// Decision 230: the lead tags each subtask with its own difficulty, so a role's line gives its model/effort at each
-// one (the profile notch and a teams.yaml start applied); a start the user set is the same at every difficulty.
-const agentCalls = (preset: TeamPreset, profile: Profile, fableOptIn: boolean): string[] => preset.roles.map(r => {
-  const cells = DIFFICULTIES.map(d => { const s = ladderStep(memberStartCell(r.role, r.start, r.startSet, d, profile, fableOptIn)); return `${s.alias}/${s.effort}`; });
-  const values = cells.every(c => c === cells[0]) ? `${cells[0]} at every difficulty` : DIFFICULTIES.map((d, i) => `${d} ${cells[i]}`).join(', ');
-  return `   - ${r.role}${r.count > 1 ? ` (up to ${r.count} in parallel, one subtask each)` : ''}: subagent_type "do-it-all-claude-code:${r.role}"; model/effort: ${values}`;
-});
+// Decision 231: the router sets each call's model and effort, from the subtask's difficulty and whether it can check
+// the result in this repository, and its answer gives them. The lead cannot work them out, so a role's line names the
+// subagent type only (decision 230's three cells per role are gone).
+const agentCalls = (preset: TeamPreset): string[] => preset.roles.map(r =>
+  `   - ${r.role}${r.count > 1 ? ` (up to ${r.count} in parallel, one subtask each)` : ''}: subagent_type "do-it-all-claude-code:${r.role}"`);
 
 /** The teams an uncertain lead-direct request can switch to. A `Record<Level, TeamPreset>` fits. */
 export interface EscalationTeams { L2: TeamPreset; L3?: TeamPreset }
@@ -401,7 +399,9 @@ export function l3SignalRoles(l2: TeamPreset, l3: TeamPreset, difficulty: Diffic
   return l3.roles.filter(r => r.count > 0 && cell(l2, r.role) !== cell(l3, r.role)).map(r => r.role);
 }
 
-const PROMPT_SHAPE = '   The prompt\'s first line is "[subtask:<ID>]", the second "[scope: <comma-separated globs this subtask may write>]", the third "[difficulty: routine|moderate|hard]" (this subtask\'s), then the spec (goal, files, your first-look notes, acceptance check). Pass that difficulty\'s values: "hard opus/high" is model "opus", effort "high".';
+// Decision 231: in both bugs Opus-as-worker missed, the lead's notes (written in 15 s, no file opened) prescribed where and
+// how to fix, the coder implemented just that, and nobody diagnosed. Notes say where to look; acceptance is behaviour.
+const PROMPT_SHAPE = '   The prompt\'s first line is "[subtask:<ID>]", the second "[scope: <comma-separated globs this subtask may write>]", the third "[difficulty: routine|moderate|hard]" for a subtask you tag, then the spec: the goal, where to look (the files and symbols the request names, what you saw; never how or where to fix it) and the acceptance check (the behaviour the request asks for, not a design). Model and effort: use the values in the router\'s answer for the role and that difficulty; a call with other values is refused with the right ones.';
 
 // Decision 225: size sets the team and the budget; difficulty sets where each role starts on the model x effort
 // grid. The lead reports it before its first Agent call, by the signals of docs/design/difficulty-steps.md, said
@@ -412,27 +412,29 @@ const PROMPT_SHAPE = '   The prompt\'s first line is "[subtask:<ID>]", the secon
 const DIFFICULTY_SIGNS = 'Difficulty: hard if any of these holds: the request reports wrong behaviour or an error in code you have not fully traced; no test reproduces the problem and one is not obvious; the fix must choose between plausible behaviours; the work is reasoning-heavy (an algorithm, numerics, concurrency, a parser); a first attempt is likely to be subtly wrong. Routine if all hold: you can tell where and how to fix it, a test exists or is one line, and the code is familiar. Otherwise moderate. Difficulty is not size: a two-file change can be hard. The router may set a floor from the request; the higher one is used.';
 // a lead-direct lead makes the change itself, so here "the cause is unclear" stands for the untraced bug report
 const HARD_SIGNS = 'no test reproduces it, the cause is unclear, the right behaviour is ambiguous, or the work is reasoning-heavy';
-const reportLine = (level: Level): string => `Before your first Agent call, call router_report_triage with kind "team", level "${level}", files and confidence (your estimates) and the request's difficulty.`;
+const reportLine = (level: Level): string => `Before your first Agent call, call router_report_triage with kind "team", level "${level}", files and confidence (your estimates) and the request's difficulty: its answer gives each call's model and effort.`;
 const reportedLine = (t: TriageResult, d: Difficulty): string => t.difficultySource === 'router'
   ? `The request's difficulty is ${d}: the router's floor, above your report.`
   : `The request's difficulty is ${d}, as you reported.`;
 // Decision 230: split by difficulty, not only by file. A parallel team's writers line already says to send parts together.
-const splitLine = (parallel: boolean): string => `   Split by difficulty too, and tag each subtask with its own: for a bug, the fix is a coder subtask at the request's difficulty, while a reproduction, the changelog, running the checks and a summary are routine. A coder that changes source code is never tagged below the request's difficulty.${parallel ? '' : ' Subtasks that do not need each other\'s result go out together, in one message.'}`;
+// Decision 231: untagged, a coder that changes source runs at the request's difficulty and the rest (tests, docs, checks)
+// at routine, so the lead tags the hard parts.
+const splitLine = (parallel: boolean): string => `   Split by difficulty too, and tag the hard parts: for a bug, the fix is a coder subtask, at the request's difficulty when untagged and never below it; a reproduction, the changelog, running the checks and a summary need no tag: they run as routine.${parallel ? '' : ' Subtasks that do not need each other\'s result go out together, in one message.'}`;
 // Decision 230: the first look judges size and difficulty only; the worker gets the request verbatim and traces the cause.
 // In a measurement of decision 230 the Opus lead had spent 78% of what Opus alone costs before it delegated.
-const THIN_LEAD = 'Your first look only judges size and difficulty: read the request and make at most a couple of quick searches. Do not trace the root cause, read source files in depth or draft the fix. The router gives every worker the user\'s request verbatim, so do not copy it into a prompt: write the subtask (which part, the files and symbols it names, your first-look notes, the acceptance check); the worker investigates the code.';
+const THIN_LEAD = 'Your first look only judges size and difficulty: read the request and make at most a couple of quick searches. Do not trace the root cause, read source files in depth or draft the fix. The router gives every worker the user\'s request verbatim, so do not copy it into a prompt; the worker investigates the code and finds the cause.';
 
 // The router's MCP tools are not named here (decision 145): a line at the end of the first brief was read a turn
 // before it mattered and was never acted on. The daemon names the one tool that applies on the task
 // notification, and reads a reviewer's or tester's verdict from its report itself.
 
 /**
- * Brief for the lead: level, team with per-role start step (model alias + effort), budget, and the
- * exact Agent call shape. Phase 1 e2e round 1 showed a soft "follow the skill" line is ignored for
- * small tasks (decision 81), so the brief is directive and spells out the call.
+ * Brief for the lead: level, team, budget, and the exact Agent call shape. Phase 1 e2e round 1 showed a
+ * soft "follow the skill" line is ignored for small tasks (decision 81), so the brief is directive and
+ * spells out the call. Each call's model and effort are the router's, given in its answer (decision 231).
  *
  * `escalation` names the teams an uncertain lead-direct request can switch to (decisions 109, 113):
- * pass the session's presets (teams.yaml applied) so the call values are the ones the router checks.
+ * pass the session's presets (teams.yaml applied) so the roles are the ones the router checks.
  * A single preset is taken as the L2 team, and the brief then offers no L3 path.
  * The L3 team appears only as something the lead may choose (decision 119): in the uncertain brief, and
  * in a team brief whose triage has `l3Signs`. In both the lead raises the request by reporting level L3 in
@@ -443,12 +445,10 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
   opts: { leadClass?: LeadModelClass; fableOptIn?: boolean; profile?: Profile } = {}): string {
   const l2 = 'roles' in escalation ? escalation : escalation.L2;
   const l3 = 'roles' in escalation ? undefined : escalation.L3;
-  // decision 225/226: the team line's cells follow the request's difficulty (moderate before the lead reports one), the
-  // profile notch and any user override; decision 230: the call lines give each role's cells at all three difficulties.
+  // decision 231: the router's answer gives each call's model and effort, so the brief shows no cells (opts.profile and
+  // opts.fableOptIn are taken for the callers' sake; the router applies them)
   const difficulty: Difficulty = t.difficulty ?? DEFAULT_DIFFICULTY;
-  const fableOptIn = opts.fableOptIn === true;
-  const profile: Profile = opts.profile ?? DEFAULT_PROFILE;
-  const calls = (p: TeamPreset) => agentCalls(p, profile, fableOptIn);
+  const calls = agentCalls;
   // decision 225: a non-Opus lead's lead-direct brief may invite a hard report (the text keys on this).
   const invite = opts.leadClass !== undefined && opts.leadClass !== 'opus';
   // a brief written after the lead's report says what it reported instead of asking again (decision 230: also when the
@@ -457,8 +457,8 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
   const hardInvite = invite && !reported
     ? [`Small is not always easy: if your look shows the change is hard (${HARD_SIGNS}), do not edit. Call router_report_triage with kind "direct", level "${t.level}", files, lines, confidence and difficulty "hard": its answer gives the Agent call for a coder on a stronger model.`]
     : [];
-  // each role's model and effort are in its Agent call line below, so the team line gives the count and the step only
-  const team = preset.roles.map(r => `${r.role} x${r.count} @${memberStartCell(r.role, r.start, r.startSet, difficulty, profile, fableOptIn)}`).join('; ');
+  // the team line gives each role's count; its start cell is the router's (decision 231)
+  const team = preset.roles.map(r => `${r.role} x${r.count}`).join('; ');
   // Decision 83, narrowed by decision 219: writers work in the user's working tree (no merge step), also when
   // several run at the same time with scopes that share no file (decision 192 verifies them once, at the last
   // stop). A worktree each is the skill's exception, for a project with isolation on and no uncommitted input.
@@ -475,7 +475,7 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
       if (!l3 || l3.leadDirect) {
         return [
           head, direct, rubric, ...switchReport,
-          `To switch, first call router_report_triage with kind "team", level "${l2.level}", files and confidence (your estimates) and difficulty: the router re-plans this request as ${l2.level}. Then call the Agent tool once per subtask with these parameters (team preset ${l2.id}) at the subtask's difficulty, and from then on delegate as the lead-orchestrator skill describes:`,
+          `To switch, first call router_report_triage with kind "team", level "${l2.level}", files and confidence (your estimates) and difficulty: the router re-plans this request as ${l2.level}. Then call the Agent tool once per subtask, with these subagent types (team preset ${l2.id}) and the values in its answer, and from then on delegate as the lead-orchestrator skill describes:`,
           ...calls(l2),
           PROMPT_SHAPE,
         ].join('\n');
@@ -486,7 +486,7 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
       return [
         head, direct, rubric, ...switchReport,
         `Which team: the ${l2.level} team, unless the change is clearly beyond it: ${L3_SIGNS}, or edits in ${L3_SIZE_RULE.files} or more files. Only then use the ${l3.level} team. When unsure between the two, use ${l2.level}.`,
-        `To switch, first call router_report_triage with kind "team", level "${l2.level}" or "${l3.level}" (the team you chose), files and confidence (your estimates) and difficulty: the router re-plans this request at that level. Then call the Agent tool once per subtask: for the ${l3.level} team with the values its answer gives, for the ${l2.level} team with the parameters below, at each subtask's difficulty. From then on you delegate as the lead-orchestrator skill describes.`,
+        `To switch, first call router_report_triage with kind "team", level "${l2.level}" or "${l3.level}" (the team you chose), files and confidence (your estimates) and difficulty: the router re-plans this request at that level. Then call the Agent tool once per subtask with the subagent types and values its answer gives (the ${l2.level} team's types are below). From then on you delegate as the lead-orchestrator skill describes.`,
         `${l2.level} team (team preset ${l2.id}):`,
         ...calls(l2),
         PROMPT_SHAPE,
@@ -520,7 +520,8 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
   const writers = parallel
     ? '   Independent parts that write different files or directories go to one coder subtask each, sent in one message so they run at the same time, each with a [scope: ...] no other subtask writes (a file several parts need belongs to one of them). Subtasks an architect\'s plan marks "after: none" are such parts: send them together. Do not pass isolation: the writers share the working tree; the router checks each scope when its writer stops and runs the build and tests once, when the last one stops. The router refuses a writer whose scope overlaps one still running.'
     : '   Do not pass isolation: the subagent edits the working tree directly.';
-  const result = `3. Wait for every subtask's <task-notification> (Agent calls finish in the background). The router runs build, typecheck, lint and tests for each subtask and sends you the result as a line that starts with "[do-it-all-claude-code] subtask <ID>". A report without that line is not verified yet: wait for the line, and do not run the build or the tests yourself. Then check with git diff --stat that the changes are in the working tree and answer the user. For verify blocks, step changes and HITL, follow the lead-orchestrator skill.`;
+  // Decision 231: in the runs of decision 230 a lead wrote check scripts of its own; the router verifies, the lead does not.
+  const result = `3. Wait for every subtask's <task-notification> (Agent calls finish in the background). The router runs build, typecheck, lint and tests for each subtask and sends you the result as a line that starts with "[do-it-all-claude-code] subtask <ID>". A report without that line is not verified yet: wait for the line. Do not run or write checks of your own. Then check with git diff --stat that the changes are in the working tree and answer the user. For verify blocks, step changes and HITL, follow the lead-orchestrator skill.`;
   if (uncertainTeam) {
     // Decision 121: the lead staffs an unclear request. Decision 230: from L1 up every lead delegates, so a small
     // change is one coder subtask too (decision 178's one-file change the lead kept is gone).
@@ -532,14 +533,14 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
       reported ? reportedLine(t, difficulty) : DIFFICULTY_SIGNS,
       `Do not edit or write files yourself (unless the user explicitly asks you to). ${THIN_LEAD}`,
       ...(reported ? [] : [reportLine(t.level)]),
-      'Call the Agent tool once per subtask (A, B, ...) with these parameters, at the subtask\'s difficulty:',
+      'Call the Agent tool once per subtask (A, B, ...) with these subagent types:',
       ...calls(preset),
       PROMPT_SHAPE,
       splitLine(parallel),
       parallel
         ? '   Do not pass isolation: writers edit the working tree directly. Two coders at the same time: parts that write different files, sent in one message, each with its own [scope: ...]; the router runs the build and tests once, when the last one stops. An architect\'s plan comes first, a reviewer or tester after the writers.'
         : writers,
-      'Then wait for every subtask\'s <task-notification>. The router runs build, typecheck, lint and tests and sends you the result as a line that starts with "[do-it-all-claude-code] subtask <ID>". A report without that line is not verified yet: wait for the line, and do not run the build or the tests yourself. Then check git diff --stat and answer the user (verify blocks, step changes, HITL: the lead-orchestrator skill).',
+      'Then wait for every subtask\'s <task-notification>. The router runs build, typecheck, lint and tests and sends you the result as a line that starts with "[do-it-all-claude-code] subtask <ID>". A report without that line is not verified yet: wait for the line. Do not run or write checks of your own. Then check git diff --stat and answer the user (verify blocks, step changes, HITL: the lead-orchestrator skill).',
       ...raise,
     ].join('\n');
   }
@@ -554,7 +555,7 @@ export function formatTriageContext(t: TriageResult, preset: TeamPreset, escalat
     ...(parallel ? [order] : []),
     splitLine(parallel),
     ...(reported ? [reportedLine(t, difficulty)] : [DIFFICULTY_SIGNS, reportLine(t.level)]),
-    '2. Call the Agent tool once per subtask with these parameters, at the subtask\'s difficulty:',
+    '2. Call the Agent tool once per subtask with these subagent types:',
     ...calls(preset),
     PROMPT_SHAPE,
     writers,

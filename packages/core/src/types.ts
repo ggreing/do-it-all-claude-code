@@ -10,6 +10,13 @@ export type Role = 'architect' | 'ui-designer' | 'coder' | 'reviewer' | 'tester'
 /** The lead's own read of how hard a request is, reported with its size (decision 225). Default: moderate. */
 export type Difficulty = 'routine' | 'moderate' | 'hard';
 /**
+ * Decision 231: whether the router can CHECK a request's result here — a per-request property, probed once at
+ * request open (the repo's verify test command actually starts), cached per repo + HEAD. Only `'checkable'`
+ * counts as checkable for routing; `'unchecked'` (the probe ran but the tests did not start), `'no-tests'` (no
+ * test command to probe) and `'probing'` (the probe has not finished) all route as NOT checkable.
+ */
+export type Checkability = 'checkable' | 'unchecked' | 'no-tests' | 'probing';
+/**
  * A model x effort grid cell's id as stored, shown and configured (decision 225): `s1`…`s7` for the seven
  * legacy cells (Phase-0 measured, Appendix E), else `model-effort` (e.g. `sonnet-xhigh`). Kept as a string so
  * old ledgers and teams.yaml files read unchanged; `cellOf`/`cellId` in ladder.ts map it to a Cell.

@@ -52,7 +52,7 @@ async function miss(post: (h: HookInput) => Promise<Out>, repo: string, tag: str
 
 test('after a miss with the slot raised, the lead is told to dispatch again, not offered a report to the user', () => withRepo(async (d, repo, post) => {
   const told = await miss(post, repo, 'A', 'a1', 'haiku', 'low');
-  assert.match(told, /now runs one step higher, at s2 \(model="haiku", effort="high"\): a new attempt must use these values\. Dispatch subtask A again now with these values, and include what failed in its prompt\. Do not report to the user before that attempt has finished\.$/);
+  assert.match(told, /now runs one step higher, at s2 \(model="haiku", effort="high"\): a new attempt must use these values\. Dispatch subtask A again now with these values and the SAME scope \(not a narrower one\), and include what failed in its prompt; the previous attempt's changes stay in the tree as a starting point to build on, not to review\. Do not report to the user before that attempt has finished\.$/);
   assert.doesNotMatch(told, /Decide:|or report to the user/);
 }));
 
@@ -64,7 +64,7 @@ test('with the budget used up, the result keeps the choice and the Stop is not b
   await post(subStop('a1', true));
   d.ledger.db.exec('UPDATE requests SET used_usd = budget_usd');
   const told = (await post(notify('a1'))).hookSpecificOutput?.additionalContext ?? '';
-  assert.match(told, /a new attempt must use these values\. Decide: dispatch a new attempt with what failed, or report to the user\.$/);
+  assert.match(told, /a new attempt must use these values\. Decide: dispatch a new attempt with what failed \(keep the same scope; the previous changes are a starting point, not to review\), or report to the user\.$/);
   assert.deepEqual(await post(leadStop()), {});
   assert.deepEqual(request(d), { status: 'closed', stop_blocks: 0 });
 }));

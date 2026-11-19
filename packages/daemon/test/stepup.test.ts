@@ -44,20 +44,20 @@ async function miss(post: (h: HookInput) => Promise<Out>, repo: string, tag: str
 test('spec 3.5: a miss raises the slot one step; the next call for it must use the new step', () => withRepo({ 'fail.cjs': 'console.error("boom"); process.exit(1)\n' }, [{ kind: 'test', command: 'node fail.cjs' }], async (d, repo) => {
   const post = session(d, 'up', repo);
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
-  // decision 226: the default (moderate) coder starts at s3 (sonnet/medium); a miss raises within the model to s4 (sonnet/high)
-  const n = await miss(post, repo, 'A', 'a1', 'sonnet', 'medium');
-  assert.match(n.hookSpecificOutput?.additionalContext ?? '', /miss.*The coder slot 0 now runs one step higher, at s4 \(model="sonnet", effort="high"\): a new attempt must use these values\./);
+  // decision 231: a checkable repo, moderate -> source coder starts at s1 (haiku/low); a miss raises within the model to s2 (haiku/high)
+  const n = await miss(post, repo, 'A', 'a1', 'haiku', 'low');
+  assert.match(n.hookSpecificOutput?.additionalContext ?? '', /miss.*The coder slot 0 now runs one step higher, at s2 \(model="haiku", effort="high"\): a new attempt must use these values\./);
   assert.deepEqual(rows(d, "SELECT status, verdict, up_count FROM subtasks WHERE id = 'A'"), [{ status: 'failed', verdict: 'miss', up_count: 1 }]);
-  assert.deepEqual(rows(d, 'SELECT role, slot, step, up_count FROM slots'), [{ role: 'coder', slot: 0, step: 's4', up_count: 1 }]);
+  assert.deepEqual(rows(d, 'SELECT role, slot, step, up_count FROM slots'), [{ role: 'coder', slot: 0, step: 's2', up_count: 1 }]);
   // the old step is refused for that slot (it is the first free one), the new one is taken
-  assert.match(denied(await post(call('A2', 'sonnet', 'medium'))), /the coder runs at step s4 \(model="sonnet", effort="high"\) for this L2 request \(slot 0 was raised to s4 after a miss\)/);
-  assert.deepEqual(await post(call('A2', 'sonnet', 'high')), {});
-  assert.deepEqual(rows(d, "SELECT slot, step FROM subtasks WHERE id = 'A2'"), [{ slot: 0, step: 's4' }]);
-  // with slot 0 busy, the second coder slot starts at the moderate default s3 (B writes elsewhere: concurrent writers need disjoint scopes, decision 178)
-  assert.deepEqual(await post(call('B', 'sonnet', 'medium', 'lib/**')), {});
-  assert.deepEqual(rows(d, "SELECT slot, step FROM subtasks WHERE id = 'B'"), [{ slot: 1, step: 's3' }]);
+  assert.match(denied(await post(call('A2', 'haiku', 'low'))), /the coder runs at step s2 \(model="haiku", effort="high"\) for this L2 request \(slot 0 was raised to s2 after a miss\)/);
+  assert.deepEqual(await post(call('A2', 'haiku', 'high')), {});
+  assert.deepEqual(rows(d, "SELECT slot, step FROM subtasks WHERE id = 'A2'"), [{ slot: 0, step: 's2' }]);
+  // with slot 0 busy, the second coder slot starts at the moderate default s1 (B writes elsewhere: concurrent writers need disjoint scopes, decision 178)
+  assert.deepEqual(await post(call('B', 'haiku', 'low', 'lib/**')), {});
+  assert.deepEqual(rows(d, "SELECT slot, step FROM subtasks WHERE id = 'B'"), [{ slot: 1, step: 's1' }]);
   const st = (await getStatus(d.port, 'up')).body as StatusView;
-  assert.deepEqual(st.roles.filter(r => r.role === 'coder').map(r => [r.slot, r.step]), [[0, 's4'], [1, 's3']]);
+  assert.deepEqual(st.roles.filter(r => r.role === 'coder').map(r => [r.slot, r.step]), [[0, 's2'], [1, 's1']]);
   assert.deepEqual(st.stepAdjust, { up: 'on', down: 'on' });
 }));
 
@@ -97,23 +97,23 @@ test('decision 122 + 230: a ROUTINE subtask left unverified by a missing tool ke
 test('decision 230 (item 3): a MODERATE subtask left unverified by a missing tool gets one stronger retry before the hand-back', () => withRepo(ENV_FILES, ENV_COMMANDS, async (d, repo) => {
   const post = session(d, 'envm', repo);
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
-  assert.deepEqual(await post(call('A', 'sonnet', 'medium')), {});           // moderate: coder starts at s3
+  assert.deepEqual(await post(call('A', 'haiku', 'low')), {});               // decision 231: moderate + checkable -> coder starts at s1
   await post(start('m1'));
   write(repo, 'src/a.ts', 'changed\n');
   assert.deepEqual(await post(stop('m1')), {});
-  // the slot jumps a model (s3 -> s5) and the subtask is left to re-dispatch, not accepted
+  // started below s5, so a retry is set up: the slot jumps a model (s1 -> s3) and the subtask is left to re-dispatch, not accepted
   assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'failed', verdict: 'fail_once' }]);
-  assert.deepEqual(rows(d, "SELECT step, up_count FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's5', up_count: 1 }]);
+  assert.deepEqual(rows(d, "SELECT step, up_count FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's3', up_count: 1 }]);
   assert.equal(rows(d, 'SELECT detail FROM step_changes')[0]!.detail, 'unverified-retry');
   const n = await post(notify('m1'));
-  assert.match(n.hookSpecificOutput?.additionalContext ?? '', /could not be verified here \(verify did not run\)\. Because this is a moderate subtask, the router set up one stronger attempt: its slot now runs at s5 \(model="opus", effort="high"\)/);
+  assert.match(n.hookSpecificOutput?.additionalContext ?? '', /could not be verified here \(verify did not run\)\. Because this is a moderate subtask, the router set up one stronger attempt: its slot now runs at s3 \(model="sonnet", effort="medium"\)/);
 }));
 
 test('decision 122: a real failure next to a missing tool is still a failure (only the real one is reported)', () => withRepo({ 'fail.cjs': 'console.error("assertion failed"); process.exit(1)\n' },
   [{ kind: 'build', command: 'no-such-tool-xyz' }, { kind: 'test', command: 'node fail.cjs' }], async (d, repo) => {
     const post = session(d, 'mix', repo);
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
-    await post(call('A', 'sonnet', 'medium'));
+    await post(call('A', 'haiku', 'low'));                                    // decision 231: moderate + checkable -> coder starts at s1
     await post(start('m1'));
     write(repo, 'src/a.ts', 'changed\n');
     const out = await post(stop('m1'));

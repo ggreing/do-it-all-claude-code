@@ -49,10 +49,10 @@ import { fileURLToPath } from 'node:url';
 import { prepare } from '../bench/src/workspace.ts';
 import { childEnv, CREDENTIAL_DENY } from '../bench/src/secrets.ts';
 import type { Task } from '../bench/src/types.ts';
-import { claudeBin, runCaptured } from '../bench/src/kpi/capture.ts';
+import { claudeBin, killedWorkers, runCaptured, stderrTail } from '../bench/src/kpi/capture.ts';
 import { analysePhases } from '../bench/src/kpi/phases.ts';
 import { mcpSeen, routerMcpReady } from '../bench/src/kpi/router-mcp.ts';
-import { ALLOWED_SINCE_222, claudeArgs } from '../bench/src/kpi/run-args.ts';
+import { ALLOWED_SINCE_222, RUN_ENV, claudeArgs } from '../bench/src/kpi/run-args.ts';
 import { recompute } from '../bench/src/kpi/session-recompute.ts';
 import { gradeStep, leadContext, leadTurns, loadScenario, reported, sessionCost, sessionIdSeen, snapshot, snapshotDiff, stepCost, stepStatus, streamFileOf, type Reported, type StepCost } from '../bench/src/kpi/session.ts';
 import { DEFAULT_PROFILE, PROFILES, profileOf } from '../packages/core/src/profiles.ts';
@@ -205,7 +205,8 @@ for (const [a, rep] of order) {
     const args = claudeArgs({ lead: LEAD, effort: EFFORT, capUsd: cap, settings: settings(), ...(a !== 'direct' ? { pluginDir: path.join(ROOT, 'plugin') } : {}),
       agentTool: a !== 'direct' || DIRECT_AGENT_TOOL, strictMcp: a === 'direct' || !ROUTER_MCP, session: { id: sessionId, resume: i > 0 } });
     // decision 218: the lead's model for the router's hooks, as in measure107
-    const env = { ...childEnv(ws.configDir, { kind: 'api-key-helper' } as never), ANTHROPIC_MODEL: LEAD, ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
+    // RUN_ENV: no ceiling on how long print mode waits for a worker the lead is waiting for; the step's timeout and cap end it
+    const env = { ...childEnv(ws.configDir, { kind: 'api-key-helper' } as never), ANTHROPIC_MODEL: LEAD, ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}), ...RUN_ENV };
     const bin = claudeBin();
     console.log(`  step ${step.id} ${step.level} ${step.kind} (cap $${cap.toFixed(2)})`);
     const r = await runCaptured(bin.cmd, [...bin.prefix, ...args], { cwd: ws.repo, env, input: step.prompt, timeoutSec: step.limits.timeoutSec, streamFile });
@@ -229,12 +230,15 @@ for (const [a, rep] of order) {
     const context = leadContext(r.lines);
     const router = home ? routerStep(home, r.startedAt, endedAt) : null;
     const out = r.result as { is_error?: boolean; subtype?: string; result?: string } | null;
+    const killed = killedWorkers(r.lines);
     steps.push({
       id: step.id, kind: step.kind, level: step.level, resumed: i > 0,
       passed: graded.pass, status: stepStatus(passed, i), ownPassed: graded.own.ok, regressions: graded.regressions, fixtureFail: graded.fixtureFail, grade: graded.detail,
       ...cost, wallSeconds: Math.round(r.ms / 1000), leadTurns: leadTurns(r.lines), context, ...diff,
       ...(router ? { router } : {}),
       timedOut: r.timedOut, error: out?.is_error ? String(out.subtype ?? out.result ?? '').slice(0, 300) : (out ? undefined : r.stderr.slice(-300)),
+      // workers Claude Code stopped before they finished, and the end of the process's stderr (as in measure107)
+      killedWorkers: killed, stderrTail: stderrTail(r.stderr),
       phases: analysePhases(r.lines, r.ms, null),
     });
     const routed = router ? ` ${router.requests.map(q => `${q.level} ${q.outcome ?? 'open'}`).join(' + ') || 'no request'} (lead ${router.requests[0]?.leadClass ?? '?'})` : '';
@@ -242,6 +246,7 @@ for (const [a, rep] of order) {
     const check = cost.sinceLastResultUsd !== null && Math.abs(cost.sinceLastResultUsd - cost.costUsd) > 0.001 ? `; the process itself counted $${cost.sinceLastResultUsd.toFixed(3)}` : '';
     console.log(`    -> ${graded.pass ? 'PASS' : 'FAIL'} ${graded.detail} $${cost.costUsd.toFixed(3)} (${how}${check}; stream input $${cost.streamInputUsd.toFixed(3)}) ${Math.round(r.ms / 1000)}s${routed}`);
     console.log(`       lead context: ${context.calls} calls, first ${context.firstTokens ?? '-'} (cache read ${context.firstCacheReadTokens ?? '-'}), last ${context.lastTokens ?? '-'}, max ${context.maxTokens ?? '-'} tokens${context.compactions ? `, ${context.compactions} compaction(s)` : ''}; spent $${spent().toFixed(2)} / $${BUDGET}`);
+    if (killed.length) console.log(`       ${killed.length} worker(s) stopped by Claude Code before finishing (${killed.map(k => `${k.agent ?? 'agent'} at ${k.atSeconds}s`).join(', ')}): the change may be incomplete, and the router has no stop for them`);
     if (!r.result && !r.lines.length) { stopped = `step ${step.id}: claude printed nothing (${r.stderr.slice(-200).trim() || `exit ${r.code}`})`; break; }
   }
   stopDaemon();

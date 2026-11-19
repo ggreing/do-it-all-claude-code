@@ -40,7 +40,7 @@ async function withWork(fn: (d: TestDaemon, sid: string, repo: string) => Promis
   };
   const agent = (id: string, sub: string, scope: string) => ({
     dispatch: { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_${id}`,
-      tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${sub}] work\n[scope: ${scope}]`, model: 'sonnet', effort: 'medium' } },
+      tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${sub}] work\n[scope: ${scope}]`, model: 'haiku', effort: 'low' } },   // decision 231: checkable repo, moderate -> coder @s1
     start: { hook_event_name: 'SubagentStart', agent_id: id, agent_type: 'do-it-all-claude-code:coder' },
     stop: (active = false) => ({ hook_event_name: 'SubagentStop', agent_id: id, agent_type: 'do-it-all-claude-code:coder', stop_hook_active: active }),
   });
@@ -80,9 +80,12 @@ test('a v17 ledger gains the subtask changes column, the step changes table (dec
     const again = new Ledger(file);
     const subCols = (again.db.prepare('PRAGMA table_info(subtasks)').all() as Array<{ name: string }>).map(c => c.name);
     assert.ok(['changes', 'difficulty', 'difficulty_source'].every(c => subCols.includes(c)), subCols.join(','));
+    // decision 231: the migration also gives requests a checkability column
+    const reqCols = (again.db.prepare('PRAGMA table_info(requests)').all() as Array<{ name: string }>).map(c => c.name);
+    assert.ok(reqCols.includes('checkability'), reqCols.join(','));
     again.addStepChange({ requestId: 'r', subtaskId: 'A', role: 'coder', slot: 0, from: 's1', to: 's2', reason: 'miss', detail: null, at: '2026-11-17T00:00:00.000Z' });
     assert.deepEqual(again.listStepChanges({ requestId: 'r' }).map(x => [x.from, x.to, x.reason]), [['s1', 's2', 'miss']]);
-    assert.equal((again.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 19);
+    assert.equal((again.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 20);
     again.close();
   } finally { rmrf(dir); }
 });
@@ -117,7 +120,7 @@ test('decision 193: one request in detail: the plan, each subtask\'s files, chec
   assert.deepEqual([v.state, v.level.final, v.plan.leadDirect, v.passed], ['closed', 'L2', false, false]);
   const [a, b] = v.subtasks;
   // coder A: what it changed, against its start commit
-  assert.deepEqual([a.id, a.role, a.step, a.model, a.effort, a.status], ['A', 'coder', 's3', 'sonnet', 'medium', 'passed']);
+  assert.deepEqual([a.id, a.role, a.step, a.model, a.effort, a.status], ['A', 'coder', 's1', 'haiku', 'low', 'passed']);
   assert.deepEqual(a.files, { list: [
     { path: 'src/a.ts', added: 2, removed: 1, state: 'changed' },
     { path: 'src/b.ts', added: 3, removed: 0, state: 'new' },
@@ -128,7 +131,7 @@ test('decision 193: one request in detail: the plan, each subtask\'s files, chec
   // coder B: two failed stops, then its slot went one step up
   assert.deepEqual([b.id, b.status, b.verdict], ['B', 'failed', 'miss']);
   assert.deepEqual(b.checks.filter((k: any) => k.kind === 'test').map((k: any) => [k.attempt, k.result, k.testsFailed]), [[1, 'failed', 2], [2, 'failed', 2]]);
-  assert.deepEqual(b.stepChanges.map((k: any) => [k.subtaskId, k.from, k.to, k.direction, k.reason]), [['B', 's3', 's4', 'up', 'miss']]);
+  assert.deepEqual(b.stepChanges.map((k: any) => [k.subtaskId, k.from, k.to, k.direction, k.reason]), [['B', 's1', 's2', 'up', 'miss']]);
   assert.deepEqual(v.stepChanges, b.stepChanges);
   assert.deepEqual(a.stepChanges, [], 'the raise is listed with the subtask that missed');
   // the request as a whole
@@ -233,7 +236,7 @@ test('decision 193: Team gives each role its steps per level with their source, 
   ]);
   assert.deepEqual([coder.stats.subtasks, coder.stats.passed, coder.stats.failed, coder.stats.passRate, coder.stats.stepUps, coder.stats.stepDowns], [2, 1, 1, 0.5, 1, 0]);
   assert.equal(typeof coder.stats.avgRunMs, 'number');
-  assert.deepEqual(v.stepChanges.map((k: any) => [k.role, k.from, k.to, k.reason]), [['coder', 's3', 's4', 'miss']]);
+  assert.deepEqual(v.stepChanges.map((k: any) => [k.role, k.from, k.to, k.reason]), [['coder', 's1', 's2', 'miss']]);
   assert.equal(v.triage.overall.total, 1);
   assert.equal(Array.isArray(v.routing.classes), true);
 }));

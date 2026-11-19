@@ -382,8 +382,8 @@ test('session_start after compact or resume re-injects the ledger summary', () =
 
 test('without a prompt seen this turn, an Agent call opens a default request instead of failing', () => withDaemon(async d => {
   const cwd = d.home;
-  // decision 226: no prompt to set difficulty, so the coder dispatches at its moderate-default cell s3 (sonnet·medium)
-  assert.deepEqual(await out(d, agentCall('late', cwd, { prompt: '[subtask:A] x', model: 'sonnet', effort: 'medium' })), {});
+  // decision 231: no prompt to set difficulty, so moderate; the repo is checkable (test default), so a source coder starts s1 (haiku·low)
+  assert.deepEqual(await out(d, agentCall('late', cwd, { prompt: '[subtask:A] x', model: 'haiku', effort: 'low' })), {});
   const [r] = rows(d, 'SELECT level, triage, replanned_from FROM requests');
   // the default request is lead-direct L1; the lead calling a router subagent re-plans it at L2 (T6)
   assert.equal(r!.level, 'L2');

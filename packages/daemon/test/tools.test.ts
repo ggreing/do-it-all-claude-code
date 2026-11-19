@@ -50,7 +50,7 @@ function session(d: TestDaemon, sid: string, cwd: string) {
   const start = (id: string, role = 'coder'): HookInput => ({ hook_event_name: 'SubagentStart', agent_id: id, agent_type: `do-it-all-claude-code:${role}` });
   const stop = (id: string, role = 'coder'): HookInput => ({ hook_event_name: 'SubagentStop', agent_id: id, agent_type: `do-it-all-claude-code:${role}`, stop_hook_active: false });
   /** Dispatches a subtask and lets it finish with a passing verify; the lead has not been told the result yet (a background run). */
-  const run = async (tag: string, agent: string, model = 'sonnet', effort = 'medium', role = 'coder'): Promise<HookInput> => {
+  const run = async (tag: string, agent: string, model = 'haiku', effort = 'low', role = 'coder'): Promise<HookInput> => {
     const c = call(tag, role, model, effort);
     assert.deepEqual(await post(c), {}, `dispatch ${tag}`);
     await post(start(agent, role));
@@ -59,7 +59,7 @@ function session(d: TestDaemon, sid: string, cwd: string) {
     return c;
   };
   /** The same, and the Agent call returns (a foreground run): the lead reads the result line next to it. */
-  const pass = async (tag: string, agent: string, model = 'sonnet', effort = 'medium', role = 'coder'): Promise<void> => {
+  const pass = async (tag: string, agent: string, model = 'haiku', effort = 'low', role = 'coder'): Promise<void> => {
     const c = await run(tag, agent, model, effort, role);
     const done = await post({ ...c, hook_event_name: 'PostToolUse', tool_response: { status: 'completed', agentId: agent } });
     assert.match(done.hookSpecificOutput?.additionalContext ?? '', new RegExp(`subtask ${tag} \\(${role} `), `result of ${tag}`);
@@ -158,14 +158,14 @@ test('router_get_plan: the request, each slot\'s next call values, the subtasks;
 
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
   await s.pass('A', 'a1');
-  assert.deepEqual(await s.post(s.call('B', 'coder', 'sonnet', 'medium', 'test/**')), {});
+  assert.deepEqual(await s.post(s.call('B', 'coder', 'haiku', 'low', 'test/**')), {});   // decision 231: a test-only coder starts at s1
   const p = (await s.tool('router_get_plan')).result!;
   assert.equal(p.request.level, 'L2');
   assert.equal(p.request.leadDirect, false);
   assert.equal(p.request.status, 'open');
   assert.equal(p.requestId, p.request.id);
   const coder0 = p.roles.find((r: any) => r.role === 'coder' && r.slot === 0);
-  assert.deepEqual([coder0.step, coder0.model, coder0.effort, coder0.upCount, coder0.upsLeft], ['s3', 'sonnet', 'medium', 0, 3]);
+  assert.deepEqual([coder0.step, coder0.model, coder0.effort, coder0.upCount, coder0.upsLeft], ['s1', 'haiku', 'low', 0, 3]);   // decision 231: checkable repo, moderate -> coder s1
   assert.ok(p.roles.some((r: any) => r.role === 'reviewer'));
   assert.deepEqual(p.subtasks.map((x: any) => [x.id, x.status, x.verdict, x.scope]), [['A', 'passed', 'meet', ['src/**']], ['B', 'pending', null, ['test/**']]]);
   assert.deepEqual(p.pendingUser, []);
@@ -177,7 +177,7 @@ test('router_report_triage re-plans upward exactly as the first Agent call does,
   // reference: the hook path (first Agent call of a lead-direct request)
   const ref = session(d, 'tri-ref', repo);
   await ref.post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
-  assert.deepEqual(await ref.post(ref.call('A', 'coder', 'sonnet', 'medium')), {});
+  assert.deepEqual(await ref.post(ref.call('A', 'coder', 'haiku', 'low')), {});   // decision 231: checkable, moderate -> coder s1
   const refRow = rows(d, "SELECT level, preset, budget_usd, team FROM requests WHERE session_id = 'tri-ref'")[0]!;
 
   const s = session(d, 'tri', repo);
@@ -186,8 +186,9 @@ test('router_report_triage re-plans upward exactly as the first Agent call does,
   const r = await s.tool('router_report_triage', { kind: 'team', level: 'L2', files: 6, confidence: 0.8 });
   assert.equal(r.ok, true);
   assert.deepEqual([r.result?.recorded, r.result?.replanned, r.result?.level, r.result?.leadDirect], [true, true, 'L2', false]);
-  // decision 230: the call line lists each difficulty's cell (A's brief format)
-  assert.match(r.result?.brief, /subagent_type "do-it-all-claude-code:coder"; model\/effort: routine haiku\/low, moderate sonnet\/medium, hard opus\/high/);
+  // decision 231: the answer's `calls` field lists each role's subagent type and per-difficulty cell, computed with checkability (here checkable)
+  assert.match(r.result?.calls, /subagent_type "do-it-all-claude-code:coder": routine haiku\/low, moderate haiku\/low, hard sonnet\/medium/);
+  assert.match(r.result?.brief, /subagent_type "do-it-all-claude-code:coder"/);
   const row = rows(d, "SELECT level, preset, budget_usd, team, triage, replanned_from, lead_triage FROM requests WHERE session_id = 'tri'")[0]!;
   assert.deepEqual([row.level, row.preset, row.budget_usd, row.team], [refRow.level, refRow.preset, refRow.budget_usd, refRow.team]);
   assert.match(JSON.parse(String(row.triage)).rationale, /^re-planned at L2: the lead judged the request as L2 \(about 6 files, confidence 0\.80\) in a lead-direct L1 request/);
@@ -196,8 +197,8 @@ test('router_report_triage re-plans upward exactly as the first Agent call does,
     { kind: 'team', level: 'L2', files: 6, confidence: 0.8, plannedLevel: 'L1' });
 
   // the Agent call that follows is checked against the L2 team and does not re-plan again (an L3 value is refused, not taken as a signal)
-  assert.match(denied(await s.post(s.call('A', 'coder', 'opus', 'high'))), /the coder runs at step s3/);
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'sonnet', 'medium')), {});
+  assert.match(denied(await s.post(s.call('A', 'coder', 'opus', 'high'))), /the coder runs at step s1/);
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'haiku', 'low')), {});
   assert.equal(rows(d, "SELECT level FROM requests WHERE session_id = 'tri'")[0]!.level, 'L2');
   // after a dispatch the judgement comes too late and changes nothing
   assert.equal((await s.tool('router_report_triage', { kind: 'team', level: 'L3', files: 30, confidence: 0.9 })).code, 'too_late');
@@ -222,7 +223,10 @@ test('router_report_triage: L3 by the lead\'s word, a direct judgement only reco
   assert.deepEqual((r => [r.result?.replanned, r.result?.level])(await b.tool('router_report_triage', { kind: 'team', level: 'L3', files: 25, confidence: 0.7 })), [true, 'L3']);
   const c = session(d, 'tri-plain', repo);
   await c.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
-  assert.deepEqual((r => [r.result?.recorded, r.result?.replanned, r.result?.level, r.result?.brief])(await c.tool('router_report_triage', { kind: 'team', level: 'L3', files: 25, confidence: 0.7 })), [true, false, 'L2', undefined]);
+  const plain = await c.tool('router_report_triage', { kind: 'team', level: 'L3', files: 25, confidence: 0.7 });
+  assert.deepEqual([plain.result?.recorded, plain.result?.replanned, plain.result?.level, plain.result?.brief], [true, false, 'L2', undefined]);
+  // decision 231: the answer carries each role's call values even when it does NOT re-plan (the brief, present only on a re-plan, no longer lists them)
+  assert.match(plain.result?.calls, /subagent_type "do-it-all-claude-code:coder": routine haiku\/low, moderate haiku\/low, hard sonnet\/medium/);
 
   // a smaller judgement never moves the plan down; it is kept as a label, with its level made to fit its kind
   const e = session(d, 'tri-down', repo);
@@ -237,7 +241,7 @@ test('router_report_result: a reject after a passing verify is a failure; two in
   const s = session(d, 'rej', repo);
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
   assert.equal((await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'lead' })).code, 'unknown_subtask');
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'sonnet', 'medium')), {});
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'haiku', 'low')), {});   // decision 231: checkable, moderate -> coder s1
   await s.post(s.start('a1'));
   assert.equal((await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'lead' })).code, 'not_finished');
   write(repo, 'src/a.ts', 'wrong fix\n');
@@ -245,9 +249,9 @@ test('router_report_result: a reject after a passing verify is a failure; two in
   assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'passed', verdict: 'meet' }]);
 
   const r1 = await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'lead', issues: 1, categories: ['wrong_behavior'] });
-  assert.deepEqual([r1.ok, r1.result?.status, r1.result?.raised, r1.result?.next, r1.result?.slot.step], [true, 'failed', false, 'retry_at_same_step', 's3']);
+  assert.deepEqual([r1.ok, r1.result?.status, r1.result?.raised, r1.result?.next, r1.result?.slot.step], [true, 'failed', false, 'retry_at_same_step', 's1']);
   assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'failed', verdict: 'rejected' }]);
-  assert.deepEqual(slots(d), [{ role: 'coder', slot: 0, step: 's3', up_count: 0, fail_streak: 1, lead_raises: 0 }]);
+  assert.deepEqual(slots(d), [{ role: 'coder', slot: 0, step: 's1', up_count: 0, fail_streak: 1, lead_raises: 0 }]);
   assert.deepEqual(rows(d, "SELECT kind, ok, detail FROM signals WHERE kind = 'review'"), [{ kind: 'review', ok: 0, detail: 'reject by lead; issues 1; categories wrong_behavior' }]);
   // the same attempt judged again is not a second failure
   await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'lead' });
@@ -257,15 +261,15 @@ test('router_report_result: a reject after a passing verify is a failure; two in
   await s.pass('A', 'a2');
   assert.deepEqual(rows(d, "SELECT status, verdict, review FROM subtasks WHERE id = 'A'"), [{ status: 'passed', verdict: 'meet', review: null }]);
   const r2 = await s.tool('router_report_result', { subtaskId: 'A', verdict: 'reject', by: 'lead' });
-  assert.deepEqual([r2.result?.raised, r2.result?.next, r2.result?.slot.step, r2.result?.slot.model, r2.result?.slot.effort, r2.result?.slot.upsLeft], [true, 'retry_at_raised_step', 's4', 'sonnet', 'high', 2]);
-  assert.deepEqual(slots(d), [{ role: 'coder', slot: 0, step: 's4', up_count: 1, fail_streak: 0, lead_raises: 0 }]);
+  assert.deepEqual([r2.result?.raised, r2.result?.next, r2.result?.slot.step, r2.result?.slot.model, r2.result?.slot.effort, r2.result?.slot.upsLeft], [true, 'retry_at_raised_step', 's2', 'haiku', 'high', 2]);
+  assert.deepEqual(slots(d), [{ role: 'coder', slot: 0, step: 's2', up_count: 1, fail_streak: 0, lead_raises: 0 }]);
   assert.deepEqual(rows(d, "SELECT status, verdict, up_count FROM subtasks WHERE id = 'A'"), [{ status: 'failed', verdict: 'rejected', up_count: 1 }]);
-  // the next call for the slot must use the raised step, as after a verify miss
-  assert.match(denied(await s.post(s.call('A', 'coder', 'sonnet', 'medium'))), /slot 0 was raised to s4 after a miss/);
-  await s.pass('A', 'a3', 'sonnet', 'high');
+  // the next call for the slot must use the raised step, as after a verify miss (decision 231: s1 -> s2)
+  assert.match(denied(await s.post(s.call('A', 'coder', 'haiku', 'low'))), /slot 0 was raised to s2 after a miss/);
+  await s.pass('A', 'a3', 'haiku', 'high');
 
   // an accept is recorded and ends a streak
-  d.ledger.setSlotCounters(rows(d, "SELECT id FROM requests WHERE session_id = 'rej'")[0]!.id as string, 'coder', 0, 's4', { failStreak: 1 }, new Date().toISOString());
+  d.ledger.setSlotCounters(rows(d, "SELECT id FROM requests WHERE session_id = 'rej'")[0]!.id as string, 'coder', 0, 's2', { failStreak: 1 }, new Date().toISOString());
   const ok = await s.tool('router_report_result', { subtaskId: 'A', verdict: 'accept', by: 'lead', margin: 'easy' });
   assert.deepEqual([ok.result?.status, ok.result?.next, ok.result?.raised], ['passed', 'none', false]);
   assert.equal(slots(d)[0]!.fail_streak, 0);
@@ -294,29 +298,29 @@ test('router_report_result: a reviewer verdict must come from a finished reviewe
 test('router_request_escalation on the lead\'s word: once per slot inside a model, then a user turn (decision 128)', () => withDaemon(async (d, repo) => {
   const s = session(d, 'esc', repo);
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'sonnet', 'medium')), {});
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'haiku', 'low')), {});
   await s.post(s.start('a1'));
   assert.equal((await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result' })).code, 'not_finished');
   assert.deepEqual(await s.post(s.stop('a1')), {});
 
-  // verify passed, the lead judges the result wrong: one raise inside the same model, without asking
+  // verify passed, the lead judges the result wrong: one raise inside the same model, without asking (decision 231: s1 -> s2)
   const g = await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result' });
   assert.deepEqual([g.ok, g.result?.granted, g.result?.how, g.result?.from, g.result?.step, g.result?.model, g.result?.effort, g.result?.upCount, g.result?.upsLeft],
-    [true, true, 'lead_judgement', 's3', 's4', 'sonnet', 'high', 1, 2]);
-  assert.deepEqual(slots(d), [{ role: 'coder', slot: 0, step: 's4', up_count: 1, fail_streak: 0, lead_raises: 1 }]);
+    [true, true, 'lead_judgement', 's1', 's2', 'haiku', 'high', 1, 2]);
+  assert.deepEqual(slots(d), [{ role: 'coder', slot: 0, step: 's2', up_count: 1, fail_streak: 0, lead_raises: 1 }]);
   assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'failed', verdict: 'rejected' }], 'the request counts as the lead\'s reject');
   // asked again for the same attempt: nothing more happens
-  assert.deepEqual((r => [r.result?.granted, r.result?.how, r.result?.step])(await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result' })), [true, 'already_raised', 's4']);
+  assert.deepEqual((r => [r.result?.granted, r.result?.how, r.result?.step])(await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result' })), [true, 'already_raised', 's2']);
   assert.equal(slots(d)[0]!.up_count, 1);
   // the lead cannot call a step higher than the one granted
-  assert.match(denied(await s.post(s.call('A', 'coder', 'opus', 'low'))), /the coder runs at step s4/);
+  assert.match(denied(await s.post(s.call('A', 'coder', 'opus', 'low'))), /the coder runs at step s2/);
 
-  // second attempt at s4 passes verify; the next step changes the model: not on the lead's word alone
-  await s.pass('A', 'a2', 'sonnet', 'high');
+  // second attempt at s2 passes verify; the next step changes the model: not on the lead's word alone (s2 -> s3 crosses to Sonnet)
+  await s.pass('A', 'a2', 'haiku', 'high');
   const n = await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result' });
-  assert.deepEqual([n.ok, n.code, n.result?.why, n.result?.step], [false, 'needs_user', 'tier', 's4']);
-  assert.match(n.message ?? '', /needs_user: the next step \(s5\) changes the model/);   // decision 229: s4 -> s5 crosses to Opus
-  assert.equal(slots(d)[0]!.step, 's4');
+  assert.deepEqual([n.ok, n.code, n.result?.why, n.result?.step], [false, 'needs_user', 'tier', 's2']);
+  assert.match(n.message ?? '', /needs_user: the next step \(s3\) changes the model/);   // s2 (haiku) -> s3 (sonnet) crosses the model
+  assert.equal(slots(d)[0]!.step, 's2');
   assert.deepEqual((await s.tool('router_get_plan')).result?.pendingUser, [{ kind: 'escalation', subtaskId: 'A' }]);
   // saying the user confirmed is not enough: the ledger must show a user turn after the request
   const lie = await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result', userConfirmed: true });
@@ -327,10 +331,10 @@ test('router_request_escalation on the lead\'s word: once per slot inside a mode
   assert.equal((await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result', userConfirmed: true })).code, 'needs_user');
   await s.userTurn();
   const u = await s.tool('router_request_escalation', { subtaskId: 'A', reason: 'wrong_result', userConfirmed: true });
-  assert.deepEqual([u.ok, u.result?.how, u.result?.step, u.result?.model, u.result?.effort, u.result?.upsLeft], [true, 'user_turn', 's5', 'opus', 'high', 1]);   // decision 229: s4 -> s5 (opus-high)
-  assert.deepEqual(slots(d), [{ role: 'coder', slot: 0, step: 's5', up_count: 2, fail_streak: 0, lead_raises: 1 }]);
+  assert.deepEqual([u.ok, u.result?.how, u.result?.step, u.result?.model, u.result?.effort, u.result?.upsLeft], [true, 'user_turn', 's3', 'sonnet', 'medium', 1]);   // s2 -> s3 (sonnet-medium)
+  assert.deepEqual(slots(d), [{ role: 'coder', slot: 0, step: 's3', up_count: 2, fail_streak: 0, lead_raises: 1 }]);
   assert.equal(d.ledger.count('confirmations'), 0);
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'opus', 'high')), {});
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'sonnet', 'medium')), {});
 }));
 
 test('router_request_escalation: a reviewer reject raises at once, also across a model; the 3-raise limit goes to the user', () => withDaemon(async (d, repo) => {
@@ -378,7 +382,7 @@ test('router_request_scope changes a running subtask\'s scope where the guard re
   const s = session(d, 'scope', repo);
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
   assert.equal((await s.tool('router_request_scope', { subtaskId: 'A', add: ['test/**'] })).code, 'unknown_subtask');
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'sonnet', 'medium')), {});
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'haiku', 'low')), {});
   const scopeFile = path.join(d.home, 'scopes', fs.readdirSync(path.join(d.home, 'scopes'))[0]!);
   const read = (f: string) => JSON.parse(fs.readFileSync(f, 'utf8'));
 
@@ -405,7 +409,7 @@ test('router_request_scope changes a running subtask\'s scope where the guard re
   assert.deepEqual([fin.ok, fin.code], [false, 'not_running']);
   assert.match(fin.message ?? '', /dispatch it again with a new \[scope: \.\.\.\] line/);
   // a subtask without a scope line has nothing to remove
-  assert.deepEqual(await s.post(s.call('U', 'coder', 'sonnet', 'medium', null)), {});
+  assert.deepEqual(await s.post(s.call('U', 'coder', 'haiku', 'low', null)), {});
   assert.equal((await s.tool('router_request_scope', { subtaskId: 'U', remove: ['src/**'] })).code, 'not_allowed');
   assert.deepEqual((x => [x.ok, x.result?.unscoped, x.result?.scope])(await s.tool('router_request_scope', { subtaskId: 'U', add: ['lib/**'] })), [true, true, null]);
   // never grantable, whatever the user says
@@ -417,7 +421,7 @@ test('router_request_scope changes a running subtask\'s scope where the guard re
 test('router_request_scope: a protected path is granted after a user turn and stays with the subtask id (decision 129)', () => withDaemon(async (d, repo) => {
   const s = session(d, 'prot', repo);
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'sonnet', 'medium')), {});
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'haiku', 'low')), {});
   await s.post(s.start('a1'));
   const read = (f: string) => JSON.parse(fs.readFileSync(f, 'utf8'));
   const agentFile = path.join(d.home, 'agents', 'a1.json');
@@ -448,7 +452,7 @@ test('router_request_scope: a protected path is granted after a user turn and st
   assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'passed', verdict: 'meet' }]);
   // a new attempt of the same id keeps the grant; its ordinary scope comes from the new [scope: ...] line
   // (the first attempt's result line, which the lead has not read yet, comes next to this call and decides nothing)
-  const next = await s.post(s.call('A', 'coder', 'sonnet', 'medium', 'app/**'));
+  const next = await s.post(s.call('A', 'coder', 'haiku', 'low', 'app/**'));
   assert.equal(next.hookSpecificOutput?.permissionDecision, undefined);
   assert.match(next.hookSpecificOutput?.additionalContext ?? '', /subtask A \(coder .*verify passed/);
   const scopeFile = path.join(d.home, 'scopes', fs.readdirSync(path.join(d.home, 'scopes')).find(f => !f.includes('U'))!);
@@ -535,8 +539,8 @@ test('decision 178: a level set by forceLevel is not re-planned down by the lead
 
 // decision 178 (가): the passed notification carries the test count, and says what the lead may still run
 for (const [count, expect] of [
-  [3, /verify passed — test ok \(3 passed\).*\(already verified by the router: do not re-run the test suite; for more assurance run only the tests of the changed code\)/],
-  [0, /verify passed — test ok \(0 passed\).*\(verify ran no tests for this change: if the changed code has tests, run those once yourself, a targeted run, not the whole suite\)/],
+  [3, /verify passed — test ok \(3 passed\).*\(already verified by the router: do not re-run the test suite\)/],
+  [0, /verify passed — test ok \(0 passed\).*\(verify ran no tests for this change; the router has nothing more to check here — do not run tests of your own\)/],
 ] as Array<[number, RegExp]>) {
   let script = '';
   test(`decision 178: a passed subtask's notification shows the test count (${count}) and what the lead may run`, () => withDaemon(async (d, repo) => {
@@ -556,7 +560,7 @@ test('decision 178: concurrent writers with disjoint scopes pass, with or withou
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
   const writer = (tag: string, scope: string, isolation?: string): HookInput => ({
     hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_p${++seq}`,
-    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work\n[scope: ${scope}]`, model: 'sonnet', effort: 'medium', ...(isolation ? { isolation } : {}) },
+    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work\n[scope: ${scope}]`, model: 'haiku', effort: 'low', ...(isolation ? { isolation } : {}) },
   });
   // two writers sent in one message, disjoint, each in a worktree
   assert.deepEqual(await s.post(writer('A', 'src/api/**', 'worktree')), {});
@@ -585,7 +589,7 @@ test('decision 178: an overlapping writer is refused twice with what to do, then
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
   const writer = (tag: string, scope: string, isolation?: string): HookInput => ({
     hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_o${++seq}`,
-    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work\n[scope: ${scope}]`, model: 'sonnet', effort: 'medium', ...(isolation ? { isolation } : {}) },
+    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work\n[scope: ${scope}]`, model: 'haiku', effort: 'low', ...(isolation ? { isolation } : {}) },
   });
   assert.deepEqual(await s.post(writer('A', 'src/**', 'worktree')), {});
   for (let i = 0; i < 2; i++) {
@@ -598,7 +602,7 @@ test('decision 178: an overlapping writer is refused twice with what to do, then
   const t = session(d, 'seq', repo);
   await t.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
   await t.pass('X', 'ag-x');
-  assert.deepEqual(await t.post(t.call('Y', 'coder', 'sonnet', 'medium')), {}, 'sent after X finished: same scope, no isolation, allowed');
+  assert.deepEqual(await t.post(t.call('Y', 'coder', 'haiku', 'low')), {}, 'sent after X finished: same scope, no isolation, allowed');
 }));
 
 test('decision 178: a writer that ran in a worktree is named with its branch in the passed line, so the lead merges it', () => withDaemon(async (d, repo) => {
@@ -659,21 +663,21 @@ test('router_project_isolation: a session outside a git repo is refused (not_all
 test('decision 230 (item 4): the lead cannot accept an unverified subtask while its one stronger retry is pending', () => withDaemon(async (d, repo) => {
   const s = session(d, 'rt', repo);
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });   // L2 team, default difficulty moderate
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'sonnet', 'medium')), {});
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'haiku', 'low')), {});
   await s.post(s.start('a1'));
   write(repo, 'src/a.ts', 'changed\n');
   assert.deepEqual(await s.post(s.stop('a1')), {});
-  // moderate + unverified (the tool is missing): the slot jumped a model and the retry is pending (item 3)
+  // moderate + checkable -> started at s1; unverified (the tool is missing) -> the slot jumped a model (s1->s3) and the retry is pending (item 3)
   assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'failed', verdict: 'fail_once' }]);
-  assert.deepEqual(rows(d, "SELECT step FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's5' }]);
+  assert.deepEqual(rows(d, "SELECT step FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's3' }]);
   // the lead tries to accept it: refused, with the retry's Agent-call values (item 4)
   const r = await s.tool('router_report_result', { subtaskId: 'A', verdict: 'accept', by: 'lead' });
   assert.equal(r.ok, false);
   assert.equal(r.code, 'not_allowed');
-  assert.deepEqual(r.result?.retry, { subagentType: 'do-it-all-claude-code:coder', model: 'opus', effort: 'high', step: 's5' });
-  assert.match(r.message ?? '', /could not be verified and has one stronger attempt left: dispatch it again at s5 \(model="opus", effort="high"\) before accepting/);
+  assert.deepEqual(r.result?.retry, { subagentType: 'do-it-all-claude-code:coder', model: 'sonnet', effort: 'medium', step: 's3' });
+  assert.match(r.message ?? '', /could not be verified and has one stronger attempt left: dispatch it again at s3 \(model="sonnet", effort="medium"\) before accepting/);
   // re-dispatching at the raised cell consumes the retry (the subtask is running again)
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'opus', 'high')), {});
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'sonnet', 'medium')), {});
   assert.deepEqual(rows(d, "SELECT status FROM subtasks WHERE id = 'A'"), [{ status: 'pending' }]);
 }, { verify: { resolveCommands: async () => [{ kind: 'test' as const, command: 'no-such-tool-xyz --check' }] } }));
 
@@ -688,32 +692,31 @@ test('decision 230 end to end (no delegateFrom pin): floor -> per-subtask diffic
   const rep = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 20, confidence: 0.8, difficulty: 'moderate' });
   assert.deepEqual([rep.result?.difficulty, rep.result?.difficultySource], ['hard', 'router']);
 
-  // two Agent calls in one turn: a source coder tagged moderate (floored up to the hard cell s5) and a tester tagged routine (s1)
+  // two Agent calls in one turn: a source coder tagged moderate (floored up to hard; checkable -> the hard cell s3) and a tester tagged routine (s1)
   const coder: HookInput = { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_e2e_c',
-    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:C] fix it\n[scope: src/**]\n[difficulty: moderate]', model: 'opus', effort: 'high' } };
+    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:C] fix it\n[scope: src/**]\n[difficulty: moderate]', model: 'sonnet', effort: 'medium' } };
   const tester: HookInput = { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_e2e_t',
     tool_input: { subagent_type: 'do-it-all-claude-code:tester', prompt: '[subtask:T] add a reproducing test\n[scope: tests/**]\n[difficulty: routine]', model: 'haiku', effort: 'low' } };
-  assert.deepEqual(await s.post(coder), {}, 'coder accepted at the floored hard cell s5');
+  assert.deepEqual(await s.post(coder), {}, 'coder accepted at the floored hard cell s3 (checkable repo)');
   await s.post(s.start('c1', 'coder'));
   assert.deepEqual(await s.post(tester), {}, 'tester accepted at the routine cell s1');
   await s.post(s.start('t1', 'tester'));
-  // both run at the same time, at different cells; the coder's moderate tag was corrected up to the request floor
+  // both run at the same time, at different cells; the coder's moderate tag was corrected up to the request floor (hard)
   assert.deepEqual(rows(d, "SELECT id, status, step, difficulty, difficulty_source FROM subtasks ORDER BY id"), [
-    { id: 'C', status: 'running', step: 's5', difficulty: 'hard', difficulty_source: 'floor' },
+    { id: 'C', status: 'running', step: 's3', difficulty: 'hard', difficulty_source: 'floor' },
     { id: 'T', status: 'running', step: 's1', difficulty: 'routine', difficulty_source: 'tag' },
   ]);
 
-  // the coder ends unverified (the test tool is missing, so verify cannot run) -> one stronger retry is set up
-  // (s5 -> s6: modelJump has no model above Opus with Fable off, so the effort rises). Its scope stays src/**; the
-  // tester (tests/**) verifies cleanly alongside it.
+  // the coder ends unverified (the test tool is missing, so verify cannot run); it started below s5, so one stronger
+  // retry is set up (modelJump s3 -> s5). Its scope stays src/**; the tester (tests/**) verifies cleanly alongside it.
   assert.deepEqual(await s.post(s.stop('c1', 'coder')), {});
   assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'C'"), [{ status: 'failed', verdict: 'fail_once' }]);
-  assert.deepEqual(rows(d, "SELECT step FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's6' }]);
+  assert.deepEqual(rows(d, "SELECT step FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's5' }]);
   assert.equal(rows(d, 'SELECT detail FROM step_changes')[0]!.detail, 'unverified-retry');
-  // the lead cannot accept it while the retry is pending: the router answers with the retry at s6 (opus/xhigh)
+  // the lead cannot accept it while the retry is pending: the router answers with the retry at s5 (opus/high)
   const acc = await s.tool('router_report_result', { subtaskId: 'C', verdict: 'accept', by: 'lead' });
   assert.equal(acc.ok, false);
-  assert.deepEqual(acc.result?.retry, { subagentType: 'do-it-all-claude-code:coder', model: 'opus', effort: 'xhigh', step: 's6' });
+  assert.deepEqual(acc.result?.retry, { subagentType: 'do-it-all-claude-code:coder', model: 'opus', effort: 'high', step: 's5' });
   // the tester passes
   assert.deepEqual(await s.post(s.stop('t1', 'tester')), {});
   assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'T'"), [{ status: 'passed', verdict: 'meet' }]);
@@ -725,12 +728,13 @@ test('decision 230: a hard direct report on a lead-direct level hands the change
   assert.equal(d.ledger.latestRequest('ld')!.team.leadDirect, true);
   const r = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 20, confidence: 0.8, difficulty: 'hard' });
   assert.deepEqual([r.result?.replanned, r.result?.level, r.result?.leadDirect, r.result?.difficulty], [true, 'L1', false, 'hard']);
-  assert.match(r.result?.brief, /subagent_type "do-it-all-claude-code:coder"; model\/effort: routine haiku\/low, moderate sonnet\/medium, hard opus\/high/);
+  // decision 231: this repo is NOT checkable, so a source coder's hard cell is s5 (opus/high); the answer's `calls` says so
+  assert.match(r.result?.calls, /subagent_type "do-it-all-claude-code:coder": routine sonnet\/medium, moderate opus\/high, hard opus\/high/);
   assert.deepEqual([d.ledger.latestRequest('ld')!.level, d.ledger.latestRequest('ld')!.team.leadDirect ?? false], ['L1', false]);
   // a coder below the hard cell is denied with s5; the hard cell (opus/high) is accepted
   assert.match(denied(await s.post(s.call('A', 'coder', 'sonnet', 'medium'))), /the coder runs at step s5/);
   assert.deepEqual(await s.post(s.call('A', 'coder', 'opus', 'high')), {});
-}));
+}, { config: { forceCheckability: 'unchecked' } }));
 
 test('decision 230: a routine or moderate direct report on a lead-direct level stays with the lead', () => withDaemon(async (d, repo) => {
   for (const [sid, difficulty] of [['rt', 'routine'], ['md', 'moderate']] as const) {

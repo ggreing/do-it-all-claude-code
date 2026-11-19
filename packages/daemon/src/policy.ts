@@ -5,7 +5,7 @@
 //   with the expected values. A role the preset lacks: deny when the lead may not adjust the team
 //   (L0), else expect the role's default start step for that level.
 // - s7 needs fableOptIn; usedUsd >= budgetUsd denies.
-import { DEFAULT_DIFFICULTY, DEFAULT_PROFILE, GRID_LADDER, PROTECTED_WRITE_PATHS, difficultyRank, memberStartCell } from '@do-it-all-claude-code/core';
+import { DEFAULT_DIFFICULTY, DEFAULT_PROFILE, GRID_LADDER, PROTECTED_WRITE_PATHS, callStartCell, difficultyRank, profileNotch } from '@do-it-all-claude-code/core';
 import type { Difficulty, DifficultySource, LadderId, LadderStep, Level, Profile, Role, Step, TeamPreset } from '@do-it-all-claude-code/core';
 
 export const MANAGED_PREFIX = 'do-it-all-claude-code:';
@@ -223,6 +223,12 @@ export interface AgentCallInput {
   /** Decision 225: the request's difficulty; with the profile it sets each role's start cell (decision 226). */
   difficulty?: Difficulty;
   profile?: Profile;
+  /** Decision 231: whether the router can CHECK this request's result here (drives a source-changing coder's start cell). */
+  checkable?: boolean;
+  /** Decision 231: whether this call's write scope can change source files (then a coder follows checkability, not the table). */
+  changesSource?: boolean;
+  /** Decision 231: whether this call carried a [difficulty:] tag (an untagged non-source/tester subtask starts at its routine cell). */
+  tagged?: boolean;
   busySlots: number[];          // slots of this role whose subtask is pending or running
   tagBusy: boolean;             // the same subtask ID is already pending or running
   /** Spec 3.5: the cell a slot of this role was raised to after a miss (absent: the difficulty-adjusted start). */
@@ -247,9 +253,13 @@ export function checkAgentCall(i: AgentCallInput): AgentCallCheck {
     const team = i.preset.roles.map(r => `${r.role} x${r.count}`).join(', ');
     return { ok: false, reason: `${id}: the ${i.level} team is fixed (${team}); a ${i.role} cannot be added.` };
   }
-  // decision 226: the start cell comes from the difficulty table, the profile notch, and a user teams.yaml/role override.
+  // decision 226/231: the start cell comes from checkability (a source-changing coder) or the difficulty table (every
+  // other role), then the profile notch and a user teams.yaml/role override (decision 226), all via callStartCell.
   const profile = i.profile ?? DEFAULT_PROFILE;
-  const start = memberStartCell(i.role, member?.start ?? defaultStartStep(i.level, i.role), member?.startSet, i.difficulty ?? DEFAULT_DIFFICULTY, profile, i.fableOptIn);
+  const start = callStartCell(
+    { role: i.role, difficulty: i.difficulty ?? DEFAULT_DIFFICULTY, checkable: i.checkable ?? false, changesSource: i.changesSource ?? true, tagged: i.tagged ?? false },
+    { notch: profileNotch(profile), fableOptIn: i.fableOptIn, ...(member?.startSet && member.start ? { override: member.start } : {}) },
+  );
   const stepFor = (slot: number): LadderId => i.slotSteps?.[slot] ?? start;
 
   // Free slots of the role, in order; past the team's count only when the lead may adjust the team.

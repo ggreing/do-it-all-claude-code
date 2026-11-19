@@ -8,7 +8,7 @@
 import type { SQLInputValue } from 'node:sqlite';
 import {
   CACHE_MULTIPLIER, DEFAULT_DELEGATE_FROM, DEFAULT_PRESETS, DIFFICULTIES, PRICING_PER_MTOK, PROFILE_LAYERS, ladderStep, leadModelClass, loadPresets, memberStartCell, profileDelegateFrom, profileOf,
-  profilePresets, type Difficulty, type DifficultySource, type LadderId, type LeadModelClass, type Level, type Profile, type Role, type TeamPreset, type TriageResult,
+  profilePresets, type Checkability, type Difficulty, type DifficultySource, type LadderId, type LeadModelClass, type Level, type Profile, type Role, type TeamPreset, type TriageResult,
 } from '@do-it-all-claude-code/core';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -234,6 +234,8 @@ export interface WorkDetail {
   level: { judged: Level; source: string; rule: string | null; confidence: number | null; final: Level; changes: Array<{ from: Level; to: Level; why: 'manual' | 'forced' | 'replanned' }> };
   /** Decision 230: the request's difficulty, its source ('router' = the rule floor raised it), and whether the lead reported one. */
   difficulty: { value: Difficulty; source: DifficultySource; reported: boolean } | null;
+  /** Decision 231: whether the router can check this request's result here (probing | checkable | unchecked | no-tests); null until stamped. */
+  checkability: Checkability | null;
   plan: { preset: string; leadDirect: boolean; leadModel: string | null; leadClass: string | null; budgetUsd: number; holdout: string | null };
   outcome: string | null; passed: boolean | null; acceptance: string | null;
   subtasks: WorkSubtask[];
@@ -377,6 +379,7 @@ export function workDetail(c: TabsContext, requestId: string): WorkDetail | null
     kind: j.kind ?? null, taskType: j.taskType ?? null,
     level: { judged: judgedLevel, source: r.forcedFrom ? 'forced' : String(j.source), rule: j.rule ?? null, confidence: typeof j.confidence === 'number' ? j.confidence : null, final: r.level, changes: levelChanges },
     difficulty: r.triage.difficulty ? { value: r.triage.difficulty, source: r.triage.difficultySource ?? 'default', reported: r.triage.difficultyReported === true } : null,
+    checkability: r.checkability,
     plan: { preset: r.preset, leadDirect: r.team.leadDirect === true, leadModel: r.leadModel, leadClass: r.leadClass, budgetUsd: r.budgetUsd, holdout: r.holdout },
     outcome: r.outcome ?? rec?.outcome ?? null,
     passed: closed && rec ? recordVerifyOk(rec) && recRow?.acceptance !== 'not_accepted' : null,

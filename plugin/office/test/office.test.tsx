@@ -359,6 +359,16 @@ test('Work: a difficulty the router\'s floor raised, and each worker\'s own (dec
   must('a coder tagged below the request', await ui.find({ type: 'Text', text: /^A coder Haiku · high \(s2\) · hard \(raised to the request's\) · passed/ }))
   must('a tagged reviewer', await ui.find({ type: 'Text', text: /^R reviewer Opus · medium est\. · routine · accept/ }))
   must('no tag: the request\'s', await ui.find({ type: 'Text', text: /^T tester Opus · medium est\. · moderate \(the request's\) · accept/ }))
+  must('no checkability from an older router', !(await ui.find({ type: 'Text', text: /checkable/ })))
+  await ui.unmount()
+})
+
+test('Work: whether the router could check the result (decision 231)', async ($, on) => {
+  const { clock } = tabsEngine(on, {}, undefined, WORK, { ...DETAIL, checkability: 'no-tests' })
+  const { ui, settle } = await openTab($, clock, 'work')
+  await ui.press({ key: 'req-r-2' })
+  await settle()
+  must('not checkable, with the reason', await ui.find({ type: 'Text', text: /· difficulty hard, by the lead · not checkable \(no test command\) ·/ }))
   await ui.unmount()
 })
 

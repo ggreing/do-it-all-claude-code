@@ -2,7 +2,7 @@ import type { Elements, RenderElement } from 'claude-code'
 
 import {
   DIFFICULTY_COLOR, DIFFICULTY_SHORT, PERIODS, PERIOD_NAME, SLACK, appliedLines, bar, cellText, choices, clockTime, columns, confirmLine, cycle,
-  detailDifficulty, difficultyNote, difficultyText, dur, filesText, fit, holdoutText, isDifficulty, levelText, modelName, moveText, packParts, pct, pendingSet,
+  checkabilityText, detailDifficulty, difficultyNote, difficultyText, dur, filesText, fit, holdoutText, isDifficulty, levelText, modelName, moveText, packParts, pct, pendingSet,
   pointLabel, settingText, shownValue, spanName, spentLine, statBar, subtaskDifficultyText, timelineCells, upDown, usd, workHeadline, workMark,
   type Difficulty, type DifficultyOf, type Glyphs, type SubtaskDifficulty, type LimitWindow, type OfficeSettings, type Period, type Savings, type SettingItem, type SettingValue, type Team,
   type WorkDetail, type WorkList, type WorkRow,
@@ -177,7 +177,7 @@ function workDetail(els: Els, ctx: TabContext, st: OfficeTabData): El {
   const judged = `judged ${d.level.judged} by ${d.level.source}${d.level.rule ? ` ${d.level.rule}` : ''}${d.level.confidence !== null ? ` ${pct(d.level.confidence)}` : ''}`
   const changed = d.level.changes.map(c => `${c.from}${g.arrow}${c.to} (${c.why})`).join(', ')
   const plan = d.plan.leadDirect ? 'the lead alone' : `team ${d.plan.preset}`
-  lines.push(<Text key="level" dimColor wrap="wrap">{[judged, changed, difficultyNote(diff), plan, d.plan.leadModel ? `lead ${modelName(d.plan.leadModel)}` : '', d.plan.holdout ? `holdout ${d.plan.holdout}` : ''].filter(Boolean).join(' · ')}</Text>)
+  lines.push(<Text key="level" dimColor wrap="wrap">{[judged, changed, difficultyNote(diff), checkabilityText(d.checkability), plan, d.plan.leadModel ? `lead ${modelName(d.plan.leadModel)}` : '', d.plan.holdout ? `holdout ${d.plan.holdout}` : ''].filter(Boolean).join(' · ')}</Text>)
 
   // the timeline: plan, workers, verify, review on one time axis
   if (d.timeline.length) {

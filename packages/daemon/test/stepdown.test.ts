@@ -94,7 +94,7 @@ test('two easy passes in a row lower the slot for its next subtask, across a mod
   await d.router.drain();
   const rec = d.ledger.getRecord(rows(d, "SELECT id FROM requests WHERE session_id = 'down'")[0]!.id as string) as any;
   assert.deepEqual(rec.slots.find((x: any) => x.role === 'coder'), { role: 'coder', slot: 0, step: 'opus-medium', ups: 0, downs: 1 });
-}));
+}, { forceCheckability: 'unchecked' }));   // decision 231: not checkable, so the hard L3 coder starts high (s5) with step-down room
 
 test('what is not an easy pass: the lead\'s word, a second attempt, a result nobody reported, a late report', () => withDaemon(async (d, repo) => {
   const s = await l3(d, 'not-easy', repo);
@@ -130,7 +130,7 @@ test('what is not an easy pass: the lead\'s word, a second attempt, a result nob
   assert.deepEqual(await s.post(s.call('X8', 'coder', 'opus', 'high')), {});
   await s.easy('X7');
   assert.deepEqual([coder0(d)!.step, coder0(d)!.easy_streak, coder0(d)!.last_easy], ['s5', 0, 0]);
-}));
+}, { forceCheckability: 'unchecked' }));   // decision 231: not checkable, so the hard L3 coder starts high (s5)
 
 test('a raise locks the slot for two tasks; coming back down gives the raise back but not the lead-only raise', () => withDaemon(async (d, repo) => {
   const s = session(d, 'lock', repo);
@@ -172,7 +172,7 @@ test('a verify miss right after a step-down raises the slot again and locks it',
   let fail = false;
   return (async () => {
     const repo = makeRepo({ 'src/a.ts': 'a\n', 'fail.cjs': 'process.exit(1)\n' });
-    const d = await startTestDaemon({ verify: { resolveCommands: async () => (fail ? [{ kind: 'test' as const, command: 'node fail.cjs' }] : []) } });
+    const d = await startTestDaemon({ verify: { resolveCommands: async () => (fail ? [{ kind: 'test' as const, command: 'node fail.cjs' }] : []) }, config: { forceCheckability: 'unchecked' } });   // decision 231: not checkable, hard L3 coder at s5
     try {
       const s = await l3(d, 'bounce', repo);
       await s.pass('X1', 'opus', 'high');
@@ -200,7 +200,7 @@ test('config stepDown "off": easy passes are recorded and nothing moves', () => 
   assert.deepEqual((r => [r.ok, r.result?.steppedDown, r.result?.slot.step])(await s.easy('X2')), [true, undefined, 's5']);
   assert.deepEqual(rows(d, "SELECT review FROM subtasks WHERE id = 'X2'").map(r => JSON.parse(String(r.review)).margin), ['easy']);
   assert.deepEqual(await s.post(s.call('X3', 'coder', 'opus', 'high')), {});
-}, { stepDown: 'off' }));
+}, { stepDown: 'off', forceCheckability: 'unchecked' }));   // decision 231: not checkable, hard L3 coder at s5
 
 test('a v8 ledger gains the step-down columns', () => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ar-v8-'));

@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ACCEPTANCE_RULE_VERSION, ACCEPT_WINDOW_PROMPTS, DEFAULT_DIFFICULTY, MAX_STEP_UPS, PRICING_PER_MTOK, PROVISIONAL_BUDGET_USD, ROUTER_TOOL_PREFIX, RouterToolCall, dissatisfactionRule, holdoutDraw, isReask, promptSimilarity, afterEasyPass, afterOtherResult, afterRaise, atDispatch, costUsd, decideEscalation, formatTriageContext, isRouterToolName, l3SignalRoles, ladderStep,
-  difficultyRank, effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, maxDifficulty, memberStartCell, modelJump, normalizeLeadTriage, parseRoleFile, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
-  type Difficulty, type DifficultySource, type LeadModelClass, type Level, type ProjectIsolationInput, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
+  callStartCell, difficultyRank, effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, maxDifficulty, memberStartCell, modelJump, normalizeLeadTriage, parseRoleFile, profileNotch, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
+  type Checkability, type Difficulty, type DifficultySource, type LeadModelClass, type Level, type ProjectIsolationInput, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
   type LadderId, type RouterEvent, type RouterToolErrorCode, type RouterToolName, type RouterToolResult, type Step, type TeamPreset, type TriageResult, type Usage,
   type UpdateNotice, type VerifySignal,
 } from '@do-it-all-claude-code/core';
@@ -15,7 +15,7 @@ import type { ConfigFile } from './config.ts';
 import { AWAITING_USER_MARKER, agentMessageFrom, awaitsUser, classifyPrompt } from './continuation.ts';
 import { LeadNotes, type LeadNote } from './lead-notes.ts';
 import { checksByKind, checksPhrase, notRun } from './checks.ts';
-import { changedFiles, fileFingerprint, takeSnapshot } from './git.ts';
+import { changedFiles, fileFingerprint, headRef, repoRoot, takeSnapshot } from './git.ts';
 import { writeJsonAtomic, type HomeLayout } from './home.ts';
 import type { AcceptState, AgentRow, ClientRow, Holdout, Ledger, RequestRow, SlotRow, SubtaskChanges, SubtaskFile, SubtaskReview, SubtaskRow } from './ledger.ts';
 import { errorText, nullLogger, type Logger } from './log.ts';
@@ -28,8 +28,9 @@ import { MAX_RECORD_FILES, checkEndState, requestChanges, requestEndState, subta
 import { parseReportVerdict, reportAsksForScope, type ReportVerdict } from './review.ts';
 import { PromptMemory, acceptanceBlob, addSignal, newAcceptState, storedAcceptance } from './accept.ts';
 import { LEAD_CLASSES, RELEASE_LEVELS, applyRelease, releaseChange, routingHoldoutRate, routingMode, routingView, type RoutingView } from './routing.ts';
-import { BASH_NOT_FOUND, type Shell } from './shell.ts';
-import { checkAgentCall, concurrentWriterProblem, isAgentTool, managedRole, parseDifficultyTag, parseScope, parseTag, resolveCallDifficulty, scopeFileBody, startStep, stepOf } from './policy.ts';
+import { BASH_NOT_FOUND, verifyShell, type Shell } from './shell.ts';
+import { checkAgentCall, concurrentWriterProblem, isAgentTool, managedRole, parseDifficultyTag, parseScope, parseTag, resolveCallDifficulty, scopeChangesSource, scopeFileBody, startStep, stepOf } from './policy.ts';
+import { classifyProbe, isCheckable, probeCommand, probeTestCommand, PROBE_TIMEOUT_MS } from './checkability.ts';
 import { SessionQueue } from './queue.ts';
 import { TicketStore, addGlobs, removeGlobs, sortScopeGlobs, toolUseIdOf } from './tools.ts';
 import {
@@ -42,7 +43,7 @@ import {
 } from './repro.ts';
 import { resolveVerifyCommands } from './verify-source.ts';
 import { isNotStarted } from './not-started.ts';
-import { COMMAND_TIMEOUT_MS, SHARED_BUSY_MARK, TOTAL_TIMEOUT_MS, existsInTree, isEnvFailure, runVerify, subagentChanges, type VerifyCommand, type VerifyPlan } from './verify.ts';
+import { COMMAND_TIMEOUT_MS, SHARED_BUSY_MARK, TOTAL_TIMEOUT_MS, existsInTree, isEnvFailure, runCommand, runVerify, subagentChanges, type VerifyCommand, type VerifyPlan } from './verify.ts';
 
 export interface VerifySettings {
   commandTimeoutMs: number;
@@ -96,6 +97,7 @@ export interface StatusView {
     leadClass: string | null;          // opus | sonnet | haiku | other
     difficulty?: Difficulty;           // decision 230: the request's difficulty, when set
     difficultySource?: DifficultySource;   // lead | router | default
+    checkability?: Checkability;       // decision 231: whether the router can check the result here (probing | checkable | unchecked | no-tests)
   };
   roles: RoleView[];
   costUsd: number;
@@ -129,6 +131,8 @@ export class Router {
   readonly #now: () => Date;
   readonly #queue = new SessionQueue();
   readonly #abort = new AbortController();
+  /** Decision 231: the checkability probe's verdict per repo + HEAD, so sibling requests of a repo reuse it (a pending probe is its Promise). */
+  readonly #checkProbes = new Map<string, Checkability | Promise<Checkability>>();
   readonly #inflight = new Set<Promise<unknown>>();        // verify runs (outside the queue)
   readonly #snapshots = new Map<string, Promise<RequestSnapshot | undefined>>();   // T7: request start states being taken
   readonly #prompts = new PromptMemory();                   // decision 137: the last prompts of a session, in memory only
@@ -480,6 +484,9 @@ export class Router {
         triage: plan.triage, team: plan.team, presetSource: source, leadModel: leadModel ?? null, leadClass: leadModelClass(leadModel),
         ...('holdout' in plan && plan.holdout ? { holdout: plan.holdout } : {}),
         ...(forced ? { forcedFrom: t.level } : {}),
+        // decision 231: forced by config (benchmarks/tests), else "probing" for a live request until the background probe resolves
+        ...(this.#config.forceCheckability ? { checkability: this.#config.forceCheckability }
+          : !when.closedAt && !ev.spooled && ev.cwd ? { checkability: 'probing' as const } : {}),
       });
       if (!manual) return req;
       this.ledger.clearPendingLevel(ev.sessionId);
@@ -503,6 +510,58 @@ export class Router {
       if (s) this.ledger.setRequestSnapshot(req.id, s);
       this.#snapshots.delete(req.id);
     })));
+    this.#probeCheckability(req, ev.cwd);   // decision 231: find out if the router can check this request's result here
+  }
+
+  /**
+   * Decision 231: probe once, in the background, whether the router can CHECK this request's result here — does the
+   * repo's verify test command actually start in this environment? Cached per repo + HEAD so sibling requests reuse
+   * it. The verdict is stamped on the request (StatusView.request.checkability, the office, router_get_plan) and
+   * drives where a source-changing coder starts: checkable → a cheap worker raised on a miss; not checkable → Opus.
+   */
+  #probeCheckability(req: RequestRow, cwd: string | undefined): void {
+    if (!cwd || this.#config.forceCheckability) return;   // decision 231: forced value is stamped at createRequest; no probe
+    this.#track((async () => {
+      const root = await repoRoot(cwd).catch(() => undefined);
+      if (!root) return this.#stampCheckability(req, 'no-tests');   // not a git work tree: nothing to run here
+      const head = (await headRef(root).catch(() => '')) ?? '';
+      const key = `${root}@${head}`;
+      let got = this.#checkProbes.get(key);
+      if (got === undefined) {
+        const p = this.#runCheckProbe(root, head).catch(() => 'unchecked' as Checkability);
+        this.#checkProbes.set(key, p);
+        got = await p;
+        this.#checkProbes.set(key, got);
+      } else if (typeof got !== 'string') {
+        got = await got;
+      }
+      this.#stampCheckability(req, got);
+    })());
+  }
+
+  #stampCheckability(req: RequestRow, c: Checkability): void {
+    this.#track(this.#queue.run(req.sessionId || '_', () => {
+      if (this.ledger.getRequest(req.id)) this.ledger.setRequestCheckability(req.id, c);
+    }));
+  }
+
+  /** Runs the probe command (pytest collects only; other runners run as given) and reads whether the tests started. */
+  async #runCheckProbe(root: string, head: string): Promise<Checkability> {
+    const { commands } = await resolveVerifyCommands({
+      role: 'coder', repoRoot: root, ...(head ? { baseRef: head } : {}),
+      ...(this.#config.pluginDir ? { pluginDir: this.#config.pluginDir } : {}),
+      readRole: role => { try { return this.#roleText(role); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e; } },
+    });
+    const testCmd = probeTestCommand(commands);
+    if (!testCmd) return 'no-tests';
+    const cmd = probeCommand(testCmd);
+    const env = verifyEnv();
+    const shell = await verifyShell(env);
+    if (!shell.ok) return 'unchecked';
+    const r = await runCommand(cmd, root, PROBE_TIMEOUT_MS, this.#abort.signal, { env, shell });
+    if (r.aborted) return 'probing';
+    if (r.timedOut) return 'unchecked';
+    return classifyProbe(cmd, r.output, r.code);
   }
 
   /** Background work the daemon waits for before it closes the ledger. */
@@ -837,10 +896,23 @@ export class Router {
     // session and tag). A subtask of this request that was allowed but never started may be re-dispatched.
     const neverStarted = (s: SubtaskRow) => s.requestId === req.id && s.status === 'pending' && !s.agentId;
     const tagBusy = this.ledger.activeSubtasksInSession(ev.sessionId).some(s => s.id === tag && !neverStarted(s));
+    // decision 231 (item 7): a retry re-dispatches the SAME subtask with a scope never narrower than its first
+    // attempt's, so the worker can still reach a cause it already found (a granted path included); the prior scope
+    // and the call's are unioned. scope.ok is true here (checked above), so mutating allowed/unscoped is safe.
+    if (scope.ok) {
+      const prior = subtasks.find(s => s.id === tag);
+      // only a RETRY (the prior attempt missed or ended unverified) is widened — not a fresh re-dispatch after a pass,
+      // where the lead deliberately gives a new scope (decision 129).
+      if (prior && prior.agentId && !neverStarted(prior) && (prior.status === 'failed' || prior.status === 'hitl')) {
+        if (prior.unscoped) { scope.unscoped = true; scope.allowed = ['**']; }
+        else if (!scope.unscoped) scope.allowed = [...new Set([...scope.allowed, ...prior.writeScope])];
+      }
+    }
     // decision 230 (items 5, 6): this call's difficulty — its [difficulty:] tag, else the request's; a coder that can
     // change source files may not be tagged below a set request difficulty (resolveCallDifficulty raises it, source 'floor').
+    const diffTag = parseDifficultyTag(prompt);
     const callDiff = resolveCallDifficulty({
-      role, ...(parseDifficultyTag(prompt) ? { tag: parseDifficultyTag(prompt)! } : {}),
+      role, ...(diffTag ? { tag: diffTag } : {}),
       requestDifficulty: req.triage.difficulty ?? DEFAULT_DIFFICULTY,
       requestDifficultySet: req.triage.difficultySource === 'lead' || req.triage.difficultySource === 'router',
       scope: scope.allowed, unscoped: scope.unscoped,
@@ -848,7 +920,10 @@ export class Router {
     const check = checkAgentCall({
       tag, role, level: req.level, preset: req.team, budgetUsd: req.budgetUsd, spentUsd: req.usedUsd,
       fableOptIn: this.#config.fableOptIn === true,
-      difficulty: callDiff.difficulty, profile: profileOf(this.#config),   // decisions 225, 226, 230: the call's own difficulty sets the start cell
+      // decisions 225, 226, 230, 231: the call's own difficulty, and — for a source-changing coder — whether the
+      // router can check the result here, set the start cell.
+      difficulty: callDiff.difficulty, profile: profileOf(this.#config),
+      checkable: isCheckable(req.checkability), changesSource: scopeChangesSource(scope.allowed, scope.unscoped), tagged: diffTag !== undefined,
       busySlots: subtasks.filter(s => s.role === role && active(s) && s.id !== tag).map(s => s.slot),
       tagBusy,
       slotSteps: Object.fromEntries(this.ledger.getSlots(req.id).filter(x => x.role === role).map(x => [x.slot, x.step])),
@@ -992,9 +1067,11 @@ export class Router {
   }
 
   /**
-   * Decision 225, point 2: a HARD task that came back unverified (verify never ran) jumps the slot one MODEL up,
-   * once per slot per request and within the request budget, before it is left to the lead. routine/moderate tasks
-   * are left unverified as before. Returns true when it jumped (the subtask is left failed for a new attempt).
+   * Decision 225/230/231: a moderate/hard subtask that came back unverified (verify never ran) jumps the slot one
+   * MODEL up, once per slot per request and within the request budget, before it is left to the lead. A routine
+   * subtask is left unverified as before. Decision 231 (item 3): this blind retry fires ONLY when the subtask ran
+   * below s5 (opus-high) — a strong start (s5+, e.g. a not-checkable coder) that ends unverified goes straight back
+   * to the lead, since a costlier model that still cannot be verified is waste. Returns true when it jumped.
    */
   #unverifiedRetry(requestId: string, sub: SubtaskRow, at: string): boolean {
     const req = this.ledger.getRequest(requestId);
@@ -1002,6 +1079,7 @@ export class Router {
     // decision 230 (item 3): the SUBTASK's own difficulty decides (its [difficulty:] tag, else the request's).
     const difficulty = sub.difficulty ?? req.triage.difficulty ?? DEFAULT_DIFFICULTY;
     if (difficulty === 'routine') return false;   // a routine unverified result goes back to the lead as today
+    if (stepIndex(sub.step) >= stepIndex('s5')) return false;   // decision 231: no blind retry from a strong (s5+) start
     if (this.ledger.listStepChanges({ requestId }).some(c => c.role === sub.role && c.slot === sub.slot && c.detail === 'unverified-retry')) return false;   // one retry per slot
     if (req.usedUsd >= req.budgetUsd) return false;   // no budget for a stronger worker
     const state = this.ledger.getSlots(requestId).find(x => x.role === sub.role && x.slot === sub.slot);
@@ -1094,7 +1172,7 @@ export class Router {
     // Decision 145: what the report says is read now, from the hook input, as tokens; its text is not kept.
     const judge = !ev.spooled && !!sub && isJudgeRole(sub.role);
     const reported = judge ? parseReportVerdict(ev.lastAssistantMessage) : undefined;
-    if (!ev.spooled && sub && !judge && reportAsksForScope(ev.lastAssistantMessage)) {
+    if (!ev.spooled && sub && !judge && reportAsksForScope(ev.lastAssistantMessage, { allowed: sub.writeScope, unscoped: sub.unscoped })) {
       if (this.#scopeAsked.size >= 500) this.#scopeAsked.clear();
       this.#scopeAsked.add(agentId);
     } else this.#scopeAsked.delete(agentId);
@@ -1252,15 +1330,15 @@ export class Router {
         // Decision 219: a subtask that changed no file (a reviewer) has no changed code to test, and a lead told to
         // run "those tests" spent a turn on the coder's tests the router had already run.
         return `${head}: verify passed — ${checks || 'no checks configured'}${tail} (${testsRan
-          ? 'already verified by the router: do not re-run the test suite; for more assurance run only the tests of the changed code'
+          ? 'already verified by the router: do not re-run the test suite'
           : files === '0' ? 'it changed no files, so there is nothing to test'
-          : 'verify ran no tests for this change: if the changed code has tests, run those once yourself, a targeted run, not the whole suite'}).`
+          : 'verify ran no tests for this change; the router has nothing more to check here — do not run tests of your own'}).`
           + this.#passedNote(agent.requestId, sub, agentId) + leadNote(sub.repro);
       case 'failed': {
         // decision 230 (item 3): a moderate/hard subtask that could not be verified has one stronger attempt set up.
         const retry = this.#pendingUnverifiedRetry(agent.requestId, sub);
         if (retry) {
-          return `${head}: it could not be verified here (verify did not run). Because this is a ${sub.difficulty ?? 'moderate or hard'} subtask, the router set up one stronger attempt: its slot now runs at ${retry.step} (model="${retry.model}", effort="${retry.effort}"). Dispatch subtask ${sub.id} again now with these values before you accept it, and do not tell the user it is done until that attempt has finished${tail}.`;
+          return `${head}: it could not be verified here (verify did not run). Because this is a ${sub.difficulty ?? 'moderate or hard'} subtask, the router set up one stronger attempt: its slot now runs at ${retry.step} (model="${retry.model}", effort="${retry.effort}"). Dispatch subtask ${sub.id} again now with these values and the SAME scope (not a narrower one) before you accept it; the previous attempt's changes stay in the tree as a starting point to build on, not to review. Do not tell the user it is done until that attempt has finished${tail}.`;
         }
         if (sub.verdict === 'rejected') {
           return `${head}: its result was reported as wrong (review by ${sub.review?.by ?? 'the lead'})${tail}.` + this.#afterFailure(sub, 'what was wrong');
@@ -1286,15 +1364,19 @@ export class Router {
         if (sub.verdict === 'unverified') {
           const env = signals.filter(isEnvFailure).map(x => (x.detail ?? '').split('; verify cannot run')[0]);
           if (env.length) {
-            return `${head}: verify could not run in this environment (${env.join('; ')}); this is not counted as a failure, check the result yourself before relying on it${tail}.`;
+            return `${head}: verify could not run in this environment (${env.join('; ')}); this is not counted as a failure${tail}. The router could not verify the result here: do not write or run checks of your own — read the change (git diff) and tell the user what was changed and that it was not tested here.`;
           }
           // decision 212
           const stuck = signals.filter(isNotStarted).map(x => (x.detail ?? '').split('\n')[0]!.slice(0, 300));
           if (stuck.length) {
-            return `${head}: verify could not start the tests, before and after one fix attempt (${stuck.join('; ')}). The error is in no file this subtask changed, so it is not counted as a failure and the ${sub.role} slot keeps its step${tail}.`
-              + ' Do not dispatch the subtask again for this and do not try to repair the test setup: read the change (git diff), then tell the user what was changed and that the tests could not be run here.';
+            const base = `${head}: verify could not start the tests, before and after one fix attempt (${stuck.join('; ')}). The error is in no file this subtask changed, so it is not counted as a failure and the ${sub.role} slot keeps its step${tail}.`;
+            // decision 231 (item 8): when the report names a real cause OUTSIDE this subtask's scope, do not tell the
+            // lead to drop it — offer the scope widening and one more dispatch; otherwise it is left to the user, untested.
+            return base + (this.#scopeAsked.has(agentId)
+              ? ` Its report names a cause outside this subtask's scope: to pursue it, call ${ROUTER_TOOL_PREFIX}router_request_scope to grant that path, then dispatch subtask ${sub.id} once more with the same scope. Do not try to repair the test setup.`
+              : ' Do not dispatch the subtask again for this and do not try to repair the test setup: read the change (git diff), then tell the user what was changed and that the tests could not be run here.');
           }
-          return `${head}: verify did not run (router was offline); check the result yourself before relying on it${tail}.`;
+          return `${head}: verify did not run (router was offline)${tail}. The router could not verify the result here: do not write or run checks of your own — read the change (git diff) and tell the user what was changed and that it was not tested here.`;
         }
         if (sub.verdict === 'no_changes') {   // decision 145
           return `${head}: the ${sub.role} changed no file in its scope; verify ran on an unchanged tree, so this is not a pass${tail}.`
@@ -1876,9 +1958,9 @@ export class Router {
     const req = this.ledger.getRequest(sub.requestId);
     const slot = this.ledger.getSlots(sub.requestId).find(x => x.role === sub.role && x.slot === sub.slot);
     if (req && req.usedUsd < req.budgetUsd && slot && stepIndex(slot.step) > stepIndex(sub.step)) {
-      return `${raised} Dispatch subtask ${sub.id} again now with these values, and include ${what} in its prompt. Do not report to the user before that attempt has finished.`;
+      return `${raised} Dispatch subtask ${sub.id} again now with these values and the SAME scope (not a narrower one), and include ${what} in its prompt; the previous attempt's changes stay in the tree as a starting point to build on, not to review. Do not report to the user before that attempt has finished.`;
     }
-    return `${raised} Decide: dispatch a new attempt with ${what}, or report to the user.`;
+    return `${raised} Decide: dispatch a new attempt with ${what} (keep the same scope; the previous changes are a starting point, not to review), or report to the user.`;
   }
 
   readonly #roleTools = new Map<string, { stamp: string; writes: boolean }>();
@@ -2154,6 +2236,7 @@ export class Router {
         request: {
           id: r.id, level: r.level, preset: r.preset, leadDirect: r.leadDirect, status: r.status, budgetUsd: r.budgetUsd, usedUsd: r.usedUsd,
           source: r.source, l3Signs: (row?.triage as { l3Signs?: unknown } | undefined)?.l3Signs === true,
+          ...(r.checkability ? { checkability: r.checkability } : {}),   // decision 231
         },
         roles: view.roles.map(x => {
           const upCount = slots.find(y => y.role === x.role && y.slot === x.slot)?.upCount ?? 0;
@@ -2229,9 +2312,38 @@ export class Router {
       result: {
         requestId: req.id, recorded: true, replanned, level: now.level, preset: now.preset, leadDirect: now.team.leadDirect === true,
         budgetUsd: now.budgetUsd, difficulty, difficultySource: source,
+        // Decision 231: the brief no longer prints per-role cells (the lead cannot derive them: checkability drives the
+        // coder's), so the answer carries them — always, re-planned or not. A call with other values is refused with these.
+        ...(now.team.leadDirect ? {} : { calls: this.#callValues(now) }),
         ...(replanned ? { brief: this.#triageContext(now.triage, now.team, bind.cwd, now.leadModel) } : {}),
       },
     };
+  }
+
+  /**
+   * Decision 231: for each role of the team, the model/effort to call it with at each difficulty, given this
+   * request's checkability — what the brief used to print statically. A source-changing coder follows checkability;
+   * the other roles follow the 226 table. A user teams.yaml start overrides, as everywhere.
+   */
+  #callValues(req: RequestRow): string {
+    const checkable = isCheckable(req.checkability);
+    const notch = profileNotch(profileOf(this.#config));
+    const fableOptIn = this.#config.fableOptIn === true;
+    const diffs: Difficulty[] = ['routine', 'moderate', 'hard'];
+    const lines = req.team.roles.filter(r => r.count > 0).map(r => {
+      const cells = diffs.map(d => {
+        const cell = callStartCell({ role: r.role, difficulty: d, checkable, changesSource: r.role === 'coder', tagged: true },
+          { notch, fableOptIn, ...(r.startSet && r.start ? { override: r.start } : {}) });
+        const s = ladderStep(cell);
+        return `${s.alias}/${s.effort}`;
+      });
+      const values = cells.every(c => c === cells[0]) ? `${cells[0]} at every difficulty` : diffs.map((d, i) => `${d} ${cells[i]}`).join(', ');
+      return `   - ${r.role} — subagent_type "do-it-all-claude-code:${r.role}": ${values}`;
+    });
+    const note = req.checkability === 'checkable' ? 'the router can check results here (tests run)'
+      : req.checkability === 'probing' || req.checkability === null ? 'checking whether tests run here'
+        : 'the router cannot check results here (tests do not run), so a source-changing coder starts on a stronger model';
+    return `Model and effort for each subtask's difficulty (${note}); a call with other values is refused with the right ones:\n${lines.join('\n')}`;
   }
 
   #reviewSignal(req: RequestRow, sub: SubtaskRow, review: SubtaskReview, extra: { issues?: number | undefined; categories?: readonly string[] | undefined }, at: string): void {
@@ -2858,6 +2970,7 @@ export class Router {
         presetSource: r.presetSource, forcedFrom: r.forcedFrom, replannedFrom: r.replannedFrom?.level ?? null,
         leadModel: r.leadModel, leadClass: r.leadClass,
         ...(r.triage.difficulty ? { difficulty: r.triage.difficulty, difficultySource: r.triage.difficultySource } : {}),   // decision 230
+        ...(r.checkability ? { checkability: r.checkability } : {}),   // decision 231
       },
       roles,
       costUsd: round6(r.usedUsd + r.leadCostUsd),

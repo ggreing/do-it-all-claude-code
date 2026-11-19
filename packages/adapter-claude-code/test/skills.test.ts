@@ -153,21 +153,48 @@ test('decision 230: the lead coordinates, splits by difficulty and does not acce
   // a thin lead: the first look judges size and difficulty only
   assert.match(body, /only to judge the size and the difficulty/);
   assert.match(body, /Do not trace the root cause, read source files in depth, or draft the fix yourself/);
-  assert.match(body, /first-look notes/);
   // a bug report in code the lead has not traced is hard; the router's floor wins when higher
   assert.match(body, /wrong behaviour or an error in code you have not fully traced/);
   assert.match(body, /higher of your report and the floor is used/);
-  // each subtask carries its own difficulty on the prompt's third line, and its cell follows from the table
-  assert.match(body, /the third `\[difficulty: <routine\|moderate\|hard>\]`/);
-  assert.match(body, /\| coder, tester \| haiku · low \| sonnet · medium \| opus · high \|/);
-  assert.match(body, /never tagged below the request's difficulty/);
-  assert.match(body, /\[difficulty: hard\]\\n…"\)\nAgent\(.*\n.*\[difficulty: routine\]/, 'the parallel example sends a hard and a routine part together');
-  // an unverified result: one retry, same subtask, before anything is accepted
+  // a subtask the lead tags carries its difficulty on the prompt's third line
+  assert.match(body, /the third `\[difficulty: <routine\|moderate\|hard>\]` when you tag the subtask/);
+  assert.match(body, /\[difficulty: hard\]\\n…"\)\nAgent\(.*\n.*\[scope: CHANGELOG\.md\]\\n…"\)/, 'the parallel example sends a hard part and an untagged changelog together');
+  // an unverified result with a retry: the same subtask once more, before anything is accepted
   assert.match(body, /\*\*unverified\*\*/);
-  assert.match(body, /you do not accept it\*\* \(decision 230\)/);
+  assert.match(body, /\*\*do not accept it yet\*\*/);
   assert.match(body, /`retry`/);
   // from L1 up even a small change is delegated: no one-file hand-back to the lead
   assert.doesNotMatch(body, /hands the request to you \(`leadDirect` true\)/);
+});
+
+test('decision 231: the router sets the values, the lead says where to look and does not check results itself', () => {
+  const body = read('skills/lead-orchestrator/SKILL.md');
+  // no table to read values from: the router's answer gives them, from the difficulty and whether it can check the result
+  assert.doesNotMatch(body, /\| coder, tester \|/);
+  assert.match(body, /use the values in the router's answer/);
+  assert.match(body, /whether the router can check the result/);
+  assert.match(body, /starts once on Opus at high effort/);
+  // untagged: a source-changing coder at the request's difficulty, the rest routine
+  assert.match(body, /tag the hard parts/);
+  assert.match(body, /Untagged, a coder that changes source code runs at the request's difficulty, and a tag never puts it below that; any other untagged subtask \(a test, the changelog, running the checks, a summary\) runs as routine/);
+  // the notes say where to look, never how or where to fix; acceptance is the request's behaviour
+  assert.match(body, /\*\*never how or where to fix it\*\* \(decision 231\)/);
+  assert.match(body, /The acceptance check is the behaviour the request asks for, not a design/);
+  // a retry is the same subtask with the earlier attempt as a candidate
+  assert.match(body, /A retry is \*\*the same subtask\*\*, with the same spec and scope, not a narrower one/);
+  // a cause outside the coder's scope: grant the path and send the same subtask again, no workaround
+  assert.match(body, /grant that path with `router_request_scope`, then dispatch the same subtask once more with the same scope/);
+  assert.match(body, /Do not ask it to review that attempt or to keep the change minimal/);
+  // the lead does not verify a worker's result itself
+  assert.match(body, /do not write or run checks of your own/);
+  assert.doesNotMatch(body, /targeted run|run only the tests of|run the changed code's tests/);
+  assert.match(body, /When the line names no retry \(decision 231/);
+});
+
+test('decision 231: the coder diagnoses a bug before it fixes it', () => {
+  const coder = read('agents/coder.md');
+  assert.match(coder, /For a bug, the lead's notes on where to look are hypotheses\. Reproduce the problem first .*trace the cause, then fix it at the cause\./);
+  assert.match(coder, /If the cause is outside your allowed paths, do not work around it inside them: name it under Scope request and stop\./);
 });
 
 test('router skill documents both commands', () => {

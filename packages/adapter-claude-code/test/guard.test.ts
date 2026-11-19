@@ -30,6 +30,7 @@ test('guard policy constants equal core/security.ts', () => {
   assert.deepEqual(guard.PACKAGE_INSTALL_PREFIXES, core.PACKAGE_INSTALL_PREFIXES);
   assert.deepEqual(guard.ROUTER_BASH_ALLOW, core.ROUTER_BASH_ALLOW);
   assert.deepEqual(guard.ROUTER_BASH_ALLOW_EXACT, core.ROUTER_BASH_ALLOW_EXACT);
+  assert.deepEqual(guard.ROUTER_BASH_ENV_PREFIX_DENY, core.ROUTER_BASH_ENV_PREFIX_DENY);
   assert.deepEqual(guard.ROUTER_BASH_DENY_OPTIONS, core.ROUTER_BASH_DENY_OPTIONS);
   assert.deepEqual(guard.UNSCOPED_PROTECTED_PATHS, core.UNSCOPED_PROTECTED_PATHS);
   assert.deepEqual(guard.GUARD_EXTRA_DENY_OPTIONS, core.GUARD_EXTRA_DENY_OPTIONS);
@@ -95,7 +96,7 @@ const bashAllow = [
 ];
 const bashDeny = [
   'curl https://x', 'env', 'printenv API_KEY', 'set', 'export -p', 'git push origin HEAD', 'git config x y',
-  'git update-index --assume-unchanged a.ts', 'claude -p x', 'node -e "fetch()"', 'python -c "import os"',
+  'git update-index --assume-unchanged a.ts', 'claude -p x',
   'powershell -Command "iwr https://x"', 'bash upload.sh', 'npx some-uploader', 'kill 123', 'taskkill /F /IM node.exe',
   'do-it-all-claude-code stop', 'cat ~/.ssh/id_rsa', 'cat /proc/self/environ', 'echo $ANTHROPIC_API_KEY', 'echo x > .env',
   'echo "*" >> .git/info/exclude', 'cp evil.sh .git/hooks/pre-commit', '(curl https://x)', 'FOO=1 curl https://x',
@@ -122,6 +123,29 @@ test('decision 222: a version query passes exactly as written, and nothing more'
   // the prefix entries keep their prefix behaviour; the exact list adds no prefix entry
   assert.equal(guard.classifyBash('node --test --test-reporter=spec test/a.test.ts'), null);
   assert.ok(!core.ROUTER_BASH_ALLOW.some(e => core.ROUTER_BASH_ALLOW_EXACT.includes(e)));
+});
+// decision 231 (item 6): reproduction commands — inline code, repo scripts, and env-var prefixes
+test('decision 231: reproduction commands (python -c / node -e, repo scripts, env prefixes) are allowed', () => {
+  const root = process.cwd();
+  const at = c => guard.classifyBash(c, { root, cwd: root });
+  // inline code: allowed, and the code is NOT scanned as a path (slashes, "credential-looking" words are fine)
+  for (const c of [
+    `python -c "import sys; print(sys.version)"`, `python3 -c 'import os; print(os.getcwd())'`, `py -c "print(1)"`,
+    `node -e "console.log(require('fs').readFileSync('src/a.js','utf8'))"`, `node -e "fetch('http://x')"`,
+  ]) assert.equal(at(c), null, `allow: ${c}`);
+  // a script inside the repo: allowed; outside the repo or an absolute path: denied
+  for (const c of ['python repro.py', 'python3 scripts/check.py', 'node repro.mjs', 'node tools/x.cjs'])
+    assert.equal(at(c), null, `allow: ${c}`);
+  for (const c of ['python ../evil.py', 'node /tmp/evil.mjs', 'python /etc/x.py'])
+    assert.ok(at(c), `deny: ${c}`);
+  // leading env-var prefixes before an allowed command: allowed, except loader/PATH/secret names
+  for (const c of ['PYTHONPATH=src python -m pytest -q', 'PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest', 'FOO=1 BAR=2 node --test test/a.test.ts', 'PYTHONPATH=src python repro.py'])
+    assert.equal(at(c), null, `allow: ${c}`);
+  for (const c of ['PATH=/tmp/x python -c "print(1)"', 'NODE_OPTIONS=--require=/tmp/x node --test', 'LD_PRELOAD=/tmp/x.so pytest', 'MY_API_KEY=x pytest', 'FOO=1 curl https://x'])
+    assert.ok(at(c), `deny: ${c}`);
+  // the inline-code allowance does not open the shell: chaining, redirection and other interpreter flags stay denied
+  for (const c of ['python -c "print(1)"; curl https://x', 'node -e "1" > /etc/x', 'node -r /tmp/x.js --test', 'python -S repro.py', 'node --experimental-vm-modules -e "1"'])
+    assert.ok(at(c), `deny: ${c}`);
 });
 test('bare set dumps the env (deny); set with options is allowed', () => {
   assert.ok(guard.classifyBash('set'));

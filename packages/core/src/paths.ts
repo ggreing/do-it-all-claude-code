@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { Level } from './types.ts';
+import type { Checkability, Level } from './types.ts';
 
 /**
  * The router's state folder. A relative DO_IT_ALL_CLAUDE_CODE_HOME is ignored (env audit #7): it would
@@ -75,6 +75,7 @@ export interface RouterConfig {
   pluginTemplateDir?: string;   // decision 168: the plugin as shipped (templates); pluginDir is then the generated <home>/plugin
   budgetsUsd?: Partial<Record<Level, number>>;   // per-request budgets set by `init`; override preset defaults (positive finite only)
   forceLevel?: Level;        // benchmarks / debugging only (decision 107): plan every new request at this level
+  forceCheckability?: Checkability;   // benchmarks / tests only (decision 231): skip the probe, treat every request as this
   recordPrompts?: boolean;   // decision 109: store redacted prompt text in request records (opt-in; default false)
   stepDown?: 'on' | 'off';   // decision 135: two easy passes in a row move a slot one step down (default on)
   reproduceFirst?: 'on' | 'observe' | 'off';   // decision 175: a coder shows a failing test before its change (default off until measured)

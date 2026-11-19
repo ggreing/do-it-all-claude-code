@@ -60,8 +60,9 @@ test('default start steps of roles a preset lacks (decision Q3)', () => {
 });
 
 const call = (o: Partial<AgentCallInput>): AgentCallInput => ({
-  // decision 226: pin difficulty routine so the coder's cell is s1 (haiku/low) and the Q3 strict-match table reads as before
+  // decision 226/231: routine + a checkable repo gives the coder cell s1 (haiku/low), so the Q3 strict-match table reads as before
   tag: 'A', role: 'coder', model: 'haiku', effort: 'low', level: 'L1', preset: DEFAULT_PRESETS.L1, difficulty: 'routine',
+  checkable: true, changesSource: true, tagged: true,
   budgetUsd: 2, spentUsd: 0, fableOptIn: false, busySlots: [], tagBusy: false, ...o,
 });
 
@@ -177,15 +178,18 @@ test('decision 230: a call difficulty is its tag, else the request; a source cod
   assert.deepEqual(resolveCallDifficulty({ role: 'coder', tag: 'routine', requestDifficulty: 'moderate', requestDifficultySet: false, scope: ['src/**'], unscoped: false }), { difficulty: 'routine', source: 'tag' });
 });
 
-test('decision 230: a call difficulty sets the start cell, so two coder subtasks run at different cells (item 7)', () => {
-  const common = { level: 'L2' as const, preset: DEFAULT_PRESETS.L2, budgetUsd: 5, spentUsd: 0, fableOptIn: false, tagBusy: false };
-  // a routine coder starts at s1 (haiku/low); a hard coder at s5 (opus/high) — different free slots, different cells
+test('decision 231: a call difficulty + checkability set the start cell, so two coder subtasks run at different cells (item 7)', () => {
+  // a checkable repo: a routine/moderate coder starts at s1 (haiku/low), a hard one at s3 (sonnet/medium) — different cells
+  const common = { level: 'L2' as const, preset: DEFAULT_PRESETS.L2, budgetUsd: 5, spentUsd: 0, fableOptIn: false, tagBusy: false, checkable: true, changesSource: true, tagged: true };
   const routine = checkAgentCall({ ...common, tag: 'A', role: 'coder', difficulty: 'routine', busySlots: [], model: 'haiku', effort: 'low' } as AgentCallInput);
   assert.deepEqual([routine.ok, (routine as { step?: string }).step], [true, 's1']);
-  const hard = checkAgentCall({ ...common, tag: 'B', role: 'coder', difficulty: 'hard', busySlots: [0], model: 'opus', effort: 'high' } as AgentCallInput);
-  assert.deepEqual([hard.ok, (hard as { slot?: number; step?: string }).slot, (hard as { step?: string }).step], [true, 1, 's5']);
+  const hard = checkAgentCall({ ...common, tag: 'B', role: 'coder', difficulty: 'hard', busySlots: [0], model: 'sonnet', effort: 'medium' } as AgentCallInput);
+  assert.deepEqual([hard.ok, (hard as { slot?: number; step?: string }).slot, (hard as { step?: string }).step], [true, 1, 's3']);
   // a call whose model/effort does not match its difficulty's cell is denied with the right values
   const wrong = checkAgentCall({ ...common, tag: 'C', role: 'coder', difficulty: 'hard', busySlots: [], model: 'haiku', effort: 'low' } as AgentCallInput);
   assert.equal(wrong.ok, false);
-  assert.match((wrong as { reason: string }).reason, /the coder runs at step s5 \(model="opus", effort="high"\)/);
+  assert.match((wrong as { reason: string }).reason, /the coder runs at step s3 \(model="sonnet", effort="medium"\)/);
+  // NOT checkable: a source coder starts at s5 (opus/high) whatever the difficulty except routine (s3)
+  const unchecked = checkAgentCall({ ...common, checkable: false, tag: 'D', role: 'coder', difficulty: 'moderate', busySlots: [], model: 'opus', effort: 'high' } as AgentCallInput);
+  assert.deepEqual([unchecked.ok, (unchecked as { step?: string }).step], [true, 's5']);
 });

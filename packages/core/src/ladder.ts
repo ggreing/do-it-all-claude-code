@@ -214,6 +214,35 @@ export function startCellFor(role: Role, difficulty: Difficulty, opts: { overrid
   return base;
 }
 
+/** A source-changing coder's start cell (decision 231): checkability, not the 226 table, drives it. */
+const SOURCE_CODER_CHECKABLE: Record<Difficulty, LadderId> = { routine: 's1', moderate: 's1', hard: 's3' };
+const SOURCE_CODER_UNCHECKED: Record<Difficulty, LadderId> = { routine: 's3', moderate: 's5', hard: 's5' };
+
+/**
+ * The start cell for a live Agent call (decision 231): the request's difficulty is almost always a useless
+ * "moderate", so whether the router can CHECK the result drives where a coder begins.
+ *   - a source-changing coder follows checkability, not the 226 table: checkable → s1 (hard → s3), not
+ *     checkable → s5 (routine → s3); misses then move it up the measured path as before.
+ *   - reviewer and architect keep the 226 table (item 4).
+ *   - every other role (a non-source coder, a tester, a ui-designer) starts at its ROUTINE cell when the call
+ *     carries no [difficulty:] tag, and at the tag's cell when it does (item 4).
+ * The profile notch and a user teams.yaml start (`override`) still apply, exactly as in `startCellFor`.
+ */
+export function callStartCell(
+  i: { role: Role; difficulty: Difficulty; checkable: boolean; changesSource: boolean; tagged: boolean },
+  opts: { override?: LadderId; notch?: number; fableOptIn?: boolean } = {},
+): LadderId {
+  if (opts.override !== undefined) return opts.override;
+  let base: LadderId;
+  if (i.role === 'coder' && i.changesSource) base = (i.checkable ? SOURCE_CODER_CHECKABLE : SOURCE_CODER_UNCHECKED)[i.difficulty];
+  else if (i.role === 'reviewer' || i.role === 'architect') base = startCellFor(i.role, i.difficulty);
+  else base = startCellFor(i.role, i.tagged ? i.difficulty : 'routine');
+  const notch = opts.notch ?? 0;
+  if (notch > 0) return stepUp(base, opts.fableOptIn) ?? base;
+  if (notch < 0) return stepDown(base) ?? base;
+  return base;
+}
+
 // ------------------------------------------------------------------ step-down (spec 3.5, decision 135)
 
 /** This many easy passes in a row on a slot move it one step down for its next subtask. */

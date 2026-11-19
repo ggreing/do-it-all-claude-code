@@ -54,9 +54,50 @@ export function parseReportVerdict(lastMessage: unknown): ReportVerdict | undefi
 const SCOPE_REQUEST = /(?:^|[\s>*_`~|-])scope request[*_`]*\s*:\s*[*_`]*\s*([^\n]*)/i;
 const NOTHING = /^(?:none|no|n\/a|nothing|-|—)?[.*_`\s]*$/i;
 
-/** Whether a worker's report asks for paths outside its scope (its "Scope request:" item is not "none"). */
-export function reportAsksForScope(lastMessage: unknown): boolean {
+// Decision 231 (item 8): phrases that name the real cause of a bug in a file. 17630's worker wrote "Scope request:
+// none needed. The real cause is in matexpr.py …" — a file outside its scope, which the "none" line hid. A file
+// token is a path with a code-ish extension; ":123" line numbers are ignored.
+const FILE = String.raw`([A-Za-z0-9_][\w./-]*\.[A-Za-z0-9]{1,6})(?::\d+)?`;
+const CAUSE_RES = [
+  new RegExp(String.raw`\b(?:real|actual|root|underlying|true)\s+(?:cause|bug|problem|issue|fault)\b[^.\n]{0,60}?\bin\s+${FILE}`, 'gi'),
+  new RegExp(String.raw`\b(?:cause|bug|problem|issue|fault|fix)\b\s+(?:is|lies|sits|lives|belongs|originates)\b[^.\n]{0,40}?\b(?:in|at)\s+${FILE}`, 'gi'),
+  new RegExp(String.raw`\b(?:needs?|requires?|must)\b[^.\n]{0,40}?\b(?:change|edit|fix|modif\w+|patch)\b[^.\n]{0,20}?\b(?:in|to)\s+${FILE}`, 'gi'),
+];
+
+/** The cause files a report names (code-ish paths), de-duplicated and slash-normalised. */
+export function reportCauseFiles(text: string): string[] {
+  const out = new Set<string>();
+  for (const re of CAUSE_RES) for (const m of text.matchAll(re)) out.add(m[1]!.replace(/\\/g, '/').replace(/^\.\//, ''));
+  return [...out];
+}
+
+/** Whether a named cause file falls within a subtask's write scope (conservative: a bare name matches a scoped file by basename). */
+function fileInScope(file: string, allowed: readonly string[]): boolean {
+  const base = file.split('/').pop()!;
+  return allowed.some(raw => {
+    const g = raw.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (g === '**' || g === '**/*' || g === '*') return true;
+    const dir = g.replace(/\/?\*{1,2}.*$/, '').replace(/\/+$/, '');   // a subtree glob's fixed base
+    if (dir && file.includes('/') && (file === dir || file.startsWith(dir + '/'))) return true;
+    const gbase = g.split('/').pop()!;
+    if (gbase === base) return true;
+    if (/[*?]/.test(gbase)) { try { return new RegExp('^' + gbase.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$').test(base); } catch { return false; } }
+    return false;
+  });
+}
+
+/**
+ * Whether a worker's report asks for paths outside its scope: either its "Scope request:" item is not "none",
+ * or (decision 231, item 8) it names a real cause in a file OUTSIDE the given scope even while that line says none.
+ * Without a scope only the "Scope request:" line is read (the cause-file rule needs the scope to say "outside").
+ */
+export function reportAsksForScope(lastMessage: unknown, scope?: { allowed: readonly string[]; unscoped: boolean }): boolean {
   if (typeof lastMessage !== 'string') return false;
-  const m = SCOPE_REQUEST.exec(lastMessage.slice(0, MAX_REPORT_CHARS));
-  return !!m && !NOTHING.test(m[1]!.trim());
+  const text = lastMessage.slice(0, MAX_REPORT_CHARS);
+  const m = SCOPE_REQUEST.exec(text);
+  if (m && !NOTHING.test(m[1]!.trim())) return true;
+  if (scope && !scope.unscoped) {
+    for (const f of reportCauseFiles(text)) if (!fileInScope(f, scope.allowed)) return true;
+  }
+  return false;
 }

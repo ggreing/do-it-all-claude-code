@@ -26,9 +26,10 @@ test('spool is replayed in name order before the daemon listens; replayed events
     fs.writeFileSync(path.join(spool, `${stamp(0)}-2.jsonl`), [
       line(take('SessionStart'), at(0)),
       line(take('UserPromptSubmit'), at(1)),
-      // decision 226: the default difficulty is moderate, so the coder's cell is s3 (sonnet/medium); the spooled
-      // dispatch must match it to create subtask C (this test is about the replayed stop being unverified, not the cell).
-      line({ ...take('PreToolUse'), tool_input: { ...(take('PreToolUse').tool_input as object), model: 'sonnet', effort: 'medium' } }, at(2)),
+      // decision 231: moderate default in a checkable repo (test harness default), so the source coder's cell is s1
+      // (haiku/low); the spooled dispatch must match it to create subtask C (this test is about the replayed stop
+      // being unverified, not the cell).
+      line({ ...take('PreToolUse'), tool_input: { ...(take('PreToolUse').tool_input as object), model: 'haiku', effort: 'low' } }, at(2)),
       line(take('SubagentStart'), at(3)),
       '{"this is": not json',
       line(take('SubagentStop'), at(4)),

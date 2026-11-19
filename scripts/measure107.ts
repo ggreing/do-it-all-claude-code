@@ -60,6 +60,10 @@
 // --no-transcripts runs the router arrangements without one too (the router then works from estimates), and a
 // direct run never writes one. A router run that was to keep its transcript and left none stops the measurement
 // and gets no record: the router could not read the request or the lead's cost in it.
+// Every run starts with CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 (bench/src/kpi/run-args.ts RUN_ENV): print mode
+// otherwise stops a worker that is still running ten minutes after the lead's last turn. The task's timeout and
+// the cost cap end a run. A record lists the workers Claude Code stopped all the same (`killedWorkers`) and
+// keeps the end of the process's stderr (`stderrTail`).
 // Decision 174: each run's record carries `phases` (bench/src/kpi/phases.ts), from its stream-json, stamped on
 // arrival and kept in <out>/streams/, and the daemon ledger; `node scripts/kpi-phases.ts` reports them.
 import { execFileSync } from 'node:child_process';
@@ -74,8 +78,8 @@ import { gradeSwebench, workspacePatch } from '../bench/src/graders/swebench.ts'
 import { childEnv, CREDENTIAL_DENY } from '../bench/src/secrets.ts';
 import { loadPublicManifest } from '../bench/src/tasks.ts';
 import type { Task } from '../bench/src/types.ts';
-import { claudeBin, runCaptured } from '../bench/src/kpi/capture.ts';
-import { ALLOWED_SINCE_222, claudeArgs } from '../bench/src/kpi/run-args.ts';
+import { claudeBin, killedWorkers, runCaptured, stderrTail } from '../bench/src/kpi/capture.ts';
+import { ALLOWED_SINCE_222, RUN_ENV, claudeArgs } from '../bench/src/kpi/run-args.ts';
 import { analysePhases, type LedgerTiming, type StreamLine } from '../bench/src/kpi/phases.ts';
 import { mcpSeen, routerMcpReady } from '../bench/src/kpi/router-mcp.ts';
 import { leadTurns } from '../bench/src/kpi/session.ts';
@@ -202,8 +206,9 @@ async function runClaude(repo: string, configDir: string, prompt: string, a: Arr
   // -p run tells the router through ANTHROPIC_MODEL, which the relay hook passes on with the prompt. It is the
   // value of --model, so the run itself is the same; every arrangement gets it, router off included.
   // decision 226: on the subscription login the run gets no config folder of ours and no credential variable
-  const env = SUB ? subscriptionRunEnv(LEAD, home, process.env, keepsTranscript(a))
-    : { ...childEnv(configDir, { kind: 'api-key-helper' } as never), ANTHROPIC_MODEL: LEAD, ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
+  // RUN_ENV: no ceiling on how long print mode waits for a worker the lead is waiting for; timeoutSec and the cap end a run
+  const env = { ...(SUB ? subscriptionRunEnv(LEAD, home, process.env, keepsTranscript(a))
+    : { ...childEnv(configDir, { kind: 'api-key-helper' } as never), ANTHROPIC_MODEL: LEAD, ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) }), ...RUN_ENV };
   const bin = claudeBin();
   const c = await runCaptured(bin.cmd, [...bin.prefix, ...args], { cwd: repo, env, input: prompt, timeoutSec, streamFile });
   return { code: c.code, out: c.result, ms: c.ms, timedOut: c.timedOut, stderr: c.stderr, lines: c.lines, startedAt: c.startedAt };
@@ -426,6 +431,7 @@ for (const [task, a] of order) {
   // the reading after the run (grading gave the meter time to catch up) is the next run's reading before
   const before = reading;
   if (METER) { reading = await meter(`after ${key}`); console.log(`/usage: ${meterLine(reading)}`); }
+  const killed = killedWorkers(r.lines);
   const models = Object.entries(r.out?.modelUsage ?? {}).map(([m, u]: [string, any]) => ({ model: m, costUsd: Number(u.costUSD ?? 0) }));
   const rec = {
     taskId: task.id, arrangement: a, level: task.level, leadModel: LEAD, leadEffort: EFFORT, rep: 1, allowedSince222: true,
@@ -437,6 +443,9 @@ for (const [task, a] of order) {
     // decision 226: costUsd and the other $ of this record are then API-priced estimates
     ...(login ? { subscription: true, apiKeySource: login.apiKeySource, claudeVersion: login.version, transcript: keepsTranscript(a), limitEvents: login.limitEvents, meters: METER ? meterMoved(before, reading) : null } : {}),
     timedOut: r.timedOut, error: r.out?.is_error ? String(r.out?.subtype ?? r.out?.result ?? '').slice(0, 300) : (r.out ? undefined : r.stderr.slice(-300)),
+    // workers Claude Code stopped before they finished (their change may be half made, and the router's ledger has
+    // no stop for them), and the end of the process's stderr, where Claude Code says why
+    killedWorkers: killed, stderrTail: stderrTail(r.stderr),
     phases,
   };
   fs.appendFileSync(runsFile, JSON.stringify(rec) + '\n');
@@ -447,6 +456,7 @@ for (const [task, a] of order) {
   console.log(`  -> ${graded.pass ? 'PASS' : 'FAIL'} ${graded.detail} $${costUsd.toFixed(3)} ${rec.wallSeconds}s${routed}; spent $${spent().toFixed(2)} / $${BUDGET}`);
   const ws1 = phases.workers;
   console.log(`     phases: startup ${phases.startupSeconds ?? '?'}s, lead before 1st worker ${phases.leadBeforeFirstWorkerSeconds ?? '-'}s, ${ws1.length} worker(s) active ${phases.workersActiveSeconds ?? '-'}s (start delays ${ws1.map(w => w.startDelaySeconds ?? '?').join('/') || '-'}s), lead wrap-up ${phases.leadFinishSeconds ?? '-'}s, verify ${phases.verify.totalSeconds}s, hooks ${phases.hooks.totalSeconds}s x${phases.hooks.count}`);
+  if (killed.length) console.log(`     ${killed.length} worker(s) stopped by Claude Code before finishing (${killed.map(k => `${k.agent ?? 'agent'} at ${k.atSeconds}s`).join(', ')}): the change may be incomplete, and the router has no stop for them`);
   // decision 226: the run is recorded; what it showed about the login's limits decides whether another may start
   if (login?.warning) console.log(`     ${login.warning}`);
   const enough = login?.overage ?? (METER ? null : login?.warning);

@@ -139,6 +139,45 @@ reached by the slot's own movement (a miss, or the hard-unverified model jump) o
 `router_request_escalation`, not by a fourth difficulty value — difficulty stays three levels and
 the grid movement does the rest.
 
+## 1a. Checkability drives the coder's start cell (decision 231)
+
+The subscription validation showed the lead's up-front difficulty is almost always "moderate" and no
+signal, so for a **source-changing coder** the table above is superseded by whether the router can
+**check** the result in this environment:
+
+- **Checkability** is probed once per repository + HEAD, in the background at the request's open:
+  the repo's own test command is run in a bounded (~60 s) collect-only / list form, and the
+  decision-212 "tests did not start", missing-tool and test-count readings decide whether tests
+  actually ran. The verdict (`checkable`, `unchecked`, `no-tests`, or still `probing`) is cached per
+  repo + HEAD, stored on the request, and shown in `router_get_plan` and the office. Unknown (the
+  probe has not finished, or there is no test command) routes as **not checkable**. A bench/test
+  config `forceCheckability` skips the probe; the validation runs do not pin it, so the real probe is
+  measured.
+- **Source-changing coder start:** checkable and not hard → s1 (haiku · low); checkable and hard
+  (the lead's report or the router floor) → s3 (sonnet · medium); **not checkable → s5 (opus · high)
+  at once**, whatever the reported difficulty except routine (→ s3). Misses then move it up the
+  measured path as before. A tester, or any untagged subtask that changes no source (tests, docs,
+  changelog, config), starts at the **routine** cell; reviewer and architect keep the §1 table. The
+  per-subtask `[difficulty:]` tag and the coder floor still hold; the floor now matters only for
+  checkable work (s3 instead of s1). The hard-direct hand-on from a lead-direct level (decision 230)
+  still fires, but the one-coder team's cell is this checkability-driven one (s3 checkable, s5 not).
+- **No blind retry from a strong start:** the decision-230 "one stronger attempt before the hand-back"
+  for a moderate/hard subtask left unverified now fires **only when the subtask ran below s5**. A
+  coder that already ran at Opus (a not-checkable start) and still cannot be verified goes back to the
+  lead rather than spending a costlier model blind. The accept-guard holds only while a retry is
+  actually pending.
+- **Worker reproduction allowlist:** the worker Bash sandbox now allows a `python -c` / `node -e`
+  one-liner, a script inside the repository (`python path/in/repo.py`, `node path/in/repo.mjs`), and
+  leading environment-variable prefixes before an otherwise allowed command (`PYTHONPATH=src python -m
+  pytest`). A single invocation is still required, and network tools, writes outside the repository,
+  destructive git, and loader/`PATH`/secret-named prefixes stay blocked. (`python -c` code can do
+  anything the interpreter can — a test file already could; the shell-level blocks are what we keep.)
+- **Retry scope:** a retry (miss or unverified) re-dispatches the **same** subtask with a scope never
+  narrower than the first attempt's (the two are unioned), and the earlier attempt's changes stay in
+  the tree as a starting point, not a diff to review. A worker report that names a real cause in a
+  file **outside** its scope counts as a scope request even when its "Scope request:" line says none,
+  so the lead can grant that path and dispatch once more.
+
 ## 2. How a slot moves on the grid (decision 229)
 
 Step-UP and step-DOWN are **asymmetric**: up goes in big, measured steps so a miss buys a real
@@ -196,6 +235,10 @@ per-lead-model L1 lead-direct defaults (117/118/124) are **gone** (`smallChangeD
   handed back as before. This supersedes decision 212's "keep the step" for moderate/hard. While the
   retry is pending the lead cannot close the subtask with `router_report_result` accept — the router
   answers with the retry's Agent-call values (item 4).
+- **Hard hand-on from a lead-direct level**: on a level that is still lead-direct (L0, or a teams.yaml
+  `lead_direct`), a `direct` report whose final difficulty is `hard` (the lead's report or the router
+  floor) does not stay with the lead — the request is re-planned to a one-coder team at the hard cell
+  (s5, a worker above the lead's own model); routine/moderate direct reports stay with the lead.
 
 ## 4. Compatibility
 

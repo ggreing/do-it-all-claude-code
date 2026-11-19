@@ -82,6 +82,11 @@ export const ROUTER_BASH_ALLOW = [
   'yarn test', 'yarn run', 'yarn install', 'yarn add',
   'node --test', 'tsc',
   'pytest', 'python -m pytest', 'python3 -m pytest', 'py -m pytest',
+  // decision 231 (item 6): reproduction commands — a one-liner (`python -c …`, `node -e …`) or a repo script
+  // (`python path/in/repo.py`, `node path/in/repo.mjs`), the way Opus-alone found causes the worker could not.
+  // The code can do anything the interpreter can (a test file already could); the shell-level blocks are what
+  // we keep, and the guard enforces a single invocation, a repo-relative script, and no secret var references.
+  'python -c', 'python3 -c', 'py -c', 'node -e',
   'pip install', 'pip3 install', 'python -m pip install', 'uv pip install', 'uv sync', 'poetry install',
   'go test', 'go build', 'go vet', 'cargo test', 'cargo build', 'cargo check', 'make test', 'make build',
   // git: read and local commit only (no push, no config, no hooks)
@@ -97,6 +102,20 @@ export const ROUTER_BASH_ALLOW = [
  * puts before its test run. The entries above allow further arguments, and `node` with any argument runs code.
  */
 export const ROUTER_BASH_ALLOW_EXACT = ['node --version', 'node -v', 'npm --version', 'npm -v', 'python --version', 'python3 --version'];
+
+/**
+ * Decision 231 (item 6): a leading `VAR=value` before an otherwise allowed command is accepted (e.g.
+ * `PYTHONPATH=src python -m pytest`, `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest`), EXCEPT for these variable
+ * names — they change which binary runs or inject code into it, so a prefix that set one could run anything
+ * past the allowlist. A secret-looking name (SECRET_VAR_NAME_PATTERN) is refused too. The value is already
+ * safe: the lexer refuses command substitution, and SECRET_VAR references are refused for the whole line.
+ * Mirrored in the guard (equality test).
+ */
+export const ROUTER_BASH_ENV_PREFIX_DENY = [
+  'PATH', 'PATHEXT', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH', 'NODE_OPTIONS', 'BASH_ENV', 'ENV', 'BASHOPTS', 'SHELLOPTS', 'IFS', 'PROMPT_COMMAND',
+  'PS4', 'PERL5LIB', 'RUBYOPT', 'RUBYLIB', 'PYTHONSTARTUP',
+];
 
 /**
  * Options that turn an allowlisted helper into a program runner or a file writer (env audit #3).

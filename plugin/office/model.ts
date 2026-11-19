@@ -205,9 +205,15 @@ export type Difficulty = 'routine' | 'moderate' | 'hard';
  * absent: a request from before difficulty was kept.
  */
 export type DifficultyOf = { difficulty?: Difficulty | null; difficultySource?: 'lead' | 'router' | 'default' | null };
+/**
+ * Whether the router can check a worker's result in this repository (decision 231): `checkable`, its tests run;
+ * `unchecked`, they did not start; `no-tests`, there is no test command; `probing`, the router is still finding out.
+ * Absent from an older router.
+ */
+export type Checkability = 'checkable' | 'unchecked' | 'no-tests' | 'probing';
 export type LimitWindow = { usedPercentage: number; resetsAt: number | null };
 export type DaemonOffice = {
-  request: null | ({ id: string; level: string; source: string; preset: string; status: string; budgetUsd: number; usedUsd: number; leadDirect: boolean; leadModel: string | null } & DifficultyOf);
+  request: null | ({ id: string; level: string; source: string; preset: string; status: string; budgetUsd: number; usedUsd: number; leadDirect: boolean; leadModel: string | null; checkability?: Checkability | null } & DifficultyOf);
   subtasks: DaemonSubtask[];
   costUsd: number; costEstimated: boolean; costUnknown: boolean; sessionCostUsd: number;
   routing?: unknown;
@@ -298,6 +304,19 @@ export function subtaskDifficultyText(s: SubtaskDifficulty | null | undefined): 
   return s.difficulty;
 }
 
+export const isCheckability = (v: unknown): v is Checkability => v === 'checkable' || v === 'unchecked' || v === 'no-tests' || v === 'probing';
+const CHECKABILITY_LONG: Readonly<Record<Checkability, string>> = {
+  checkable: 'checkable', unchecked: 'not checkable (the tests did not start)', 'no-tests': 'not checkable (no test command)', probing: 'checking the tests',
+};
+const CHECKABILITY_SHORT: Readonly<Record<Checkability, string>> = { checkable: 'checkable', unchecked: 'not checkable', 'no-tests': 'not checkable', probing: 'checking tests' };
+/**
+ * Whether the router can check the result (decision 231): "checkable", "not checkable (no test command)", "checking
+ * the tests"; `short` for the office's top line ("not checkable"). '' from an older router.
+ */
+export function checkabilityText(c: unknown, short = false): string {
+  return isCheckability(c) ? (short ? CHECKABILITY_SHORT : CHECKABILITY_LONG)[c] : '';
+}
+
 /**
  * Parts on as few lines as `width` holds: the first line starts with `head`, the next ones with as many spaces;
  * a part that does not fit a line of its own is cut. Each line's parts, in order.
@@ -354,14 +373,14 @@ export function usd(n: number | null | undefined): string {
 /** The level with the difficulty beside it: "L2 hard", "L1 moderate lead-direct"; an older request, the level alone. */
 const levelHead = (r: NonNullable<DaemonOffice['request']>): string => `${r.level}${difficultyText(r) ? ` ${difficultyText(r)}` : ''}${r.leadDirect ? ' lead-direct' : ''}`;
 
-/** The office's top line from the daemon: "L2 hard · rule · $0.12 of $4 · 5h 23% · 7d 4%". */
+/** The office's top line from the daemon: "L2 hard · rule · checkable · $0.12 of $4 · 5h 23% · 7d 4%". */
 export function requestLine(view: DaemonOffice | null): string {
   if (!view?.request) return '';
   const r = view.request;
-  const parts = [levelHead(r), r.source, `${usd(view.costUsd)}${view.costEstimated ? '~' : ''} of ${usd(r.budgetUsd)}`];
+  const parts = [levelHead(r), r.source, checkabilityText(r.checkability, true), `${usd(view.costUsd)}${view.costEstimated ? '~' : ''} of ${usd(r.budgetUsd)}`];
   if (view.limits?.fiveHour) parts.push(`5h ${Math.round(view.limits.fiveHour.usedPercentage)}%`);
   if (view.limits?.sevenDay) parts.push(`7d ${Math.round(view.limits.sevenDay.usedPercentage)}%`);
-  return parts.join(' · ');
+  return parts.filter(Boolean).join(' · ');
 }
 
 /**
@@ -372,7 +391,7 @@ export function requestLine(view: DaemonOffice | null): string {
  */
 export function routerLine(view: DaemonOffice | null): string {
   const r = view?.request;
-  const head = r ? [levelHead(r), r.source, `${usd(view.costUsd)}${view.costEstimated ? '~' : ''} of ${usd(r.budgetUsd)}`] : ['router on', 'no request yet'];
+  const head = r ? [levelHead(r), r.source, checkabilityText(r.checkability, true), `${usd(view.costUsd)}${view.costEstimated ? '~' : ''} of ${usd(r.budgetUsd)}`] : ['router on', 'no request yet'];
   return [
     ...head,
     view?.project?.worktree === 'off' ? 'isolation off' : '',
@@ -661,6 +680,8 @@ export type WorkDetail = {
   level: { judged: Level; source: string; rule: string | null; confidence: number | null; final: Level; changes: Array<{ from: Level; to: Level; why: string }> };
   /** The request's difficulty, where it came from and whether the lead reported one (decision 230); absent from an older router. */
   difficulty?: { value: Difficulty; source: 'lead' | 'router' | 'default'; reported?: boolean } | null;
+  /** Whether the router could check the workers' results here (decision 231); absent from an older router. */
+  checkability?: Checkability | null;
   plan: { preset: string; leadDirect: boolean; leadModel: string | null; leadClass: string | null; budgetUsd: number; holdout: string | null };
   outcome: WorkRow['outcome']; passed: boolean | null; acceptance: string | null;
   subtasks: WorkSubtask[];

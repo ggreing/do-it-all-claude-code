@@ -2,12 +2,13 @@
 import fs from 'node:fs';
 import { MAX_HOLDOUT_RATE, PROFILES, holdoutRate, withProfile } from '@do-it-all-claude-code/core';
 import { DEFAULT_EVENT_RETENTION_DAYS, MAX_EVENT_RETENTION_DAYS } from './data.ts';
-import type { Level, RouterConfig, TeamPreset } from '@do-it-all-claude-code/core';
+import type { Checkability, Level, RouterConfig, TeamPreset } from '@do-it-all-claude-code/core';
 
 /** config.json as read: every field may be missing (tests and fresh homes pass the port explicitly). */
 export type ConfigFile = Partial<RouterConfig>;
 
 const LEVELS: readonly Level[] = ['L0', 'L1', 'L2', 'L3'];
+const FORCE_CHECKABILITY: readonly Checkability[] = ['checkable', 'unchecked', 'no-tests'];
 
 /** Per-request budgets from `init` (review #5): only positive finite numbers; the rest is reported. */
 export function parseBudgets(v: unknown, warnings: string[]): Partial<Record<Level, number>> | undefined {
@@ -110,6 +111,11 @@ export function readConfigFile(file: string, warnings: string[] = []): ConfigFil
   if (o.forceLevel !== undefined) {
     if ((LEVELS as readonly unknown[]).includes(o.forceLevel)) out.forceLevel = o.forceLevel as Level;
     else warnings.push(`config.forceLevel ignored: ${JSON.stringify(o.forceLevel)} is not L0, L1, L2 or L3`);
+  }
+  // Decision 231: benchmarks / tests only — skip the checkability probe and treat every request as this
+  if (o.forceCheckability !== undefined && o.forceCheckability !== null) {
+    if (FORCE_CHECKABILITY.includes(o.forceCheckability as Checkability)) out.forceCheckability = o.forceCheckability as Checkability;
+    else warnings.push(`config.forceCheckability ignored: ${JSON.stringify(o.forceCheckability)} is not checkable, unchecked or no-tests`);
   }
   return out;
 }

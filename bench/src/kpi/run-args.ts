@@ -19,6 +19,15 @@ export const ALLOWED_SINCE_222 = ['Bash(echo *)', 'Bash(pwd)', 'Bash(wc *)'];
 // the Agent tool gets the line, so both sides of a comparison carry the same text.
 export const WAIT_FOR_SUBAGENTS = 'This is a non-interactive run: before you give your final answer, wait until every subagent you started has finished and you have read its result.';
 
+/**
+ * What every measured run gets in its environment besides its own. In print mode Claude Code stops the background
+ * tasks that are still running a while after the last turn (2.1.327: CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS, 10
+ * minutes by default): a lead that ended its turn to wait for a worker loses that worker in the middle of its
+ * work, the session ends as a success, and the router never hears the worker stop. 0 waits without that ceiling;
+ * what ends a run that hangs is then the task's own timeout and its cost cap.
+ */
+export const RUN_ENV: Readonly<Record<string, string>> = { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
+
 export interface RunArgs {
   lead: string;
   effort: string;

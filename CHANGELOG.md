@@ -31,6 +31,23 @@ All notable changes to this project are documented here. This project adheres to
 
 ### Changed
 
+- **Where a worker starts follows whether the router can CHECK its result, not the lead's difficulty.** The lead's
+  up-front difficulty turned out to be almost always "moderate" and no signal, so the router now probes, once per
+  repository and commit at the request's open and in the background (bounded, the repo's own test command run in a
+  collect-only / list form), whether the verify tests actually start in this environment, and shows the result
+  (`checkable`, `unchecked`, `no test command`, or still `checking`) in the office and `router_get_plan`. A
+  source-changing coder then starts at Haiku·low on a checkable repo (Sonnet·medium when the task is hard) and goes
+  straight to Opus·high on a repo whose tests do not run here (Sonnet·medium when routine); misses move it up the
+  measured path as before. A tester, or any untagged subtask that changes no source (docs, changelog, config), now
+  starts at the routine cell rather than the coder's; reviewer and architect keep the difficulty table. The
+  unverified → one-stronger-attempt retry now fires only when the subtask started below Opus·high: a strong start
+  that still cannot be verified goes back to the lead instead of spending a costlier model blind. Workers may now
+  run reproduction commands the sandbox used to refuse — a `python -c` / `node -e` one-liner, a script inside the
+  repository, and environment-variable prefixes before an otherwise allowed command (`PYTHONPATH=src python -m
+  pytest`) — while network tools, writes outside the repository, destructive git and loader/`PATH` prefixes stay
+  blocked. A worker report that names a real cause in a file outside its scope now counts as a scope request (even
+  when it says "none needed"), and a retry re-dispatches the same subtask with the same scope, never a narrower one,
+  the earlier attempt's changes left in the tree as a starting point rather than a diff to review.
 - **The lead is a coordinator: it delegates at L1 and above, and tags each subtask's own difficulty.** Every lead
   model now delegates from L1 — only an L0 change (a typo, a one-line default) stays with the lead, and a user's
   `delegateFrom` (or a teams.yaml `lead_direct`) still keeps lower levels direct. On a level that is lead-direct, a
@@ -76,11 +93,19 @@ All notable changes to this project are documented here. This project adheres to
   first-look notes to the request the router already hands each worker. A bug report in code the lead has not
   traced counts as hard, and a floor the router sets wins when it is higher. The lead splits the request by
   difficulty as well as by file, and tags each Agent call with `[difficulty: routine|moderate|hard]` on the
-  prompt's third line. The brief lists every role's model and effort at all three, so a hard fix runs on Opus
-  while the changelog and the checks run on Haiku at the same time. A coder that changes source code is not
-  tagged below the request's difficulty. An unverified result is not accepted: the lead sends the subtask once
-  more at the cell its result line names. The team office shows a difficulty the router raised, and each
+  prompt's third line, so a hard fix runs on a strong model while the changelog and the checks run on a small
+  one at the same time. A coder that changes source code is not tagged below the request's difficulty. An
+  unverified result whose line names a retry is not accepted: the lead sends the subtask once more at that cell. The team office shows a difficulty the router raised, and each
   worker's own.
+- **The router picks each worker's model, and the lead says where to look, not how to fix.** The brief no longer
+  lists model and effort per role: the router sets them from the subtask's difficulty and from whether it can
+  check the result in this repository, and the lead uses the values in its answer. The lead tags the hard parts;
+  an untagged coder that changes source runs at the request's difficulty, other untagged work (tests, the
+  changelog, the checks) as routine. The lead's notes name where to look and the behaviour to check, never the
+  fix, and the lead no longer runs or writes checks of its own. A coder given a bug reproduces it, traces the
+  cause and fixes it there, and names a cause outside its scope in a scope request instead of working around it.
+  A retry is the same subtask, with the earlier attempt as a candidate. The team office shows whether the
+  router can check the result ("checkable", "not checkable (no test command)").
 - **Bench.** `scripts/measure107.ts` takes `--profile save|balanced|quality` for the router runs, and passes the
   lead's model to the router as a session's environment would. Every run may now use `echo`, `pwd` and `wc`
   without a prompt, as a user at the terminal allows; earlier runs refused them. New:
@@ -96,6 +121,13 @@ All notable changes to this project are documented here. This project adheres to
   the same way. Three tasks were added
   for it, `c-hs-01` to `c-hs-03` on a new fixture: a small change each that takes reasoning to get right, with
   wrong fixes kept beside them that the hidden tests must fail. They are loaded only when named.
+- **Bench: a waiting lead no longer loses its worker after ten minutes.** In print mode (`claude -p`) Claude Code
+  stops background tasks that are still running ten minutes after the last turn, ends the session as a success,
+  and runs no SubagentStop hook for them. A measured run whose lead ended its turn to wait for a worker lost that
+  worker in the middle of its work. `scripts/measure107.ts` and `scripts/measure-session.ts` now start every run
+  with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`; the task's timeout and the cost cap end a run that hangs. A record
+  lists the workers Claude Code stopped (`killedWorkers`) and keeps the end of the process's stderr
+  (`stderrTail`). If you run the router under `claude -p` yourself, set that variable for work that takes longer.
 - **Parallel writers share the checkout.** When a change has independent parts, the lead now sends one coder
   for each part in one message, in the working tree, and the router runs the build and tests once, when the last
   of them stops. A subtask the architect's plan marks `after: none` is such a part. Before, the brief asked for a

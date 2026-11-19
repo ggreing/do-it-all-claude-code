@@ -76,8 +76,9 @@ function session(d: TestDaemon, sid: string, cwd: string) {
     assert.equal(r.status, 200, r.text);
     return r.body as Out;
   };
-  // decision 226: default (moderate) cells — coder/tester s3 (sonnet/medium); reviewer/architect s4 (sonnet/high)
-  const steps: Record<string, [string, string]> = { coder: ['sonnet', 'medium'], tester: ['sonnet', 'medium'], reviewer: ['sonnet', 'high'], architect: ['sonnet', 'high'] };
+  // decision 231: a checkable repo (test default) — a source coder at moderate and an untagged tester start at s1
+  // (haiku/low); reviewer/architect keep the 226 table at s4 (sonnet/high).
+  const steps: Record<string, [string, string]> = { coder: ['haiku', 'low'], tester: ['haiku', 'low'], reviewer: ['sonnet', 'high'], architect: ['sonnet', 'high'] };
   /** Dispatches a subtask, lets it change `edit` (a writer) and stop with `report` as its last message; returns the lead's line about it. */
   const run = async (tag: string, role: string, report: string, edit?: string): Promise<string> => {
     const agent = `ag${++seq}`;
@@ -105,7 +106,7 @@ const slot = (d: TestDaemon) => rows(d, "SELECT step, easy_streak, last_easy, fa
 test('a reviewer\'s accept with margin easy is recorded for the writer it reviewed, without any tool call', () => withDaemon(async (d, s) => {
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
   const coderLine = await s.run('A', 'coder', WRITER_REPORT, 'x.ts');
-  assert.match(coderLine, /subtask A \(coder @s3.*verify passed/);
+  assert.match(coderLine, /subtask A \(coder @s1.*verify passed/);
   assert.ok(coderLine.includes(`do not fix it yourself: call ${ROUTER_TOOL_PREFIX}router_request_escalation (load it with ToolSearch first)`), coderLine);
   assert.ok(!coderLine.includes('router_request_scope'), 'no scope sentence when the report asked for none');
   assert.deepEqual(sub(d, 'A'), { status: 'passed', verdict: 'meet', review: null });
@@ -125,7 +126,7 @@ test('a reviewer\'s accept with margin easy is recorded for the writer it review
 test('decision 219: a reviewer\'s pass line does not ask the lead to run tests; a writer\'s untested change still does', () => withDaemon(async (_d, s) => {
   await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
   const coderLine = await s.run('A', 'coder', WRITER_REPORT, 'x.ts');
-  assert.match(coderLine, /verify ran no tests for this change: if the changed code has tests, run those once yourself/);
+  assert.match(coderLine, /verify ran no tests for this change; the router has nothing more to check here — do not run tests of your own/);
   const line = await s.run('R', 'reviewer', 'Verdict: accept\nMargin: normal\n- Review: fit 5/5, findings: none\n- Changed files: none');
   assert.match(line, /subtask R \(reviewer .*verify passed — .*\(0 file\(s\)[^)]*\)[^(]*\(it changed no files, so there is nothing to test\)\./);
   assert.ok(!line.includes('run those once yourself'), line);
@@ -137,13 +138,13 @@ test('a reject is recorded as a failure of the writer: the second one in a row r
   const first = await s.run('R1', 'reviewer', 'Verdict: reject\nMargin: normal\n- Review: must fix src/x.ts:1');
   assert.deepEqual(sub(d, 'A'), { status: 'failed', verdict: 'rejected', review: ['reject', 'reviewer', 'R1', null] });
   assert.match(first, /Its verdict was recorded from its report: reject for subtask A\..*Dispatch that subtask again/);
-  assert.deepEqual((x => [x!.step, x!.fail_streak])(slot(d)), ['s3', 1]);
+  assert.deepEqual((x => [x!.step, x!.fail_streak])(slot(d)), ['s1', 1]);
   // the second attempt of the same subtask, rejected again by a tester this time
   await s.run('A', 'coder', WRITER_REPORT, 'y.ts');
   assert.deepEqual(sub(d, 'A'), { status: 'passed', verdict: 'meet', review: null }, 'a new dispatch clears the review');
   const second = await s.run('T1', 'tester', '**Verdict:** reject\n- Changed files: none\n- Checks run: npm test (2 failed)');
   assert.deepEqual(sub(d, 'A').review, ['reject', 'tester', 'T1', null]);
-  assert.deepEqual((x => [x!.step, x!.up_count])(slot(d)), ['s4', 1], 'two rejects in a row raise the slot');
+  assert.deepEqual((x => [x!.step, x!.up_count])(slot(d)), ['s2', 1], 'two rejects in a row raise the slot');
   assert.match(second, /reject for subtask A\./);
 }));
 

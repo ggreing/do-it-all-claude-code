@@ -184,6 +184,6 @@ test('decision 89 / #2: a router subagent\'s stop replayed from the spool is unv
     assert.deepEqual(rows(d, 'SELECT status, verdict FROM subtasks'), [{ status: 'hitl', verdict: 'unverified' }]);
     assert.equal(rows(d, 'SELECT COUNT(*) AS c FROM signals')[0]!.c, 0, 'no verification ran');
     const note = await post({ hook_event_name: 'UserPromptSubmit', prompt: '<task-notification>\n<task-id>ag-off</task-id>\n<status>completed</status>\n</task-notification>' });
-    assert.match(note.hookSpecificOutput?.additionalContext ?? '', /subtask A \(coder @s1.*\): verify did not run \(router was offline\); check the result yourself before relying on it/);
+    assert.match(note.hookSpecificOutput?.additionalContext ?? '', /subtask A \(coder @s1.*\): verify did not run \(router was offline\).*The router could not verify the result here: do not write or run checks of your own/);
   } finally { rmrf(repo); }
 }));

@@ -27,6 +27,7 @@ x-router:
 
 ## Responsibilities
 - Implement only what the spec covers. If the spec is ambiguous, do not widen the scope by guessing; note it under Remaining issues.
+- For a bug, the lead's notes on where to look are hypotheses. Reproduce the problem first (a `python -c` or `node -e` one-liner, or a script in the repository), trace the cause, then fix it at the cause. If the cause is outside your allowed paths, do not work around it inside them: name it under Scope request and stop.
 - Before the first build or test run, install the dependencies if they are missing (for example `npm ci` when package-lock.json exists).
 - Before finishing, run the build, typecheck, lint and tests yourself and make them pass.
 - Run Bash commands from the directory you start in, one command per call: no `cd <repo> &&` in front, no `;` chains, no `echo $?`. A pipe to `tail` or `head` is fine, for example `npm test 2>&1 | tail -n 40`. Commands in another form can be refused or need the user's approval.

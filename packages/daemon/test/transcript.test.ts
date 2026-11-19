@@ -190,7 +190,7 @@ test('decision 85: a task notification brings the subtask\'s verify result to th
   await post({ hook_event_name: 'SubagentStop', agent_id: 'ag-r', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: false, agent_transcript_path: copyTranscript(d.home, 'ag-r') });
   const passed = await post({ hook_event_name: 'UserPromptSubmit', prompt: notification('ag-r', 12764) });
   assert.equal(passed.hookSpecificOutput?.additionalContext,
-    `[do-it-all-claude-code] subtask A (coder @s1, model=haiku, effort=low): verify passed — scope ok; cost $${FIXTURE_USD.toFixed(4)} (verify ran no tests for this change: if the changed code has tests, run those once yourself, a targeted run, not the whole suite).`
+    `[do-it-all-claude-code] subtask A (coder @s1, model=haiku, effort=low): verify passed — scope ok; cost $${FIXTURE_USD.toFixed(4)} (verify ran no tests for this change; the router has nothing more to check here — do not run tests of your own).`
     // decision 145: the one tool that matters for a passed writer, by its full name
     + ' If the result is wrong although verify passed, do not fix it yourself: call mcp__plugin_do-it-all-claude-code_router__router_request_escalation (load it with ToolSearch first) for this subtask, then dispatch it again.');
 
@@ -204,7 +204,7 @@ test('decision 85: a task notification brings the subtask\'s verify result to th
   const failed = await post({ hook_event_name: 'UserPromptSubmit', prompt: notification('ag-b') });
   assert.equal(failed.hookSpecificOutput?.additionalContext,
     '[do-it-all-claude-code] subtask B (coder @s1, model=haiku, effort=low): verify failed again after one fix attempt (miss) — test failed, scope ok. '
-    + 'First failure: npm test: exit 1 (3 file(s)). Decide: dispatch a new attempt with what failed, or report to the user.');
+    + 'First failure: npm test: exit 1 (3 file(s)). Decide: dispatch a new attempt with what failed (keep the same scope; the previous changes are a starting point, not to review), or report to the user.');
 
   // an agent with no subtask (Explore) or an unknown task id: no context
   assert.deepEqual(await post({ hook_event_name: 'UserPromptSubmit', prompt: notification('nobody') }), {});

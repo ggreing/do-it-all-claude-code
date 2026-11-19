@@ -9,7 +9,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analysePhases, phaseReport, type LedgerTiming, type StreamLine } from '../src/kpi/phases.ts';
-import { runCaptured, TIMING_FLAGS } from '../src/kpi/capture.ts';
+import { killedWorkers, runCaptured, stderrTail, TIMING_FLAGS } from '../src/kpi/capture.ts';
+import { RUN_ENV } from '../src/kpi/run-args.ts';
 import { ROUTER_TOOL_PREFIX, mcpSeen } from '../src/kpi/router-mcp.ts';
 import { projectFolderName, projectFolderOf, subscriptionRunEnv, transcriptUnread, transcriptsLine } from '../src/kpi/subscription.ts';
 import { freePort, noPluginCalls, safeEnv, type SafeEnv } from './kpi-safe-env.ts';
@@ -20,6 +21,8 @@ let tmp = '';
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-kpi-')); });
 afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
+// a string shaped like a key (no real one), for what must not reach a file
+const KEY_LIKE = 'sk-ant-api03-abcdefghijklmnop';
 const L = (t: number, m: Record<string, unknown>): StreamLine => ({ t, m });
 const tool = (id: string, name: string, input: Record<string, unknown>) => ({ type: 'tool_use', id, name, input });
 const lead = (t: number, ...content: unknown[]) => L(t, { type: 'assistant', parent_tool_use_id: null, message: { content } });
@@ -116,7 +119,7 @@ test('the capture stamps each line as it arrives, keeps the result, and writes t
   fs.copyFileSync(path.join(BENCH, 'test', 'kpi-fake-claude.mjs'), fake);
   fs.writeFileSync(path.join(fakeDir, 'scenario.json'), JSON.stringify([
     { line: { type: 'system', subtype: 'init' } },
-    { pauseMs: 300, line: { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'key sk-ant-api03-abcdefghijklmnop' }] } } },
+    { pauseMs: 300, line: { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text: `key ${KEY_LIKE}` }] } } },
     { pauseMs: 300, line: { type: 'result', subtype: 'success', total_cost_usd: 0.02, num_turns: 1 } },
   ]));
   const streamFile = path.join(tmp, 'out', 'stream.jsonl');
@@ -129,6 +132,34 @@ test('the capture stamps each line as it arrives, keeps the result, and writes t
   assert.ok(!saved.includes('abcdefghijklmnop'), 'the stream on disk is redacted');
 });
 
+// A worker cut off by Claude Code, as its stream shows it (2.1.327): the agent's task goes to "killed"; the shell
+// command it was running is a task of its own and no worker. Claude Code says on stderr that it stopped them.
+const killedSteps = [
+  { line: { type: 'system', subtype: 'task_started', task_id: 'a1', tool_use_id: 'toolu_a1', description: 'Fix the case', subagent_type: 'do-it-all-claude-code:coder', is_backgrounded: true, task_type: 'local_agent' } },
+  { line: { type: 'system', subtype: 'task_started', task_id: 'b1', tool_use_id: 'toolu_b1', description: 'npm test', owned_by_subagent: true, parent_task_id: 'a1', task_type: 'local_bash' } },
+  { line: { type: 'system', subtype: 'task_started', task_id: 'a2', tool_use_id: 'toolu_a2', description: 'Review it', subagent_type: 'do-it-all-claude-code:reviewer', task_type: 'local_agent' } },
+  { line: { type: 'system', subtype: 'task_updated', task_id: 'a2', patch: { status: 'completed' } } },
+  { pauseMs: 50, stderr: `Background tasks still running 10m after the last turn (1 agent); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.\nlog in ${path.join(os.homedir(), 'logs', 'x.log')}, key ${KEY_LIKE}\n`,
+    line: { type: 'system', subtype: 'task_updated', task_id: 'a1', patch: { status: 'killed' } } },
+  { line: { type: 'system', subtype: 'task_updated', task_id: 'b1', patch: { status: 'killed' } } },
+  { line: { type: 'system', subtype: 'task_updated', task_id: 'a1', patch: { status: 'killed' } } },
+];
+
+test('the workers Claude Code stopped, from a run\'s stream; the end of its stderr for the record', () => {
+  const lines = killedSteps.map((s, i) => L(1000 + i * 250, s.line));
+  assert.deepEqual(killedWorkers(lines), [{ taskId: 'a1', agent: 'do-it-all-claude-code:coder', description: 'Fix the case', atSeconds: 2 }]);
+  assert.deepEqual(killedWorkers(lines.slice(1, 4)), [], 'nothing was killed');
+  // a killed task whose start is not in the stream is kept (it may be a worker); a shell command's is not
+  assert.deepEqual(killedWorkers([L(500, { type: 'system', subtype: 'task_updated', task_id: 'zz', patch: { status: 'killed' } })]), [{ taskId: 'zz', agent: null, description: null, atSeconds: 0.5 }]);
+  assert.deepEqual(killedWorkers([lines[1]!, lines[5]!]), []);
+  assert.equal(stderrTail(''), undefined);
+  assert.equal(stderrTail('  \n'), undefined);
+  assert.equal(stderrTail('x'.repeat(700) + 'end', 10), 'xxxxxxxend');
+  assert.equal(stderrTail('at C:\\Users\\someone\\.cfg\\a.log and C:/Users/someone/b.log', 600, 'C:\\Users\\someone'), 'at ~\\.cfg\\a.log and ~/b.log');
+  assert.ok(!String(stderrTail(`token ${KEY_LIKE}`)).includes('abcdefghijklmnop'));
+  assert.deepEqual(RUN_ENV, { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' });
+});
+
 test('measure107 smoke run with a fake claude: the timing flags are passed, the stream is kept, the record has phases', () => {
   const fakeDir = path.join(tmp, 'fake');
   fs.mkdirSync(fakeDir);
@@ -137,6 +168,8 @@ test('measure107 smoke run with a fake claude: the timing flags are passed, the 
   fs.writeFileSync(path.join(fakeDir, 'scenario.json'), JSON.stringify([
     { line: { type: 'system', subtype: 'init' } },
     { pauseMs: 200, line: { type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: 'r', name: 'Read', input: { file_path: 'src/case.ts' } }] } } },
+    // a worker and a shell command of its own, both still running when Claude Code ends the session and says so on stderr
+    ...killedSteps,
     { pauseMs: 100, line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 2, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 } } } },
   ]));
   const out = path.join(tmp, 'out');
@@ -144,8 +177,16 @@ test('measure107 smoke run with a fake claude: the timing flags are passed, the 
     encoding: 'utf8', timeout: 240_000, env: safeEnv(tmp, 'direct', { BENCH_CLAUDE_BIN: fake }).env,
   });
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  const call = JSON.parse(fs.readFileSync(path.join(fakeDir, 'calls.jsonl'), 'utf8').trim().split('\n')[0]!) as { args: string[]; anthropicModel: string | null };
+  const call = JSON.parse(fs.readFileSync(path.join(fakeDir, 'calls.jsonl'), 'utf8').trim().split('\n')[0]!) as { args: string[]; anthropicModel: string | null; bgWaitCeiling: string | null };
   for (const f of TIMING_FLAGS) assert.ok(call.args.includes(f), f);
+  // print mode's ceiling on waiting for background tasks is off: the task's timeout and the cost cap end a run
+  assert.equal(call.bgWaitCeiling, '0');
+  // the worker Claude Code stopped is on the record (its shell command is not a worker), and so is the end of
+  // stderr, without the key and the home folder that were in it
+  const marked = JSON.parse(fs.readFileSync(path.join(out, 'runs.jsonl'), 'utf8').trim()) as { killedWorkers: Array<Record<string, unknown>>; stderrTail?: string };
+  assert.deepEqual(marked.killedWorkers.map(k => [k.taskId, k.agent, k.description, typeof k.atSeconds]), [['a1', 'do-it-all-claude-code:coder', 'Fix the case', 'number']]);
+  assert.match(String(marked.stderrTail), /^Background tasks still running 10m after the last turn \(1 agent\); stopping them\.[\s\S]*\nlog in ~[\\/]logs[\\/]x\.log, key sk-ant-…\[REDACTED\]$/);
+  assert.match(r.stdout, /1 worker\(s\) stopped by Claude Code before finishing \(do-it-all-claude-code:coder at \d+(\.\d)?s\): the change may be incomplete/);
   // decision 218: the lead's model is also in the run's environment (the router's hooks read it there), same value as --model
   assert.deepEqual([call.args[call.args.indexOf('--model') + 1], call.anthropicModel], ['sonnet', 'sonnet']);
   assert.ok(!call.args.includes('json') || call.args[call.args.indexOf('--output-format') + 1] === 'stream-json');
@@ -336,7 +377,7 @@ const runSteps = (init: Record<string, unknown> = {}, limit: Record<string, unkn
   { pauseMs: 30, line: { type: 'rate_limit_event', rate_limit_info: limit } },
   { pauseMs: 30, line: { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.01, num_turns: 2, modelUsage: { 'claude-sonnet-5-5': { costUSD: 0.01 } } } },
 ];
-interface FakeCall { args: string[]; cwd: string; usage: boolean; env: string[]; configDir: string | null; anthropicModel: string | null }
+interface FakeCall { args: string[]; cwd: string; usage: boolean; env: string[]; configDir: string | null; anthropicModel: string | null; bgWaitCeiling: string | null }
 
 /** A measure107 run on the subscription login with the fake claude; the parent's environment holds credential variables. */
 function subRun(name: string, scenario: { calls: unknown[][]; usage?: unknown[][] }, extra: string[] = [], arrangement = 'direct') {
@@ -366,6 +407,9 @@ test('measure107 --subscription: the run gets no key, no credential variable and
   // nothing that names a credential or another provider reaches the run, in the run or in a reading
   for (const c of s.calls) for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'BENCH_CLAUDE_BIN']) assert.ok(!c.env.includes(k), `${k} reached ${c.usage ? 'a reading' : 'the run'}`);
   for (const k of ['CLAUDE_CODE_DISABLE_CLAUDE_MDS', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', 'ENABLE_CLAUDEAI_MCP_SERVERS', 'DISABLE_AUTOUPDATER', 'ANTHROPIC_MODEL']) assert.ok(run.env.includes(k), k);
+  // no ceiling on print mode's wait for background tasks in the run; a reading starts none, and gets no such variable
+  assert.deepEqual([run.bgWaitCeiling, s.readings[0]!.bgWaitCeiling], ['0', null]);
+  assert.deepEqual([records(s.out)[0]!.killedWorkers, records(s.out)[0]!.stderrTail], [[], undefined]);
   // a direct run and a reading write nothing of the session to disk: the switch that turns persistence off is on in both
   for (const c of s.calls) assert.ok(c.env.includes('CLAUDE_CODE_SKIP_PROMPT_HISTORY'), c.usage ? 'a reading' : 'the run');
   // the config folder is the caller's own (here the test's), never a folder of the run: Claude Code reads its own login
@@ -446,6 +490,8 @@ test('measure107 --subscription, a router run: the plugin and its transcript as 
   // the reading, which nothing reads back, keeps it.
   assert.ok(!run.env.includes('CLAUDE_CODE_SKIP_PROMPT_HISTORY'), 'the switch that turns persistence off reached a run that keeps its transcript');
   assert.ok(s.readings[0]!.env.includes('CLAUDE_CODE_SKIP_PROMPT_HISTORY'));
+  // a router run is the one that waits for workers: print mode's ceiling on that wait is off
+  assert.equal(run.bgWaitCeiling, '0');
   const parentEnv = { PATH: '/bin', ANTHROPIC_API_KEY: 'not-a-real-key' };
   assert.deepEqual(['CLAUDE_CODE_SKIP_PROMPT_HISTORY', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', 'ANTHROPIC_API_KEY'].map(k => k in subscriptionRunEnv('sonnet', '/home-of-the-run', parentEnv, true)), [false, true, false]);
   assert.deepEqual(['CLAUDE_CODE_SKIP_PROMPT_HISTORY', 'ANTHROPIC_API_KEY'].map(k => k in subscriptionRunEnv('sonnet', '/home-of-the-run', parentEnv)), [true, false], 'a run that keeps none (--no-transcripts, direct)');

@@ -60,6 +60,8 @@ export const ROUTER_BASH_ALLOW = [
   'yarn test', 'yarn run', 'yarn install', 'yarn add',
   'node --test', 'tsc',
   'pytest', 'python -m pytest', 'python3 -m pytest', 'py -m pytest',
+  // decision 231 (item 6): reproduction one-liners; a repo script (`python file.py`, `node file.mjs`) is handled below.
+  'python -c', 'python3 -c', 'py -c', 'node -e',
   'pip install', 'pip3 install', 'python -m pip install', 'uv pip install', 'uv sync', 'poetry install',
   'go test', 'go build', 'go vet', 'cargo test', 'cargo build', 'cargo check', 'make test', 'make build',
   // git: read and local commit only (no push, no config, no hooks)
@@ -72,6 +74,17 @@ export const ROUTER_BASH_ALLOW = [
 
 /** Commands allowed only exactly as written, with no further argument (decision 222). Must equal core ROUTER_BASH_ALLOW_EXACT. */
 export const ROUTER_BASH_ALLOW_EXACT = ['node --version', 'node -v', 'npm --version', 'npm -v', 'python --version', 'python3 --version'];
+
+/** Env-var names that may NOT be set as a leading `VAR=value` prefix (decision 231, item 6). Must equal core ROUTER_BASH_ENV_PREFIX_DENY. */
+export const ROUTER_BASH_ENV_PREFIX_DENY = [
+  'PATH', 'PATHEXT', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH', 'NODE_OPTIONS', 'BASH_ENV', 'ENV', 'BASHOPTS', 'SHELLOPTS', 'IFS', 'PROMPT_COMMAND',
+  'PS4', 'PERL5LIB', 'RUBYOPT', 'RUBYLIB', 'PYTHONSTARTUP',
+];
+const ENV_PREFIX_DENY = new Set(ROUTER_BASH_ENV_PREFIX_DENY);
+/** Interpreters that may run a repo script or inline code (decision 231, item 6); value = the kind of script it runs. */
+const INTERPRETERS = { node: 'node', python: 'py', python3: 'py', py: 'py' };
+const SCRIPT_EXT = { node: ['.js', '.mjs', '.cjs'], py: ['.py'] };
 
 export const PACKAGE_INSTALL_PREFIXES = [
   'npm install', 'npm i ', 'npm ci', 'pnpm install', 'pnpm add', 'yarn install', 'yarn add',
@@ -816,12 +829,40 @@ export function classifyBash(command, opts = {}) {
   };
 
   let vcwd = baseCwd;                                       // virtual cwd, advanced by `cd` within the chain
-  for (const words of commands) {
+  for (let words of commands) {
     if (words.length === 0) continue;
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) return DENY_NOT_ALLOWED;   // leading VAR=value
+    // decision 231 (item 6): accept a leading `VAR=value` (one or more) before an otherwise allowed command, e.g.
+    // `PYTHONPATH=src python -m pytest`. A name that changes which binary runs or injects code into it, or that is
+    // secret-looking, is refused; the value is already safe (the lexer refused substitution; secret refs are refused above).
+    let pfx = 0;
+    while (pfx < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(stripOuterQuotes(words[pfx]))) {
+      const a = stripOuterQuotes(words[pfx]);
+      const name = a.slice(0, a.indexOf('='));
+      if (ENV_PREFIX_DENY.has(name.toUpperCase()) || new RegExp(SECRET_VAR_NAME_PATTERN, 'i').test(name))
+        return `${DENY_NOT_ALLOWED} (the environment variable ${name} may not be set before a command)`;
+      pfx++;
+    }
+    if (pfx > 0) words = words.slice(pfx);
+    if (words.length === 0) return DENY_NOT_ALLOWED;   // only assignments, no command to run
     if (/[\\/]/.test(stripOuterQuotes(words[0]))) return `${DENY_NOT_ALLOWED} (the command is given by a path; only bare command names are checked)`;
     const cmd0 = baseName(words[0]);
     if (WRAPPERS.has(cmd0)) return `${DENY_NOT_ALLOWED} (it starts with the wrapper "${cmd0}")`;
+
+    // decision 231 (item 6): reproduction runners. `python -c`/`node -e` take inline code, which is NOT checked as a
+    // path (the code can do anything the interpreter can; a test file already could — the shell-level blocks stay).
+    // `python file.py`/`node file.mjs` run a script, which must resolve inside the repository.
+    const interp = INTERPRETERS[cmd0];
+    let codeForm = false, scriptForm = false;
+    if (interp) {
+      const a1 = stripOuterQuotes(words[1] ?? '');
+      if ((interp === 'py' && a1 === '-c') || (interp === 'node' && a1 === '-e')) codeForm = true;
+      else if (a1 && !a1.startsWith('-') && SCRIPT_EXT[interp].some(e => a1.toLowerCase().endsWith(e))) {
+        if (unsafePathArg(words[1])) return 'this command runs a script given by an argument that cannot be checked safely; it is not allowed.';
+        const forms = resolvePathArgForms(a1, vcwd, userHome, opts.msys);
+        if (!opts.root || forms.some(abs => !isUnder(abs, opts.root))) return 'this command runs a script outside the repository, which is not allowed.';
+        scriptForm = true;
+      }
+    }
 
     if (cmd0 === 'cd') {
       // The directory is followed, so every later argument is resolved where the command will really run.
@@ -841,6 +882,8 @@ export function classifyBash(command, opts = {}) {
     let entry;
     if (cmd0 === 'set') {
       if (!(words.length >= 2 && /^[-+]/.test(stripOuterQuotes(words[1])))) return DENY_NOT_ALLOWED;   // bare `set` dumps env
+    } else if (scriptForm) {
+      // decision 231: a repo script (its path checked above); the per-arg checks below still apply to its arguments
     } else if (!(entry = allow.find(e => entryMatches(words, e))) && !ROUTER_BASH_ALLOW_EXACT.some(e => exactMatches(words, e))) {
       // decision 222: a version query only as written; "node -v -e …" is not one
       return DENY_NOT_ALLOWED;
@@ -851,8 +894,9 @@ export function classifyBash(command, opts = {}) {
     if (['npm', 'pnpm', 'yarn'].includes(cmd0) && ['run', 'run-script'].includes(sub) && stripOuterQuotes(words[2] || '').toLowerCase() === 'env')
       return 'this command prints the environment (run env), which is not allowed.';
 
-    // every argument, and the value of every --opt=value, as a possible path
-    for (let i = 1; i < words.length; i++) {
+    // every argument, and the value of every --opt=value, as a possible path (decision 231: an inline-code arg to
+    // `python -c`/`node -e` is not a path, so the code form skips this loop; SECRET_VAR_RE above still guards it)
+    for (let i = 1; !codeForm && i < words.length; i++) {
       const raw = words[i];
       const bare = stripOuterQuotes(raw);
       const value = bare.startsWith('-') ? (bare.includes('=') ? bare.slice(bare.indexOf('=') + 1) : null) : raw;

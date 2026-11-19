@@ -47,7 +47,7 @@ test('T6: the lead\'s first router Agent call re-plans a lead-direct request at 
     const st = await status(d, sid);
     assert.deepEqual([st.request?.level, st.request?.leadDirect, st.request?.budgetUsd, st.request?.replannedFrom], ['L2', false, 5, from]);
     assert.equal((await call('X', 'architect', 'sonnet', 'high')).hookSpecificOutput?.permissionDecision, undefined);
-    assert.equal((await call('A', 'coder', 'sonnet', 'medium')).hookSpecificOutput?.permissionDecision, undefined);
+    assert.equal((await call('A', 'coder', 'haiku', 'low')).hookSpecificOutput?.permissionDecision, undefined);   // decision 231: checkable, moderate -> coder s1
     const [req] = rows(d, 'SELECT level, preset, replanned_from, triage FROM requests WHERE session_id = ?', sid);
     assert.deepEqual([req!.level, req!.preset, JSON.parse(String(req!.replanned_from)).level], ['L2', 'L2', from]);
     assert.match(String(req!.triage), new RegExp(`re-planned at L2: the lead called a router subagent \\(architect at s1\\) in a lead-direct ${from} request`));
@@ -63,8 +63,8 @@ test('decision 113/226: the first call picks the team: a ui-designer (the only c
     // session, prompt level, role, model, effort, re-planned at, allowed
     ['ud3', L0_PROMPT, 'ui-designer', 'sonnet', 'medium', 'L3', true],   // ui-designer's moderate cell s3: the L3 signal
     ['ar2', L1_PROMPT, 'architect', 'sonnet', 'high', 'L2', true],       // architect: same cell in L2 and L3, so L2
-    ['c2', L0_PROMPT, 'coder', 'sonnet', 'medium', 'L2', true],          // coder's moderate cell s3: L2
-    ['t2', L1_PROMPT, 'tester', 'sonnet', 'medium', 'L2', true],         // tester's moderate cell s3: L2
+    ['c2', L0_PROMPT, 'coder', 'haiku', 'low', 'L2', true],              // decision 231: a checkable coder's moderate cell is s1: L2
+    ['t2', L1_PROMPT, 'tester', 'haiku', 'low', 'L2', true],             // tester (untagged) starts at its routine cell s1: L2
     ['x2', L0_PROMPT, 'coder', 'opus', 'high', 'L2', false],             // wrong cell: checked against L2 and denied
   ];
   for (const [sid, prompt, role, model, effort, level, allowed] of cases) {

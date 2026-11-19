@@ -172,7 +172,7 @@ async function flow(mode: 'on' | 'observe' | 'off', fn: (f: Flow) => Promise<voi
 let seq = 0;
 const call = (lines = '[scope: src/**, test/**]'): HookInput => ({
   hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_rp${++seq}`,
-  tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:A]\n${lines}\nfix add()`, model: 'sonnet', effort: 'medium' },
+  tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:A]\n${lines}\nfix add()`, model: 'haiku', effort: 'low' },
 });
 const start = (id = 'a1'): HookInput => ({ hook_event_name: 'SubagentStart', agent_id: id, agent_type: 'do-it-all-claude-code:coder' });
 const stop = (last = '- Changed files: src/add.js', again = false, id = 'a1'): HookInput => ({
@@ -233,7 +233,7 @@ test('still failing twice is a miss: the slot is raised as for any verify failur
   assert.deepEqual(await f.post(stop('gave up', true)), {});
   assert.deepEqual(subtask(f), { status: 'failed', verdict: 'miss' });
   assert.deepEqual(signals(f), [{ kind: 'repro', ok: 0 }, { kind: 'repro', ok: 0 }]);
-  assert.deepEqual(rows(f.d, "SELECT step FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's4' }]);   // decision 226: moderate coder s3, raised to s4
+  assert.deepEqual(rows(f.d, "SELECT step FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's2' }]);   // decision 231: checkable moderate coder s1, raised to s2 on a miss
   assert.match((await f.post(notify())).hookSpecificOutput?.additionalContext ?? '', /verify failed again after one fix attempt \(miss\) — repro failed/);
 }));
 
@@ -435,7 +435,7 @@ test('two writers in one work tree: with the other writer\'s changes there, the 
   await begin(f, '[scope: src/**, test/**]');
   assert.deepEqual(await f.post({
     hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_rpB',
-    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:B]\n[scope: lib/**]\n[repro: off refactor]\ntidy', model: 'sonnet', effort: 'medium' },
+    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:B]\n[scope: lib/**]\n[repro: off refactor]\ntidy', model: 'haiku', effort: 'low' },
   }), {});
   await f.post(start('b1'));
   write(f.repo, 'lib/other.js', 'exports.x = 1;\n');   // B's change, in the same tree

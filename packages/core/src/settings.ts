@@ -198,6 +198,7 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: 'autoStart', type: 'enum', options: ['on', 'off'], default: 'on', appliesAt: 'now', description: 'Start the daemon automatically when a Claude Code session starts (SessionStart hook)' },
   { key: 'officeAutoOpen', type: 'enum', options: ['on', 'off'], default: 'on', appliesAt: 'now', description: 'Open the team office by itself when a request gets its first worker (sessions started after the change)' },
   { key: 'forceLevel', type: 'enum', options: LEVELS, default: null, appliesAt: 'now', advanced: true, description: 'Benchmarks and debugging only: plan every new request at this level' },
+  { key: 'forceCheckability', type: 'enum', options: ['checkable', 'unchecked', 'no-tests'], default: null, appliesAt: 'now', advanced: true, description: 'Benchmarks and tests only: skip the checkability probe and treat every request as this (decision 231)' },
   { key: 'fableOptIn', type: 'boolean', default: false, appliesAt: 'now', advanced: true, description: 'Let the ladder go up to the Fable step' },
   { key: 'bearerApi', type: 'enum', options: ['on', 'off'], default: 'off', appliesAt: 'next start', advanced: true, deprecated: true, description: 'Deprecated, to be removed: let the daemon accept the token as a Bearer header' },
 ];

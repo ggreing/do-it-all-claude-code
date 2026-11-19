@@ -32,7 +32,7 @@ async function withTeam(fn: (d: TestDaemon, sid: string) => Promise<void>): Prom
   try {
     await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
     await post({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_o1',
-      tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] work\n[scope: src/**]', model: 'sonnet', effort: 'medium' } });
+      tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:A] work\n[scope: src/**]', model: 'haiku', effort: 'low' } });
     await post({ hook_event_name: 'SubagentStart', agent_id: 'ag-1', agent_type: 'do-it-all-claude-code:coder' });
     write(repo, 'src/b.ts', 'b\n');
     await post({ hook_event_name: 'SubagentStop', agent_id: 'ag-1', agent_type: 'do-it-all-claude-code:coder', stop_hook_active: false });
@@ -59,7 +59,7 @@ test('decision 186: /router/v1/office: level, the subtask with its plan, the che
   const v = r.body as Record<string, any>;
   assert.equal(v.request.level, 'L2');
   const s = v.subtasks[0];
-  assert.deepEqual([s.id, s.role, s.step, s.model, s.effort, s.status, s.agentId], ['A', 'coder', 's3', 'sonnet', 'medium', 'passed', 'ag-1']);   // decision 226: moderate default coder
+  assert.deepEqual([s.id, s.role, s.step, s.model, s.effort, s.status, s.agentId], ['A', 'coder', 's1', 'haiku', 'low', 'passed', 'ag-1']);   // decision 231: checkable repo, moderate -> coder @s1
   assert.deepEqual(s.checks, [{ kind: 'test', result: 'ok', testsPassed: 3, testsFailed: 0 }, { kind: 'scope', result: 'ok' }]);
   assert.deepEqual(s.scope, ['src/**']);
   assert.equal('clients' in v, false);

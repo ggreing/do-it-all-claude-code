@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import type {
-  Difficulty, DifficultySource, LadderId, Level, RequestRecord, Role, SignalKind, Step, SubtaskRecord, SubtaskStatus, TeamPreset, TriageResult, Verdict,
+  Checkability, Difficulty, DifficultySource, LadderId, Level, RequestRecord, Role, SignalKind, Step, SubtaskRecord, SubtaskStatus, TeamPreset, TriageResult, Verdict,
   UsageRow, VerifySignal,
 } from '@do-it-all-claude-code/core';
 import type { AcceptSignal } from '@do-it-all-claude-code/core';
@@ -17,7 +17,7 @@ import type { ReproRecord } from './repro.ts';
 import { scrubProse, scrubStoredPrompts } from './data.ts';
 import { storedPromptKind } from './payload.ts';
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 export type RequestStatus = 'open' | 'awaiting_user' | 'closed';
 
@@ -91,6 +91,8 @@ export interface RequestRow extends RequestRecord {
    * is released. Null: planned as the presets say.
    */
   holdout: Holdout | null;
+  /** Decision 231: whether the router can check this request's result here (probed per repo + HEAD); null until stamped. */
+  checkability: Checkability | null;
 }
 
 export type Holdout = 'direct' | 'probe' | 'released';
@@ -258,7 +260,8 @@ CREATE TABLE IF NOT EXISTS requests (
   holdout        TEXT,
   lead_edits     INTEGER NOT NULL DEFAULT 0,
   lead_edit_files TEXT,
-  stop_blocks    INTEGER NOT NULL DEFAULT 0
+  stop_blocks    INTEGER NOT NULL DEFAULT 0,
+  checkability   TEXT
 );
 CREATE INDEX IF NOT EXISTS requests_by_session ON requests(session_id, created_at);
 
@@ -526,6 +529,7 @@ function toRequest(r: Row): RequestRow {
     leadEdits: n(r.lead_edits), leadEditFiles: r.lead_edit_files ? (json<unknown[]>(r.lead_edit_files) ?? []).length : 0,
     stopBlocks: n(r.stop_blocks),
     replannedFrom: r.replanned_from === null || r.replanned_from === undefined ? null : json<TriageResult>(r.replanned_from),
+    checkability: sn(r.checkability) as Checkability | null,
   };
 }
 
@@ -587,6 +591,8 @@ export interface NewRequest {
   leadModel?: string | null;
   leadClass?: string;
   holdout?: Holdout;
+  /** Decision 231: 'probing' for a live request whose checkability probe is running (stamped when it resolves); null otherwise. */
+  checkability?: Checkability;
 }
 
 export interface DispatchInput {
@@ -726,6 +732,8 @@ export class Ledger {
     if (!subCols.includes('changes')) this.db.exec('ALTER TABLE subtasks ADD COLUMN changes TEXT');
     // v18 -> v19 (decision 230): each subtask's own difficulty and where it came from (tag/request/floor)
     for (const c of ['difficulty', 'difficulty_source']) if (!subCols.includes(c)) this.db.exec(`ALTER TABLE subtasks ADD COLUMN ${c} TEXT`);
+    // v19 -> v20 (decision 231): whether the router can check a request's result here (probed per repo + HEAD)
+    if (!reqCols.includes('checkability')) this.db.exec('ALTER TABLE requests ADD COLUMN checkability TEXT');
     this.#keepOutput = opts.keepPrompts === true;
     if (!this.#keepOutput) {
       const n = Number(this.db.prepare("UPDATE signals SET detail = substr(detail, 1, instr(detail, char(10)) - 1) WHERE instr(detail, char(10)) > 0").run().changes);
@@ -776,10 +784,10 @@ export class Ledger {
 
   createRequest(r: NewRequest): RequestRow {
     this.db.prepare(`INSERT INTO requests (id, session_id, created_at, prompt_id, level, preset, budget_usd, triage, team, status, closed_at,
-        preset_source, forced_from, lead_model, lead_class, holdout) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        preset_source, forced_from, lead_model, lead_class, holdout, checkability) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(r.id, r.sessionId, r.createdAt, r.promptId, r.triage.level, r.triage.preset, r.triage.budgetUsd,
         JSON.stringify(r.triage), JSON.stringify(r.team), r.closedAt ? 'closed' : 'open', r.closedAt ?? null,
-        r.presetSource ?? null, r.forcedFrom ?? null, r.leadModel ?? null, r.leadClass ?? null, r.holdout ?? null);
+        r.presetSource ?? null, r.forcedFrom ?? null, r.leadModel ?? null, r.leadClass ?? null, r.holdout ?? null, r.checkability ?? null);
     return this.getRequest(r.id)!;
   }
 
@@ -948,6 +956,11 @@ export class Ledger {
       else this.db.prepare('UPDATE requests SET triage = ? WHERE id = ?').run(JSON.stringify(t), id);
     });
     return this.getRequest(id)!;
+  }
+
+  /** Decision 231: stamps the request's checkability once the background probe (or a cached repo+HEAD result) resolves. */
+  setRequestCheckability(id: string, checkability: Checkability): void {
+    this.db.prepare('UPDATE requests SET checkability = ? WHERE id = ?').run(checkability, id);
   }
 
   replanRequest(id: string, triage: TriageResult, team: TeamPreset): RequestRow {

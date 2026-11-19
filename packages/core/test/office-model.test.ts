@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   CLASSIC_GLYPHS, DESK_H, DESK_W, DIFFICULTY_COLOR, DIFFICULTY_SHORT, GLYPHS, LAYOUT_SPARE, MAX_ROWS, TINY_STEP, OFFICE_MIN_CLAUDE, SLACK, NARROW_DESK_H, NARROW_DESK_W, SMALL_DESK_H, SMALL_DESK_W,
-  STEP_ALIAS, TABS, appliedLines, bar, callRow, cellOf, cellText, checksLine, deskCell, detailDifficulty, difficultyNote, difficultyText, isDifficulty, moveText, packParts,
+  STEP_ALIAS, TABS, appliedLines, bar, callRow, cellOf, cellText, checkabilityText, checksLine, deskCell, isCheckability, detailDifficulty, difficultyNote, difficultyText, isDifficulty, moveText, packParts,
   choices, clockTime, columns, compileSecrets, confirmLine, cycle, dur, filesText, fit, holdoutText, homeCandidates, labelFor, levelText, mask, modelName,
   nextPeriod, officeLayout, officeSwitch, parseHelperLine, pendingSet, requestLine, resultRow, roleOf, routerLine, settingText, spentLine, statBar, statusWord, stepLine,
   subtaskDifficultyText, subtaskOf, tabLabelsFit, tagOf, takeLines, textRow, timelineCells, unicodeTerminal, upDown, versionAtLeast, wantedRoom, withRow, workHeadline, workMark,
@@ -135,6 +135,25 @@ test('decision 230: the router\'s floor as a source, and each subtask\'s own dif
   assert.equal(subtaskDifficultyText({ difficulty: 'hard' }), 'hard', 'a tag without its source');
   assert.equal(subtaskDifficultyText({ ...SUB }), '', 'an older router sends none');
   assert.equal(subtaskDifficultyText(undefined), '');
+});
+
+test('decision 231: whether the router can check the result, on the top line and in the Work detail', () => {
+  const view: DaemonOffice = {
+    request: { id: 'r', level: 'L2', source: 'rule', preset: 'L2', status: 'open', budgetUsd: 4, usedUsd: 0, leadDirect: false, leadModel: null, difficulty: 'hard', difficultySource: 'lead', checkability: 'checkable' },
+    subtasks: [], costUsd: 0.12, costEstimated: false, costUnknown: false, sessionCostUsd: 0.12, limits: { fiveHour: { usedPercentage: 23, resetsAt: null }, sevenDay: null },
+  };
+  assert.equal(routerLine(view), 'L2 hard · rule · checkable · $0.120 of $4.00 · 5h 23%');
+  assert.equal(requestLine(view), 'L2 hard · rule · checkable · $0.120 of $4.00 · 5h 23%');
+  const as = (checkability: unknown) => routerLine({ ...view, request: { ...view.request!, checkability: checkability as never } });
+  assert.equal(as('unchecked'), 'L2 hard · rule · not checkable · $0.120 of $4.00 · 5h 23%');
+  assert.equal(as('no-tests'), 'L2 hard · rule · not checkable · $0.120 of $4.00 · 5h 23%');
+  assert.equal(as('probing'), 'L2 hard · rule · checking tests · $0.120 of $4.00 · 5h 23%');
+  for (const old of [undefined, null, 'maybe']) assert.equal(as(old), 'L2 hard · rule · $0.120 of $4.00 · 5h 23%', `an older router: ${String(old)}`);
+  // the Work detail says why it was not checkable
+  assert.deepEqual(['checkable', 'unchecked', 'no-tests', 'probing', null, 'maybe'].map(c => checkabilityText(c)),
+    ['checkable', 'not checkable (the tests did not start)', 'not checkable (no test command)', 'checking the tests', '', '']);
+  for (const c of ['checkable', 'unchecked', 'no-tests', 'probing']) assert.ok(isCheckability(c));
+  assert.ok(!isCheckability('yes'));
 });
 
 test('decision 225: a desk adds the alias and "est." only while the member runs at its slot\'s cell', () => {

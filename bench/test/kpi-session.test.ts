@@ -244,7 +244,13 @@ test('measure-session with a fake claude: six steps in one session, graded step 
   // steps 03 and 04 change nothing (03 fails first, 04 fails after it); step 05's edits bring the session back
   // Each process reports the session's running total: 0.2, 0.25, 0.55, 0.65, 1.05, 1.3 for steps that cost 0.2,
   // 0.05, 0.3, 0.1, 0.4 and 0.25 (and the cache reads so far, likewise).
-  const { fake, callsFile } = fakeClaude('fake', [call(oracle('01'), 0.2, 12_000, 12_000), call(oracle('02'), 0.25, 20_000, 32_000), call(undefined, 0.55, 26_000, 58_000),
+  // In step 03 Claude Code stops a worker that is still running and says so on stderr.
+  const third = call(undefined, 0.55, 26_000, 58_000);
+  const cutOff = [...third.slice(0, -1),
+    { line: { type: 'system', subtype: 'task_started', task_id: 'a1', tool_use_id: 'toolu_a1', description: 'Add the filter', subagent_type: 'do-it-all-claude-code:coder', task_type: 'local_agent' } },
+    { stderr: 'Background tasks still running 10m after the last turn (1 agent); stopping them.\n', line: { type: 'system', subtype: 'task_updated', task_id: 'a1', patch: { status: 'killed' } } },
+    third.at(-1)!];
+  const { fake, callsFile } = fakeClaude('fake', [call(oracle('01'), 0.2, 12_000, 12_000), call(oracle('02'), 0.25, 20_000, 32_000), cutOff,
     call(undefined, 0.65, 31_000, 89_000), call(oracle('05'), 1.05, 40_000, 129_000), call(oracle('06'), 1.3, 47_000, 176_000)]);
   const out = path.join(tmp, 'out');
   const work = path.join(tmp, 'work');
@@ -262,8 +268,10 @@ test('measure-session with a fake claude: six steps in one session, graded step 
   assert.match(r.stdout, /plan: .* 1 sessions, .*budget \$1\.9 \(spent so far \$0\.30\)/);
   assert.match(r.stdout, /done\. spent \$1\.60 of \$1\.9\./);
   // one process per step, in one session: the first names the id, the others resume it; each gets its step's prompt
-  const calls = readJsonl(callsFile) as Array<{ args: string[]; cwd: string; anthropicModel: string | null; prompt: string }>;
+  const calls = readJsonl(callsFile) as Array<{ args: string[]; cwd: string; anthropicModel: string | null; prompt: string; bgWaitCeiling: string | null }>;
   assert.equal(calls.length, 6);
+  // every step runs without print mode's ceiling on waiting for background tasks: the step's timeout and cap end it
+  assert.deepEqual([...new Set(calls.map(c => c.bgWaitCeiling))], ['0']);
   const id = calls[0]!.args[calls[0]!.args.indexOf('--session-id') + 1]!;
   assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-/);
   for (const c of calls.slice(1)) assert.deepEqual([c.args.includes('--session-id'), c.args[c.args.indexOf('--resume') + 1]], [false, id]);
@@ -281,6 +289,11 @@ test('measure-session with a fake claude: six steps in one session, graded step 
   // step 04 has nothing of its own, and step 03's tests still fail under it: both are on record
   assert.deepEqual([steps[3]!.regressions, steps[2]!.regressions, steps[4]!.regressions], [['03'], [], []]);
   assert.deepEqual(steps.map(x => x.resumed), [false, true, true, true, true, true]);
+  // the worker Claude Code stopped in step 03 and what it said on stderr are on that step's record
+  assert.deepEqual(steps.map(x => x.killedWorkers.length), [0, 0, 1, 0, 0, 0]);
+  assert.deepEqual([steps[2]!.killedWorkers[0].taskId, steps[2]!.killedWorkers[0].agent], ['a1', 'do-it-all-claude-code:coder']);
+  assert.deepEqual(steps.map(x => x.stderrTail), [undefined, undefined, 'Background tasks still running 10m after the last turn (1 agent); stopping them.', undefined, undefined, undefined]);
+  assert.match(r.stdout, /1 worker\(s\) stopped by Claude Code before finishing \(do-it-all-claude-code:coder at /);
   // a step's cost and tokens are its own: the difference from the running total of the step before
   assert.deepEqual(steps.map(x => x.costUsd), [0.2, 0.05, 0.3, 0.1, 0.4, 0.25]);
   assert.deepEqual(steps.map(x => x.costBasis), ['first', 'difference', 'difference', 'difference', 'difference', 'difference']);
