@@ -164,50 +164,20 @@ test('escalation on request (decision 128)', () => {
   assert.deepEqual(decideEscalation({ ...base, step: 's7', fableOptIn: true, evidence: 'independent' }), { granted: false, code: 'needs_user', why: 'limit' });
 });
 
-test('decision 178: oneFileDirect, and the brief of an uncertain team request offers the lead the small-change path', async () => {
-  const { ONE_FILE_DIRECT, SMALL_DIRECT, oneFileDirect, ReportTriageInput, triage, formatTriageContext, withLeadModel, DEFAULT_PRESETS } = await import('../src/index.ts');
+test('decision 230: an uncertain team brief tells the lead to delegate — the small-direct keep-it path is gone', async () => {
+  const { ReportTriageInput, triage, formatTriageContext, withLeadModel, DEFAULT_PRESETS } = await import('../src/index.ts');
   assert.equal(ReportTriageInput.safeParse({ kind: 'direct', level: 'L1', files: 1, lines: 8, confidence: 0.8 }).success, true);
   assert.equal(ReportTriageInput.safeParse({ kind: 'direct', level: 'L1', files: 1, lines: -1, confidence: 0.8 }).success, false);
-  assert.ok(oneFileDirect({ kind: 'direct', level: 'L1', files: 1, lines: ONE_FILE_DIRECT.lines, confidence: 0.6 }));
-  for (const v of [{ files: 2, lines: 8 }, { files: 1, lines: ONE_FILE_DIRECT.lines + 1 }, { files: 1 }, { files: 0, lines: 3, kind: 'team' as const }]) {
-    assert.ok(!oneFileDirect({ kind: 'direct', level: 'L1', confidence: 0.9, ...v } as never), JSON.stringify(v));
-  }
   const presets = withLeadModel(DEFAULT_PRESETS, 'claude-sonnet-5-5');
   const uncertain = triage({ prompt: 'Make the date picker remember the last chosen month' }, presets);
   assert.equal(uncertain.kind, 'uncertain');
   const brief = formatTriageContext(uncertain, presets[uncertain.level], presets);
-  // decision 220: the rubric flip (take one quick look) and the wider bound (2 files / 60 lines)
+  // decision 230: the lead delegates (a single coder for a small change); the "keep it yourself" bullet is removed.
   assert.match(brief, /take one quick look at the file you suspect, then decide/);
-  assert.match(brief, new RegExp(`- The whole change fits in ${SMALL_DIRECT.files} files or fewer and about ${SMALL_DIRECT.lines} changed lines or fewer: do not delegate\\. Call router_report_triage with kind "direct", level "L1", files and lines`));
-  assert.match(brief, /when it answers leadDirect true, make the change yourself/);
-  assert.match(brief, /- Otherwise delegate, and the staffing is yours/);
-  assert.match(brief, /When you delegate: Do not edit or write files yourself/);
-  const spec = triage({ prompt: 'Refactor the validation module across multiple files and add an audit log' }, presets);
-  assert.doesNotMatch(formatTriageContext(spec, presets[spec.level], presets), /one-file|router_report_triage with kind "direct"/);
-});
-
-test('decision 220: smallChangeDirect widens the keep-direct bound to 2 files / 60 lines for a non-Opus lead, Opus keeps 1 / 15', async () => {
-  const { smallChangeDirect, smallDirectBound, SMALL_DIRECT, ONE_FILE_DIRECT } = await import('../src/index.ts');
-  const direct = (files: number, lines: number, confidence = 0.8) => ({ kind: 'direct' as const, level: 'L1' as const, files, lines, confidence });
-  // Sonnet / unknown model: the wide bound. Kept at the edges (2 files, 60 lines); delegated at 3 files or 61 lines.
-  for (const cls of ['sonnet', 'haiku', 'other'] as const) {
-    assert.ok(smallChangeDirect(direct(2, 60), cls), `${cls}: 2 files / 60 lines kept`);
-    assert.ok(smallChangeDirect(direct(1, 15), cls), `${cls}: 1 file / 15 lines kept`);
-    assert.ok(!smallChangeDirect(direct(3, 10), cls), `${cls}: 3 files delegated`);
-    assert.ok(!smallChangeDirect(direct(2, 61), cls), `${cls}: 61 lines delegated`);
-    assert.ok(!smallChangeDirect(direct(2, 20, 0.5), cls), `${cls}: low confidence delegated`);
-    assert.ok(!smallChangeDirect({ kind: 'team', level: 'L2', files: 1, lines: 5, confidence: 0.9 }, cls), `${cls}: team kind delegated`);
-    assert.ok(!smallChangeDirect({ kind: 'direct', level: 'L1', files: 2, confidence: 0.9 } as never, cls), `${cls}: no line estimate delegated`);
-  }
-  // Opus: the narrow decision-178 bound; 2 files is delegated, one file / 15 lines is kept.
-  assert.ok(!smallChangeDirect(direct(2, 10), 'opus'), 'opus: 2 files delegated');
-  assert.ok(!smallChangeDirect(direct(1, 40), 'opus'), 'opus: 40 lines delegated');
-  assert.ok(smallChangeDirect(direct(1, 15), 'opus'), 'opus: 1 file / 15 lines kept');
-  // A delegateFrom the user set for the class falls back to the narrow bound (those requests are delegated as asked).
-  assert.ok(!smallChangeDirect(direct(2, 10), 'sonnet', { sonnet: 'L1' }), 'sonnet with user delegateFrom: narrow bound');
-  assert.deepEqual(smallDirectBound('sonnet'), SMALL_DIRECT);
-  assert.deepEqual(smallDirectBound('opus'), ONE_FILE_DIRECT);
-  assert.deepEqual(smallDirectBound('other', { other: 'L1' }), ONE_FILE_DIRECT);
+  assert.match(brief, /The staffing is yours/);
+  assert.doesNotMatch(brief, /do not delegate\. Call router_report_triage with kind "direct"/);
+  assert.doesNotMatch(brief, /when it answers leadDirect true, make the change yourself/);
+  assert.match(brief, /Do not edit or write files yourself/);
 });
 
 test('decision 178: a team brief with two writer slots tells the lead to send independent parts together, disjoint', async () => {

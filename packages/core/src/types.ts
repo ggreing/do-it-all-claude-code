@@ -51,11 +51,17 @@ export interface TriageResult {
   preset: string;           // team preset id (normally the level, e.g. "L2")
   budgetUsd: number;        // per-request cap (provisional until Phase 0 KPI targets)
   rationale: string;        // one line, shown to the lead and stored for learning
-  /** Decision 225: the lead's difficulty read, and whether the lead gave it or the router defaulted to moderate.
-   *  Absent on records written before decision 225. */
+  /** Decision 225/230: the request's difficulty and who set it — 'lead' (router_report_triage), 'router' (the
+   *  decision-230 rule floor), or 'default' (the assumed moderate when neither applies). Absent on pre-225 records. */
   difficulty?: Difficulty;
-  difficultySource?: 'lead' | 'default';
+  difficultySource?: DifficultySource;
+  /** Decision 230: true once the lead has reported a difficulty via router_report_triage. Lets the brief tell
+   *  "floored at triage, lead not yet asked" (source 'router', false) from "lead reported, floor kept it" (true). */
+  difficultyReported?: boolean;
 }
+
+/** Who set a difficulty. Request-level: lead | router | default. Subtask-level: tag | request | floor (decision 230). */
+export type DifficultySource = 'lead' | 'router' | 'default' | 'tag' | 'request' | 'floor';
 
 export interface TeamMember {
   role: Role;
@@ -164,6 +170,10 @@ export interface SubtaskRecord {
   attempts: number;
   upCount: number;           // > 3 => HITL
   status: SubtaskStatus;
+  /** Decision 230: the subtask's own difficulty (its [difficulty:] tag, else the request's) and where it came from
+   *  — 'tag' (the lead's tag), 'request' (no tag), or 'floor' (a coder tag below the request floor, corrected up). */
+  difficulty?: Difficulty;
+  difficultySource?: DifficultySource;
 }
 
 export interface RequestRecord {

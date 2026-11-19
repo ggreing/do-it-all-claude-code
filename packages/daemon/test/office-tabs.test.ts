@@ -70,18 +70,19 @@ async function withWork(fn: (d: TestDaemon, sid: string, repo: string) => Promis
 
 // ------------------------------------------------------------------ the ledger
 
-test('decision 193: a v17 ledger gains the subtask changes column and the step changes table', () => {
-  const dir = tmpDir('ar-v18-');
+test('a v17 ledger gains the subtask changes column, the step changes table (decision 193), and the per-subtask difficulty columns (decision 230)', () => {
+  const dir = tmpDir('ar-v19-');
   const file = path.join(dir, 'router.db');
   try {
     const l = new Ledger(file);
-    l.db.exec('ALTER TABLE subtasks DROP COLUMN changes; DROP TABLE step_changes; PRAGMA user_version = 17;');
+    l.db.exec('ALTER TABLE subtasks DROP COLUMN changes; ALTER TABLE subtasks DROP COLUMN difficulty; ALTER TABLE subtasks DROP COLUMN difficulty_source; DROP TABLE step_changes; PRAGMA user_version = 17;');
     l.close();
     const again = new Ledger(file);
-    assert.ok((again.db.prepare('PRAGMA table_info(subtasks)').all() as Array<{ name: string }>).some(c => c.name === 'changes'));
+    const subCols = (again.db.prepare('PRAGMA table_info(subtasks)').all() as Array<{ name: string }>).map(c => c.name);
+    assert.ok(['changes', 'difficulty', 'difficulty_source'].every(c => subCols.includes(c)), subCols.join(','));
     again.addStepChange({ requestId: 'r', subtaskId: 'A', role: 'coder', slot: 0, from: 's1', to: 's2', reason: 'miss', detail: null, at: '2026-11-17T00:00:00.000Z' });
     assert.deepEqual(again.listStepChanges({ requestId: 'r' }).map(x => [x.from, x.to, x.reason]), [['s1', 's2', 'miss']]);
-    assert.equal((again.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 18);
+    assert.equal((again.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 19);
     again.close();
   } finally { rmrf(dir); }
 });

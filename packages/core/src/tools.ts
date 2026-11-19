@@ -8,7 +8,6 @@
 // JSON file; the daemon validates every call again with the schemas here.
 import { z } from 'zod';
 import { DEFAULT_DIFFICULTY, crossesTier, stepUp } from './ladder.ts';
-import type { LeadModelClass } from './presets.ts';
 import type { Difficulty, LadderId, Level } from './types.ts';
 
 // ------------------------------------------------------------------ names
@@ -82,54 +81,15 @@ export const ReportTriageInput = z.strictObject({
 });
 
 /**
- * Decision 178 (나): a change the lead, after a look at the code, judges to be one file and a small edit is
- * handled by the lead alone. Delegating it costs a fixed 15 to 25 s (the brief, the worker's start, reading its
- * result; decision 174), more than the fix: one-file public L2 issues took 12 and 20 s direct, 38 and 49 s
- * delegated. This is the narrow bound: an Opus lead keeps it, and so does any class whose delegateFrom the user
- * set (SMALL_DIRECT widens it for the rest; decision 220).
+ * Decision 178 (나): the narrow "one file, a small edit" bound. Decision 230 made the lead a coordinator that
+ * always delegates at L1+, so the router no longer keeps a small change with the lead; this constant remains only
+ * for the offline triage-eval analysis (triage-eval-cli.ts) of what a one-file rule would have changed.
  */
 export const ONE_FILE_DIRECT = { files: 1, lines: 15, confidence: 0.6 } as const;
-
-/**
- * Decision 220: a Sonnet lead, or a lead whose model is not known, keeps a change its first look estimates at
- * two files or fewer AND about 60 changed lines or fewer — wider than decision 178's one file / ~15 lines. On
- * one run of the 20 public SWE-bench tasks the four requests the lead delegated or took back were all 2 files,
- * and two of them cost far more than the lead alone ($0.15 vs $0.06, $0.13 vs $0.07); the paying delegations on
- * the same run were 4+ files or 75+ lines. An Opus lead keeps ONE_FILE_DIRECT (its workers are cheap against its
- * own calls; not measured here, decision 211). Fitted on one run — see the CHANGELOG.
- */
-export const SMALL_DIRECT = { files: 2, lines: 60, confidence: 0.6 } as const;
-
-/**
- * The keep-it-yourself bound for a lead of this class: the wide one (decision 220) for a non-Opus lead whose
- * delegateFrom the user did not set, else the narrow decision-178 bound. Mirrors smallStaysWithLead's gate: a
- * delegateFrom the user set for the class wins, so those requests are delegated as the user asked.
- */
-export function smallDirectBound(leadClass: LeadModelClass, own: Partial<Record<LeadModelClass, Level>> = {}): { files: number; lines: number; confidence: number } {
-  return leadClass !== 'opus' && own[leadClass] === undefined ? SMALL_DIRECT : ONE_FILE_DIRECT;
-}
 
 /** The lead's reported difficulty, or the assumed default when it gave none (decision 225). */
 export function difficultyOf(v: Pick<ReportTriageInput, 'difficulty'>): Difficulty {
   return v.difficulty ?? DEFAULT_DIFFICULTY;
-}
-
-/**
- * Whether a lead's size report is within the keep-it-yourself bound for its class (decisions 178, 220) AND the
- * change is not hard for a non-Opus lead (decision 225): a small *hard* change delegates to a stronger worker, so
- * it is not kept. An Opus lead keeps a small hard change (it is already the top tier). routine/moderate are
- * unchanged from decision 220.
- */
-export function smallChangeDirect(v: ReportTriageInput, leadClass: LeadModelClass, own: Partial<Record<LeadModelClass, Level>> = {}): boolean {
-  const b = smallDirectBound(leadClass, own);
-  const withinBound = v.kind === 'direct' && v.files <= b.files && v.lines !== undefined && v.lines <= b.lines && v.confidence >= b.confidence;
-  if (!withinBound) return false;
-  return !(difficultyOf(v) === 'hard' && leadClass !== 'opus');
-}
-
-/** Whether a lead's size report says "one file, a small edit" (the narrow decision-178 bound; and sure enough to act on). */
-export function oneFileDirect(v: ReportTriageInput): boolean {
-  return v.kind === 'direct' && v.files <= ONE_FILE_DIRECT.files && v.lines !== undefined && v.lines <= ONE_FILE_DIRECT.lines && v.confidence >= ONE_FILE_DIRECT.confidence;
 }
 
 export const REVIEW_CATEGORIES = ['wrong_behavior', 'incomplete', 'regression', 'out_of_scope', 'style'] as const;
@@ -197,7 +157,7 @@ export const ROUTER_TOOLS: readonly RouterToolDef[] = [
   },
   {
     name: 'router_report_triage', input: ReportTriageInput,
-    description: 'Do It All Claude Code, lead only. Reports your judgement of a request before the first subtask: kind direct (L0/L1 small fix) or team (L2 module, L3 architecture); files, lines and confidence; and difficulty — routine, moderate or hard (hard = a subtle bug, heavy reasoning or no repro test; default moderate). Report team level L3 for an architecture change and the router re-plans as L3, returning the L3 team values. Small and not hard (<=2 files/~60 lines for a Sonnet or unknown lead, 1/~15 for Opus): kept with you. Small but hard: delegated to a stronger worker.',
+    description: 'Do It All Claude Code, lead only. Reports your judgement of a request before the first subtask: kind direct (L0 trivial, kept by you) or team (L1+ you delegate; L2 module, L3 architecture); files, lines, confidence; and difficulty — routine, moderate or hard (hard = a subtle bug, heavy reasoning, a race, or no repro test; default moderate). The router takes the higher of your difficulty and its own floor for the request. Report team level L3 for an architecture change and it re-plans as L3, returning the L3 team values. You then tag each subtask\'s own difficulty on its Agent call.',
   },
   {
     name: 'router_report_result', input: ReportResultInput,

@@ -165,7 +165,8 @@ test('the judge answer is used by its score in three bands (decision 115)', () =
 
   // decision 120: the call is skipped when L1 and L2 are staffed the same way, so its answer could not change the staffing
   assert.equal(judgeCanChangeArrangement(DEFAULT_PRESETS), true);
-  assert.equal(judgeCanChangeArrangement(withLeadModel(DEFAULT_PRESETS, 'claude-haiku-5-5')), true);
+  // decision 230: a Haiku lead now delegates L1 too, so (like Sonnet/Opus) the judge's answer cannot change the staffing
+  assert.equal(judgeCanChangeArrangement(withLeadModel(DEFAULT_PRESETS, 'claude-haiku-5-5')), false);
   assert.equal(judgeCanChangeArrangement(withLeadModel(DEFAULT_PRESETS, 'claude-sonnet-5-5')), false);
   assert.equal(judgeCanChangeArrangement(withLeadModel(DEFAULT_PRESETS, 'claude-opus-5-5')), false);
   assert.equal(judgeCanChangeArrangement(withLeadModel(DEFAULT_PRESETS, 'claude-opus-5-5', { opus: 'L2' })), true);
@@ -177,7 +178,7 @@ test('the judge answer is used by its score in three bands (decision 115)', () =
   const betweenOpus = applyJudge(openOpus, v('direct', 0.65), opus);
   assert.deepEqual([betweenOpus.kind, betweenOpus.level, betweenOpus.preset, betweenOpus.rule], ['uncertain', 'L2', 'L2', 'judge-open']);
   assert.match(betweenOpus.rationale, /-> L2 team, the lead picks the roles$/);
-  assert.match(formatTriageContext(betweenOpus, opus[betweenOpus.level], opus), /the staffing is yours/);
+  assert.match(formatTriageContext(betweenOpus, opus[betweenOpus.level], opus), /The staffing is yours/);
   assert.deepEqual([applyJudge(openOpus, v('direct', 0.9, 'L1'), opus).level, applyJudge(openOpus, v('direct', 0.9, 'L1'), opus).preset], ['L1', 'L1']);
 
   // the evaluation reads a judge run through the same bands; null takes the judge's own word

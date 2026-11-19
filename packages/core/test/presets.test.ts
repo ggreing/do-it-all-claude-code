@@ -28,20 +28,21 @@ test('invalid teams.yaml throws', () => {
   assert.throws(() => loadPresets(tmp('teams.yaml', 'L9:\n  lead_direct: true\n')));
 });
 
-test('delegation starts at L1 for an Opus-class lead and at L2 otherwise (decisions 117-118)', async () => {
+test('decision 230: every lead class delegates from L1; only L0 is lead-direct by default', async () => {
   const { withLeadModel, leadModelClass } = await import('@do-it-all-claude-code/core');
   assert.equal(leadModelClass('claude-opus-5-5'), 'opus');
   assert.equal(leadModelClass('claude-fable-5-1'), 'opus');
   assert.equal(leadModelClass('claude-sonnet-5-5'), 'sonnet');
   assert.equal(leadModelClass(undefined), 'other');
+  for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', undefined]) {
+    const p = withLeadModel(DEFAULT_PRESETS, model);
+    assert.equal(p.L0.leadDirect, true, `${model}: L0 lead-direct`);
+    assert.equal(p.L1.leadDirect, undefined, `${model}: L1 delegated (decision 230)`);
+    assert.equal(p.L2.leadDirect, undefined, `${model}: L2 delegated`);
+  }
   const opus = withLeadModel(DEFAULT_PRESETS, 'claude-opus-5-5');
-  assert.equal(opus.L0.leadDirect, true);
-  assert.equal(opus.L1.leadDirect, undefined, 'Opus lead delegates L1');
   assert.deepEqual(opus.L1.roles, [{ role: 'coder', count: 1, start: 's1' }], 'light L1 team');
-  assert.equal(withLeadModel(DEFAULT_PRESETS, 'claude-sonnet-5-5').L1.leadDirect, undefined, 'Sonnet lead delegates L1 (decision 124)');
-  const haiku = withLeadModel(DEFAULT_PRESETS, 'claude-haiku-5-5');
-  assert.equal(haiku.L1.leadDirect, true);
-  assert.equal(haiku.L2.leadDirect, undefined);
+  // a user delegateFrom override still keeps lower levels with the lead
   assert.equal(withLeadModel(DEFAULT_PRESETS, 'claude-sonnet-5-5', { sonnet: 'L2' }).L1.leadDirect, true, 'config override');
   const fileOverride = loadPresets(tmp('teams.yaml', 'L1:\n  lead_direct: true\n'), opus);
   assert.equal(fileOverride.L1.leadDirect, true, 'explicit teams.yaml lead_direct wins');

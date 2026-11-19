@@ -7,6 +7,15 @@ export const DIFFICULTIES: readonly Difficulty[] = ['routine', 'moderate', 'hard
 /** Decision 225: the difficulty the router assumes when the lead reports none. */
 export const DEFAULT_DIFFICULTY: Difficulty = 'moderate';
 
+/** Order of a difficulty (routine < moderate < hard); higher = harder. Used to take the higher of two difficulties. */
+export function difficultyRank(d: Difficulty): number {
+  return DIFFICULTIES.indexOf(d);
+}
+/** The harder of two difficulties (decision 230: difficulty is the higher of the lead's report and the router floor). */
+export function maxDifficulty(a: Difficulty, b: Difficulty): Difficulty {
+  return difficultyRank(a) >= difficultyRank(b) ? a : b;
+}
+
 const MODELS: Record<ModelAlias, { tier: Tier; modelId: string }> = {
   haiku: { tier: 'T1', modelId: 'claude-haiku-5-5' },
   sonnet: { tier: 'T2', modelId: 'claude-sonnet-5-5' },

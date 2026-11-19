@@ -163,26 +163,39 @@ a model is a new call to the same subagent**.
   ease back onto an in-between cell, and a later miss then takes it up the legacy path again. The
   `quality` profile keeps `stepDown: off`.
 
-## 3. Interaction with decision 220's small-direct bound
+## 3. Per-subtask difficulty and the small-direct bound (superseded by decision 230)
 
-Decision 220 keeps a ≤2-file/≤60-line change with a non-Opus lead because the fixed 15–25 s
-hand-off overhead exceeds a *trivial* fix. That assumed the fix is easy. `ql1` is the
-counter-example. So:
+Decisions 225/226 set a start cell from the **request's** difficulty. Decision 220 kept a
+≤2-file/≤60-line change with a non-Opus lead, and decision 225 then delegated the *hard* ones.
 
-- The bound applies to **routine and moderate** only. For **hard**, the bound does **not** hold: a
-  non-Opus lead delegates the small hard task to a worker at the hard start cell (opus·high),
-  re-planned as a delegated L1 (one coder, not lead-direct). Small + hard is exactly where a
-  **stronger model** pays — the value is reasoning, not parallelism.
-- For an **Opus lead**, a small hard task **stays with the lead** (`ONE_FILE_DIRECT`): the lead is
-  already top tier; delegating to another Opus worker is overhead for no tier gain.
-- routine/moderate small work is unchanged (moderate's tier is Sonnet = the Sonnet lead's own tier;
-  no gain in delegating). Concretely `smallChangeDirect` takes a difficulty arg and returns `false`
-  only for `hard` + non-Opus lead.
+**Decision 230 replaces all of this.** The lead is a coordinator: it delegates at L1 and above (only
+L0 stays lead-direct; a user `delegateFrom`/`lead_direct` still wins), so the decision-220 bound, the
+decision-211 "small stays with the lead" path, the Opus small-hard-direct exception and the
+per-lead-model L1 lead-direct defaults (117/118/124) are **gone** (`smallChangeDirect`,
+`smallDirectBound`, `SMALL_DIRECT`, `smallStaysWithLead`, `SMALL_STAYS_WITH_LEAD` removed;
+`DEFAULT_DELEGATE_FROM` is L1 for every class). Instead difficulty is now **per subtask**:
 
-**Decision 211** (`SMALL_STAYS_WITH_LEAD`) fires at stage 1 from wording, before the first look, so
-it can't know difficulty. Keep it a *starting* plan: the lead still takes its look, and a
-`direct + hard` report then delegates to an Opus worker. This needs the lead on such a request to
-still be invited to report triage/difficulty (today it may be settled silently). Flag.
+- The lead tags each Agent call with `[difficulty: routine|moderate|hard]` on a third header line
+  (after `[subtask:…]` and `[scope:…]`). The router starts that subtask at the role × difficulty cell
+  and checks the call's model/effort against it (the same `checkAgentCall` deny-with-right-values path).
+  No tag → the request's difficulty. So hard parts go to Opus/Fable and easy parts to Haiku, and two
+  coder subtasks of different difficulty run at once at different cells (a slot's start is its first
+  subtask's cell; `resolveCallDifficulty` + the per-call `difficulty` into `checkAgentCall`).
+- **Coder source floor**: a coder subtask whose scope can change source files (paths outside the
+  test/doc/changelog/config patterns, `scopeChangesSource`) may not be tagged below the request's
+  difficulty, once that is set (lead report or router floor); a lower tag is raised to it (source
+  `floor`). tester, docs/changelog-only and scope-less scouting subtasks may go lower.
+- **Router difficulty floor** (`difficultyFloor`): the request's difficulty is the higher of the
+  lead's report and a rule floor. The floor reads `hard` on a **strong** hard-bug cue only — a
+  traceback, an unexpected error/crash, a regression, "sometimes", a race, or an order-/chunk-dependent
+  symptom — and only when no reproducing test is named and the request is not a stage-1 L0. A bare
+  expected/actual example or the word "bug" sets no floor. Over the 38 bench prompts this floors 9.
+- **Unverified retry** (item 3): a moderate or hard subtask that ends unverified (the checks could not
+  run or did not start) gets one more attempt on the next model up (s3/s4 → s5; at s5 with Fable off
+  the effort rises to s6), once per slot and within budget, before it goes back to the lead; routine is
+  handed back as before. This supersedes decision 212's "keep the step" for moderate/hard. While the
+  retry is pending the lead cannot close the subtask with `router_report_result` accept — the router
+  answers with the retry's Agent-call values (item 4).
 
 ## 4. Compatibility
 

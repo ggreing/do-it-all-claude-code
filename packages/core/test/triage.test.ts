@@ -7,15 +7,18 @@ import type { Difficulty, Role, TeamPreset } from '@do-it-all-claude-code/core';
 const DEFAULT_PRESETS = PRESETS0;
 const TEAM = { ...PRESETS0, L1: { ...PRESETS0.L1, leadDirect: false } };
 
-// Decision 225: a brief shows each role's start cell for the request's difficulty, moderate before the lead reports
-// one. Which cell that is belongs to the ladder and the profiles (their tests); these tests check that the brief shows it.
+// Decision 225: the team line shows each role's start cell for the request's difficulty, moderate before the lead
+// reports one. Decision 230: each role's call line gives its cells at all three difficulties, for the lead's tags.
+// Which cell that is belongs to the ladder and the profiles (their tests); these tests check that the brief shows it.
 const cell = (p: TeamPreset, role: Role, d: Difficulty = 'moderate') => {
   const m = p.roles.find(r => r.role === role && r.count > 0)!;
   return memberStartCell(role, m.start, m.startSet, d);
 };
-const callOf = (p: TeamPreset, role: Role, d: Difficulty = 'moderate') => {
-  const s = ladderStep(cell(p, role, d));
-  return `subagent_type "do-it-all-claude-code:${role}", model "${s.alias}", effort "${s.effort}"`;
+const DIFFS = ['routine', 'moderate', 'hard'] as const;
+const callOf = (p: TeamPreset, role: Role) => {
+  const vs = DIFFS.map(d => { const s = ladderStep(cell(p, role, d)); return `${s.alias}/${s.effort}`; });
+  const values = vs.every(v => v === vs[0]) ? `${vs[0]} at every difficulty` : DIFFS.map((d, i) => `${d} ${vs[i]}`).join(', ');
+  return `subagent_type "do-it-all-claude-code:${role}"; model/effort: ${values}`;
 };
 const re = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -87,23 +90,55 @@ test('lead brief names the per-role start step with model and effort', () => {
   assert.match(text, /\[subtask:<ID>\]/);
 });
 
-test('decision 225: a team brief asks for the difficulty before the first Agent call, once, and lists the moderate cells', () => {
+test('decisions 225, 230: a team brief asks for the request\'s difficulty before the first Agent call, once, and lists every role\'s cells at all three', () => {
   const r = triage({ prompt: '모듈 단위로 리팩터링해줘' });
   const text = formatTriageContext(r, DEFAULT_PRESETS[r.level]);
-  // the signals of docs/design/difficulty-steps.md, said once
-  assert.match(text, /^Difficulty: hard if any of these holds: no test reproduces the problem and one is not obvious; .*a first attempt is likely to be subtly wrong\. Routine if all hold: .*Otherwise moderate\. Difficulty is not size/m);
+  // the signals of docs/design/difficulty-steps.md, said once; a bug report in code the lead has not traced is hard,
+  // and the router's floor counts when it is higher
+  assert.match(text, /^Difficulty: hard if any of these holds: the request reports wrong behaviour or an error in code you have not fully traced; no test reproduces the problem and one is not obvious; .*a first attempt is likely to be subtly wrong\. Routine if all hold: .*Otherwise moderate\. Difficulty is not size: a two-file change can be hard\. The router may set a floor from the request; the higher one is used\.$/m);
   assert.equal(text.match(/^Difficulty: /gm)!.length, 1);
-  assert.ok(text.includes('Before your first Agent call, call router_report_triage with kind "team", level "L2", files and confidence (your estimates) and difficulty. The values below are for moderate; for routine or hard, use the ones its answer gives.'));
-  // before the Agent calls, which show the moderate cells
+  assert.ok(text.includes('Before your first Agent call, call router_report_triage with kind "team", level "L2", files and confidence (your estimates) and the request\'s difficulty.'));
+  assert.doesNotMatch(text, /values below are for moderate/);
+  // before the Agent calls, which show each role's cells at routine, moderate and hard
   assert.ok(text.indexOf('router_report_triage') < text.indexOf('2. Call the Agent tool'));
   for (const role of ['architect', 'coder', 'reviewer', 'tester'] as const) assert.ok(text.includes(callOf(DEFAULT_PRESETS.L2, role)), role);
-  // the brief the report answers with: what was reported, its cells, and no second request for it
+  // the table the lead reads its values from (decision 226's grid)
+  assert.ok(text.includes('coder (up to 2 in parallel, one subtask each): subagent_type "do-it-all-claude-code:coder"; model/effort: routine haiku/low, moderate sonnet/medium, hard opus/high'), text);
+  assert.ok(text.includes('reviewer: subagent_type "do-it-all-claude-code:reviewer"; model/effort: routine sonnet/medium, moderate sonnet/high, hard opus/xhigh'), text);
+  // the brief the report answers with: what was reported, the same table, and no second request for it
   const after = formatTriageContext({ ...r, difficulty: 'hard', difficultySource: 'lead' }, DEFAULT_PRESETS[r.level]);
-  assert.match(after, /^Difficulty hard, as you reported: the values below are for it\.$/m);
+  assert.match(after, /^The request's difficulty is hard, as you reported\.$/m);
   assert.doesNotMatch(after, /router_report_triage|^Difficulty: hard if/m);
-  for (const role of ['architect', 'coder', 'reviewer', 'tester'] as const) assert.ok(after.includes(callOf(DEFAULT_PRESETS.L2, role, 'hard')), role);
+  for (const role of ['architect', 'coder', 'reviewer', 'tester'] as const) assert.ok(after.includes(callOf(DEFAULT_PRESETS.L2, role)), role);
+  // decision 230: the router's floor above the lead's report; a floor before any report still asks for one
+  const floored = formatTriageContext({ ...r, difficulty: 'hard', difficultySource: 'router', difficultyReported: true }, DEFAULT_PRESETS[r.level]);
+  assert.match(floored, /^The request's difficulty is hard: the router's floor, above your report\.$/m);
+  assert.doesNotMatch(floored, /router_report_triage/);
+  assert.match(formatTriageContext({ ...r, difficulty: 'hard', difficultySource: 'router' }, DEFAULT_PRESETS[r.level]), /Before your first Agent call, call router_report_triage/);
   // the router's own default is not a report: the brief still asks
   assert.match(formatTriageContext({ ...r, difficulty: 'moderate', difficultySource: 'default' }, DEFAULT_PRESETS[r.level]), /Before your first Agent call, call router_report_triage/);
+});
+
+test('decision 230: the lead coordinates, tags each subtask with its difficulty and splits by it', () => {
+  const r = triage({ prompt: '모듈 단위로 리팩터링해줘' });
+  const text = formatTriageContext(r, DEFAULT_PRESETS[r.level]);
+  // a thin lead: the first look sizes and grades the request; the worker traces the cause
+  assert.match(text, /^Your first look only judges size and difficulty: read the request and make at most a couple of quick searches\. Do not trace the root cause, read source files in depth or draft the fix\./m);
+  assert.match(text, /the user's request verbatim, so do not copy it into a prompt: write the subtask \(which part, the files and symbols it names, your first-look notes, the acceptance check\)/);
+  // the tag is the prompt's third line, in the router's syntax, and picks the role's values
+  assert.ok(text.includes('the third "[difficulty: routine|moderate|hard]" (this subtask\'s)'), text);
+  assert.ok(text.includes('Pass that difficulty\'s values: "hard opus/high" is model "opus", effort "high".'));
+  assert.match(text, /2\. Call the Agent tool once per subtask with these parameters, at the subtask's difficulty:/);
+  // split by difficulty: the fix at the request's, the side work routine; no coder of source below the request
+  assert.match(text, /Split by difficulty too, and tag each subtask with its own: for a bug, the fix is a coder subtask at the request's difficulty, while a reproduction, the changelog, running the checks and a summary are routine\. A coder that changes source code is never tagged below the request's difficulty\./);
+  // a parallel team says "together" in its writers line; a one-coder team in the split line
+  assert.match(text, /sent in one message so they run at the same time/);
+  const one = formatTriageContext({ level: 'L1', confidence: 0.9, source: 'rule', taskType: 'edit', preset: 'L1', budgetUsd: TEAM.L1.budgetUsd, rationale: 'x' }, TEAM.L1);
+  assert.match(one, /never tagged below the request's difficulty\. Subtasks that do not need each other's result go out together, in one message\./);
+  // a start the user set in teams.yaml is the same at every difficulty
+  const own = { ...TEAM.L1, roles: [{ role: 'coder' as const, count: 1, start: 's2' as const, startSet: true }] };
+  assert.ok(formatTriageContext({ level: 'L1', confidence: 0.9, source: 'rule', taskType: 'edit', preset: 'L1', budgetUsd: own.budgetUsd, rationale: 'x' }, own)
+    .includes('coder: subagent_type "do-it-all-claude-code:coder"; model/effort: haiku/high at every difficulty'));
 });
 
 test('decision 225: a small change the lead keeps is handed on when it is hard, for a lead that is not Opus-class', () => {
@@ -121,7 +156,7 @@ test('decision 225: a small change the lead keeps is handed on when it is hard, 
   assert.match(u, /^Difficulty: hard if any of these holds/m);
   assert.ok(u.includes(invite));
   assert.ok(u.includes('To switch, first call router_report_triage with kind "team", level "L2" or "L3" (the team you chose), files and confidence (your estimates) and difficulty: the router re-plans this request at that level.'), u);
-  assert.ok(u.includes('for the L2 team with exactly the parameters below, or for routine or hard the ones its answer gives (these are for moderate)'), u);
+  assert.ok(u.includes('for the L2 team with the parameters below, at each subtask\'s difficulty.'), u);
 });
 
 test('lead brief is directive and spells out the Agent call for every preset role', () => {
@@ -129,7 +164,8 @@ test('lead brief is directive and spells out the Agent call for every preset rol
     const p = TEAM[level];
     const text = formatTriageContext({ level, confidence: 0.9, source: 'rule', taskType: 'feature', preset: p.id, budgetUsd: p.budgetUsd, rationale: 'x' }, p);
     assert.match(text, /Do not edit or write files yourself/);
-    for (const r of p.roles) assert.match(text, new RegExp(`subagent_type "do-it-all-claude-code:${r.role}", model "(haiku|sonnet|opus|fable)", effort "\\w+"`));
+    for (const r of p.roles) assert.ok(text.includes(callOf(p, r.role)), `${level} ${r.role}`);
+    assert.match(text, /\[difficulty: routine\|moderate\|hard\]/);
     assert.match(text, /\[scope: /);
   }
 });
@@ -185,7 +221,7 @@ test('L0 and L1 are handled by the lead directly by default; team briefs keep th
     assert.doesNotMatch(brief(l), /subagent_type/);
   }
   for (const l of ['L1', 'L2', 'L3'] as const) {
-    assert.match(brief(l, TEAM), /Do not open or read source files to plan/);
+    assert.match(brief(l, TEAM), /Do not trace the root cause, read source files in depth or draft the fix/);
     assert.match(brief(l, TEAM), /do not run the build or the tests yourself/);
     assert.match(brief(l, TEAM), /A report without that line is not verified yet/);
   }
@@ -240,15 +276,18 @@ test('with a lead that delegates L1, an uncertain request gets the L2 team and s
   const opus = withLeadModel(DEFAULT_PRESETS, 'claude-opus-5-5');
   const haiku = withLeadModel(DEFAULT_PRESETS, 'claude-haiku-5-5');
   const sonnet = withLeadModel(DEFAULT_PRESETS, 'claude-sonnet-5-5');
-  assert.deepEqual([uncertainLevel(DEFAULT_PRESETS), uncertainLevel(haiku), uncertainLevel(sonnet), uncertainLevel(opus)], ['L1', 'L1', 'L2', 'L2']);
+  // decision 230: every lead class delegates L1, so an uncertain request gets the L2 team for all of them.
+  assert.deepEqual([uncertainLevel(haiku), uncertainLevel(sonnet), uncertainLevel(opus)], ['L2', 'L2', 'L2']);
+  // a preset whose L1 is lead-direct (a teams.yaml lead_direct, or the raw defaults before a lead model is known): stays L1
+  assert.equal(uncertainLevel(DEFAULT_PRESETS), 'L1');
   // L2 lead-direct as well (teams.yaml): nothing to delegate to, so the request stays L1
   assert.equal(uncertainLevel({ ...opus, L2: { ...opus.L2, leadDirect: true } }), 'L1');
 
-  // a lead that handles L1 itself: as before, lead-direct with the rubric
-  const s = triage({ prompt }, haiku);
+  // a preset that handles L1 itself (teams.yaml lead_direct): lead-direct with the rubric
+  const s = triage({ prompt }, DEFAULT_PRESETS);
   assert.deepEqual([s.kind, s.level, s.preset, s.source], ['uncertain', 'L1', 'L1', 'default']);
   assert.match(s.rationale, /-> start as L1, the lead decides$/);
-  assert.match(formatTriageContext(s, haiku[s.level], haiku), /handled by you directly/);
+  assert.match(formatTriageContext(s, DEFAULT_PRESETS[s.level], DEFAULT_PRESETS), /handled by you directly/);
 
   // a lead that delegates L1: the L2 team, still uncertain (source 'default', low confidence), the lead picks the roles
   const o = triage({ prompt }, opus);
@@ -258,7 +297,11 @@ test('with a lead that delegates L1, an uncertain request gets the L2 team and s
   const brief = formatTriageContext(o, opus[o.level], opus);
   assert.match(brief, /^\[do-it-all-claude-code\] level L2 \(source=default/);
   assert.match(brief, /Do not edit or write files yourself/);
-  assert.match(brief, new RegExp(`the staffing is yours: call only the roles the change needs\\. One coder subtask alone is right for a small change \\(fewer than ${TEAM_SIZE_RULE.files} files, one module\\)`));
+  assert.match(brief, new RegExp(`^The staffing is yours: call only the roles the change needs\\. One coder subtask alone is right for a small change \\(fewer than ${TEAM_SIZE_RULE.files} files, one module\\)`, 'm'));
+  // decision 230: from L1 up a small change is delegated too, so the brief no longer offers to keep it
+  assert.doesNotMatch(brief, /do not delegate|leadDirect true/);
+  assert.match(brief, /Do not trace the root cause/);
+  assert.match(brief, /Split by difficulty too/);
   assert.match(brief, new RegExp(`${TEAM_SIZE_RULE.dirs} or more modules or layers`));
   for (const r of DEFAULT_PRESETS.L2.roles) assert.match(brief, new RegExp(`subagent_type "do-it-all-claude-code:${r.role}"`));
   assert.doesNotMatch(brief, /handled by you directly|L3/);
@@ -302,13 +345,13 @@ test('an uncertain lead-direct request gets the rubric and the L2 call values; a
   assert.match(text, /handled by you directly/);
   assert.match(text, new RegExp(`${TEAM_SIZE_RULE.files} or more files`));
   assert.match(text, new RegExp(`${TEAM_SIZE_RULE.dirs} or more modules`));
-  for (const r of DEFAULT_PRESETS.L2.roles) assert.match(text, new RegExp(`subagent_type "do-it-all-claude-code:${r.role}", model "(haiku|sonnet|opus)", effort "\\w+"`));
+  for (const r of DEFAULT_PRESETS.L2.roles) assert.ok(text.includes(callOf(DEFAULT_PRESETS.L2, r.role)), r.role);
   assert.match(text, /\[subtask:<ID>\]/);
   // decisions 113, 226: the L3 team is offered too, with a higher bar; the lead names the team in its report, whose
   // answer gives the L3 team's values, so the brief lists the L2 team's alone and names no first call
   assert.match(text, new RegExp(`Which team: the L2 team, unless the change is clearly beyond it: ${L3_SIGNS}, or edits in ${L3_SIZE_RULE.files} or more files\\.`));
   assert.match(text, /When unsure between the two, use L2\./);
-  assert.ok(text.includes('To switch, first call router_report_triage with kind "team", level "L2" or "L3" (the team you chose), files and confidence (your estimates) and difficulty: the router re-plans this request at that level. Then call the Agent tool once per subtask: for the L3 team with the values its answer gives, for the L2 team with exactly the parameters below'), text);
+  assert.ok(text.includes('To switch, first call router_report_triage with kind "team", level "L2" or "L3" (the team you chose), files and confidence (your estimates) and difficulty: the router re-plans this request at that level. Then call the Agent tool once per subtask: for the L3 team with the values its answer gives, for the L2 team with the parameters below, at each subtask\'s difficulty.'), text);
   assert.ok(text.includes(`L2 team (team preset L2):\n   - architect: ${callOf(DEFAULT_PRESETS.L2, 'architect')}`), text);
   assert.doesNotMatch(text, /L3 team \(team preset L3\)|ui-designer|make your first call|when that call is/);
   assert.equal(text.match(/\[subtask:<ID>\]/g)!.length, 1);
@@ -341,34 +384,3 @@ test('an uncertain lead-direct request gets the rubric and the L2 call values; a
   assert.match(formatTriageContext(old, DEFAULT_PRESETS.L1), /handled by you directly/);
 });
 
-test('decision 211: what the wording settles as small stays with a Sonnet lead and an unknown one, not with an Opus-class lead', async () => {
-  const { SMALL_STAYS_WITH_LEAD, smallStaysWithLead } = await import('@do-it-all-claude-code/core');
-  assert.deepEqual(SMALL_STAYS_WITH_LEAD, { opus: false, sonnet: true, haiku: true, other: true });
-  const sonnet = withLeadModel(DEFAULT_PRESETS, 'claude-sonnet-5-5');
-  // the two rules that settle a request as small: a short fix or option request, and a short one with a log
-  const small = triage({ prompt: 'slugify drops accents, please fix the bug' }, sonnet);
-  const withLog = triage({ prompt: 'parseConfig throws on empty input\nTypeError: Cannot read properties of undefined\n    at parse (src/config.ts:10:5)' }, sonnet);
-  assert.deepEqual([small.level, small.kind, small.rule, withLog.level, withLog.kind, withLog.rule], ['L1', 'direct', 'small-fix', 'L1', 'direct', 'debug-with-log']);
-  for (const t of [small, withLog]) {
-    assert.deepEqual((['opus', 'sonnet', 'other'] as const).map(c => smallStaysWithLead(t, c)), [false, true, true]);
-    // a delegateFrom the user set for the class wins, whatever its value; another class's value does not count
-    assert.equal(smallStaysWithLead(t, 'sonnet', { sonnet: 'L1' }), false);
-    assert.equal(smallStaysWithLead(t, 'sonnet', { opus: 'L2' }), true);
-  }
-  // not small by a rule: unclear size, a team by rule, a typo (L0, the lead's anyway), a level set by hand or by the judge
-  const unclear = triage({ prompt: 'Make the date picker remember the last chosen month' }, sonnet);
-  const team = triage({ prompt: 'Refactor the validation module across multiple files and add an audit log' }, sonnet);
-  const typo = triage({ prompt: 'fix the typo in README.md' }, sonnet);
-  assert.deepEqual([unclear.kind, team.kind, typo.level], ['uncertain', 'team', 'L0']);
-  for (const t of [unclear, team, typo, { ...small, source: 'manual' as const }, { ...small, source: 'judge' as const }]) assert.equal(smallStaysWithLead(t, 'sonnet'), false);
-  // the brief of such a request is the short one: no call values, nothing about a team's steps; decision 225 adds one
-  // line for the lead it stays with (Sonnet, or a model of no known class): a hard one is reported and handed on
-  const brief = formatTriageContext({ ...small, kind: 'direct' }, { ...sonnet.L1, leadDirect: true }, sonnet, { leadClass: 'sonnet' });
-  assert.match(brief, /Level L1 is handled by you directly \(team preset lead_direct\): make the change yourself, without subagents/);
-  assert.doesNotMatch(brief, /subagent_type|task-notification/);
-  assert.equal(brief.match(/router_report_triage/g)?.length, 1);
-  assert.ok(brief.length < 720, `${brief.length} characters`);
-  const without = formatTriageContext({ ...small, kind: 'direct' }, { ...sonnet.L1, leadDirect: true }, sonnet, { leadClass: 'opus' });
-  assert.doesNotMatch(without, /subagent_type|router_report_triage|task-notification/);
-  assert.ok(without.length < 450, `${without.length} characters`);
-});

@@ -8,7 +8,7 @@
 import type { SQLInputValue } from 'node:sqlite';
 import {
   CACHE_MULTIPLIER, DEFAULT_DELEGATE_FROM, DEFAULT_PRESETS, DIFFICULTIES, PRICING_PER_MTOK, PROFILE_LAYERS, ladderStep, leadModelClass, loadPresets, memberStartCell, profileDelegateFrom, profileOf,
-  profilePresets, type Difficulty, type LadderId, type LeadModelClass, type Level, type Profile, type Role, type TeamPreset, type TriageResult,
+  profilePresets, type Difficulty, type DifficultySource, type LadderId, type LeadModelClass, type Level, type Profile, type Role, type TeamPreset, type TriageResult,
 } from '@do-it-all-claude-code/core';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -65,7 +65,7 @@ interface RecordBlob {
   /** The changed files with the most changed lines (records written since schema v18). */
   files?: SubtaskFile[];
   time?: { durationMs?: number; activeMs?: number; awaitingMs?: number };
-  subtasks?: Array<{ id: string; role: string; slot: number; step: string; upCount: number; status: string; verdict: string | null; attempts: number; costUsd: number }>;
+  subtasks?: Array<{ id: string; role: string; slot: number; step: string; upCount: number; status: string; verdict: string | null; attempts: number; costUsd: number; difficulty?: Difficulty; difficultySource?: DifficultySource }>;
   slots?: Array<{ role: string; slot: number; step: string; ups: number; downs: number }>;
   verifyFailures?: number;
   costs?: { subtaskUsd?: number; leadUsd?: number | null; totalUsd?: number; estimated?: boolean; unknown?: boolean; budgetExceeded?: boolean; source?: string };
@@ -80,6 +80,8 @@ export interface WorkRow {
   createdAt: string; closedAt: string | null;
   kind: string | null;
   level: Level; finalLevel: Level;
+  /** Decision 230: the request's difficulty and its source ('router' = the rule floor raised it), when set. */
+  difficulty?: Difficulty; difficultySource?: DifficultySource;
   outcome: string | null;
   passed: boolean | null;
   acceptance: string | null;
@@ -142,6 +144,7 @@ function openRow(ledger: Ledger, r: RequestRow, sessionId: string, now: Date): W
   return {
     requestId: r.id, state: r.status === 'awaiting_user' ? 'awaiting_user' : 'open', mine: r.sessionId === sessionId,
     createdAt: r.createdAt, closedAt: null, kind: j.kind ?? null, level: r.forcedFrom ?? j.level, finalLevel: r.level,
+    ...(r.triage.difficulty ? { difficulty: r.triage.difficulty, difficultySource: r.triage.difficultySource ?? 'default' } : {}),
     outcome: r.outcome, passed: null, acceptance: null,
     subtasks: subs.length, verifyFailures: ledger.listAgents(r.id).reduce((a, x) => a + x.failCount, 0), stepUps: upsOf(ledger.listStepChanges({ requestId: r.id })),
     changedFiles: files.length ? files.length : null,
@@ -212,6 +215,8 @@ const stepChange = (x: StepChangeRow): StepChange => ({
 export interface WorkSubtask {
   id: string; role: Role; slot: number; attempts: number;
   step: LadderId; model: string; effort: string; estimated: boolean;
+  /** Decision 230: the subtask's own difficulty and where it came from (tag/request/floor). */
+  difficulty?: Difficulty; difficultySource?: DifficultySource;
   ranModel: string | null;
   status: string; verdict: string | null;
   stepChanges: StepChange[];
@@ -227,6 +232,8 @@ export interface WorkDetail {
   requestId: string; state: WorkRow['state']; createdAt: string; closedAt: string | null;
   kind: string | null; taskType: string | null;
   level: { judged: Level; source: string; rule: string | null; confidence: number | null; final: Level; changes: Array<{ from: Level; to: Level; why: 'manual' | 'forced' | 'replanned' }> };
+  /** Decision 230: the request's difficulty, its source ('router' = the rule floor raised it), and whether the lead reported one. */
+  difficulty: { value: Difficulty; source: DifficultySource; reported: boolean } | null;
   plan: { preset: string; leadDirect: boolean; leadModel: string | null; leadClass: string | null; budgetUsd: number; holdout: string | null };
   outcome: string | null; passed: boolean | null; acceptance: string | null;
   subtasks: WorkSubtask[];
@@ -286,6 +293,7 @@ export function workDetail(c: TabsContext, requestId: string): WorkDetail | null
     const reproFiles = Object.keys(x.repro?.files ?? {});
     return {
       id: x.id, role: x.role, slot: x.slot, attempts: x.attempts, step: x.step, model: planned.alias, effort: planned.effort, estimated: planned.estimated === true,
+      ...(x.difficulty ? { difficulty: x.difficulty } : {}), ...(x.difficultySource ? { difficultySource: x.difficultySource } : {}),
       ranModel: [...mine].reverse().find(a => a.resolvedModel)?.resolvedModel ?? null,
       status: x.status, verdict: x.verdict,
       stepChanges: steps.filter(k => k.subtaskId === x.id),
@@ -368,6 +376,7 @@ export function workDetail(c: TabsContext, requestId: string): WorkDetail | null
     requestId, state: closed ? 'closed' : r.status === 'awaiting_user' ? 'awaiting_user' : 'open', createdAt: r.createdAt, closedAt: r.closedAt,
     kind: j.kind ?? null, taskType: j.taskType ?? null,
     level: { judged: judgedLevel, source: r.forcedFrom ? 'forced' : String(j.source), rule: j.rule ?? null, confidence: typeof j.confidence === 'number' ? j.confidence : null, final: r.level, changes: levelChanges },
+    difficulty: r.triage.difficulty ? { value: r.triage.difficulty, source: r.triage.difficultySource ?? 'default', reported: r.triage.difficultyReported === true } : null,
     plan: { preset: r.preset, leadDirect: r.team.leadDirect === true, leadModel: r.leadModel, leadClass: r.leadClass, budgetUsd: r.budgetUsd, holdout: r.holdout },
     outcome: r.outcome ?? rec?.outcome ?? null,
     passed: closed && rec ? recordVerifyOk(rec) && recRow?.acceptance !== 'not_accepted' : null,

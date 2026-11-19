@@ -188,17 +188,23 @@ export type DaemonCheck = { kind: string; result: 'ok' | 'failed' | 'skipped'; t
  * `estimated`.
  */
 export type SlotCell = { step: string; model: string; effort: string; estimated?: boolean };
-export type DaemonSubtask = SlotCell & {
+/**
+ * A subtask's own difficulty (decision 230): `tag`, the lead's [difficulty: …] line; `request`, no line, so the
+ * request's; `floor`, a coder that changes source tagged below the request's, raised to it. An older router sends none.
+ */
+export type SubtaskDifficulty = { difficulty?: Difficulty | null; difficultySource?: 'tag' | 'request' | 'floor' | null };
+export type DaemonSubtask = SlotCell & SubtaskDifficulty & {
   id: string; role: string; slot: number; status: string; verdict: string | null;
   attempts: number; agentId: string | null; scope: string[]; checks: DaemonCheck[];
   repro: { required: boolean; state: string; reason?: string } | null;
 };
 export type Difficulty = 'routine' | 'moderate' | 'hard';
 /**
- * How hard the lead judged the request after its first look (decision 225): `lead` when it said, `default` when it
- * said nothing (moderate then applies). Null and absent: a request from before difficulty was kept.
+ * How hard the request is (decisions 225, 230): `lead` when the lead said after its first look, `router` when the
+ * router's floor raised it above what the lead said, `default` when nobody said (moderate then applies). Null and
+ * absent: a request from before difficulty was kept.
  */
-export type DifficultyOf = { difficulty?: Difficulty | null; difficultySource?: 'lead' | 'default' | null };
+export type DifficultyOf = { difficulty?: Difficulty | null; difficultySource?: 'lead' | 'router' | 'default' | null };
 export type LimitWindow = { usedPercentage: number; resetsAt: number | null };
 export type DaemonOffice = {
   request: null | ({ id: string; level: string; source: string; preset: string; status: string; budgetUsd: number; usedUsd: number; leadDirect: boolean; leadModel: string | null } & DifficultyOf);
@@ -262,10 +268,34 @@ export function difficultyText(d: DifficultyOf | null | undefined): string {
   return isDifficulty(d?.difficulty) ? d.difficulty : '';
 }
 
-/** Where the difficulty comes from, for the Work tab's detail: "difficulty hard, by the lead", "difficulty moderate (the lead gave none)". */
-export function difficultyNote(d: DifficultyOf | null | undefined): string {
+/**
+ * Where the difficulty comes from, for the Work tab's detail: "difficulty hard, by the lead", "difficulty hard, raised
+ * by the router above the lead's", "difficulty hard, set by the router (the lead gave none)", "difficulty moderate
+ * (the lead gave none)". `reported` says whether the lead gave one; unknown, the router's floor reads as raised.
+ */
+export function difficultyNote(d: (DifficultyOf & { reported?: boolean }) | null | undefined): string {
   if (!isDifficulty(d?.difficulty)) return '';
-  return d.difficultySource === 'lead' ? `difficulty ${d.difficulty}, by the lead` : `difficulty ${d.difficulty} (the lead gave none)`;
+  if (d.difficultySource === 'lead') return `difficulty ${d.difficulty}, by the lead`;
+  if (d.difficultySource === 'router') return d.reported === false ? `difficulty ${d.difficulty}, set by the router (the lead gave none)` : `difficulty ${d.difficulty}, raised by the router above the lead's`;
+  return `difficulty ${d.difficulty} (the lead gave none)`;
+}
+
+/** The Work detail's difficulty as the badge and the note read it (decision 230's shape). */
+export function detailDifficulty(d: Pick<WorkDetail, 'difficulty'>): DifficultyOf & { reported?: boolean } {
+  const x = d.difficulty;
+  if (!x || !isDifficulty(x.value)) return {};
+  return { difficulty: x.value, difficultySource: x.source, ...(x.reported !== undefined ? { reported: x.reported } : {}) };
+}
+
+/**
+ * A subtask's difficulty for its worker line (decision 230): "hard" as the lead tagged it, "moderate (the request's)"
+ * without a tag, "hard (raised to the request's)" for a coder tagged below it; '' from an older router.
+ */
+export function subtaskDifficultyText(s: SubtaskDifficulty | null | undefined): string {
+  if (!isDifficulty(s?.difficulty)) return '';
+  if (s.difficultySource === 'request') return `${s.difficulty} (the request's)`;
+  if (s.difficultySource === 'floor') return `${s.difficulty} (raised to the request's)`;
+  return s.difficulty;
 }
 
 /**
@@ -616,7 +646,7 @@ export type StepChange = {
   direction: 'up' | 'down'; reason: 'miss' | 'rejected' | 'escalation' | 'easy'; detail: string | null;
 };
 export type WorkCheck = { kind: string; attempt: number; result: 'ok' | 'failed' | 'skipped'; testsPassed?: number; testsFailed?: number; durationMs?: number };
-export type WorkSubtask = SlotCell & {
+export type WorkSubtask = SlotCell & SubtaskDifficulty & {
   id: string; role: string; slot: number; attempts: number; ranModel: string | null;
   status: string; verdict: string | null; stepChanges: StepChange[]; scope: string[]; unscoped: boolean;
   files: { list: Array<{ path: string; added: number; removed: number; state: string }>; total: number; truncated: boolean; approximate: boolean } | null;
@@ -628,7 +658,9 @@ export type WorkSubtask = SlotCell & {
 };
 export type WorkDetail = {
   requestId: string; state: WorkState; createdAt: string; closedAt: string | null; kind: string | null; taskType: string | null;
-  level: DifficultyOf & { judged: Level; source: string; rule: string | null; confidence: number | null; final: Level; changes: Array<{ from: Level; to: Level; why: string }> };
+  level: { judged: Level; source: string; rule: string | null; confidence: number | null; final: Level; changes: Array<{ from: Level; to: Level; why: string }> };
+  /** The request's difficulty, where it came from and whether the lead reported one (decision 230); absent from an older router. */
+  difficulty?: { value: Difficulty; source: 'lead' | 'router' | 'default'; reported?: boolean } | null;
   plan: { preset: string; leadDirect: boolean; leadModel: string | null; leadClass: string | null; budgetUsd: number; holdout: string | null };
   outcome: WorkRow['outcome']; passed: boolean | null; acceptance: string | null;
   subtasks: WorkSubtask[];

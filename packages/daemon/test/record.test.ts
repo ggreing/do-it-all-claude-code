@@ -197,7 +197,7 @@ test('T7: triage, plan (T6 re-plan) and subtasks; a request reopened by a notifi
     await d.router.drain();
     let rec = record(d, 'plan');
     assert.deepEqual([rec.triage.level, rec.triage.source, rec.plan.level, rec.plan.replannedFrom, rec.plan.leadDirect, rec.outcome], ['L0', 'rule', 'L2', 'L0', false, 'delegated']);
-    assert.deepEqual(rec.subtasks, [{ id: 'A', role: 'coder', slot: 0, step: 's1', upCount: 0, status: 'passed', verdict: 'meet', attempts: 1, costUsd: 0 }]);
+    assert.deepEqual(rec.subtasks, [{ id: 'A', role: 'coder', slot: 0, step: 's1', upCount: 0, status: 'passed', verdict: 'meet', attempts: 1, costUsd: 0, difficulty: 'routine', difficultySource: 'request' }]);
     assert.equal(rec.verifyFailures, 0);
     assert.equal(rec.plan.presetSource, 'default');
     clock.advance(1000);

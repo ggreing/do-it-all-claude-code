@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ACCEPTANCE_RULE_VERSION, ACCEPT_WINDOW_PROMPTS, DEFAULT_DIFFICULTY, MAX_STEP_UPS, PRICING_PER_MTOK, PROVISIONAL_BUDGET_USD, ROUTER_TOOL_PREFIX, RouterToolCall, dissatisfactionRule, holdoutDraw, isReask, promptSimilarity, afterEasyPass, afterOtherResult, afterRaise, atDispatch, costUsd, decideEscalation, formatTriageContext, isRouterToolName, l3SignalRoles, ladderStep,
-  effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, memberStartCell, modelJump, normalizeLeadTriage, parseRoleFile, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, smallChangeDirect, smallStaysWithLead, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
-  type LeadModelClass, type Level, type ProjectIsolationInput, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
+  difficultyRank, effectiveRoleText, getProjectWorktree, isRoleName, leadModelClass, maxDifficulty, memberStartCell, modelJump, normalizeLeadTriage, parseRoleFile, profileOf, projectHasWorktreeBaseRef, readProjectState, redact, roleFloorProblems, routerToolDef, routerToolErrorText, routerToolName, setProjectWorktree, stepIndex, stepUp, triage, workTreeRoot, writeProjectState,
+  type Difficulty, type DifficultySource, type LeadModelClass, type Level, type ProjectIsolationInput, type ReportResultInput, type ReportTriageInput, type RequestEscalationInput, type RequestScopeInput, type Role, type RouterDecision,
   type LadderId, type RouterEvent, type RouterToolErrorCode, type RouterToolName, type RouterToolResult, type Step, type TeamPreset, type TriageResult, type Usage,
   type UpdateNotice, type VerifySignal,
 } from '@do-it-all-claude-code/core';
@@ -29,7 +29,7 @@ import { parseReportVerdict, reportAsksForScope, type ReportVerdict } from './re
 import { PromptMemory, acceptanceBlob, addSignal, newAcceptState, storedAcceptance } from './accept.ts';
 import { LEAD_CLASSES, RELEASE_LEVELS, applyRelease, releaseChange, routingHoldoutRate, routingMode, routingView, type RoutingView } from './routing.ts';
 import { BASH_NOT_FOUND, type Shell } from './shell.ts';
-import { checkAgentCall, concurrentWriterProblem, isAgentTool, managedRole, parseScope, parseTag, scopeFileBody, startStep, stepOf } from './policy.ts';
+import { checkAgentCall, concurrentWriterProblem, isAgentTool, managedRole, parseDifficultyTag, parseScope, parseTag, resolveCallDifficulty, scopeFileBody, startStep, stepOf } from './policy.ts';
 import { SessionQueue } from './queue.ts';
 import { TicketStore, addGlobs, removeGlobs, sortScopeGlobs, toolUseIdOf } from './tools.ts';
 import {
@@ -94,6 +94,8 @@ export interface StatusView {
     replannedFrom: string | null;      // T6: the lead-direct level before the first router Agent call
     leadModel: string | null;          // decision 117: the lead's model when the request opened
     leadClass: string | null;          // opus | sonnet | haiku | other
+    difficulty?: Difficulty;           // decision 230: the request's difficulty, when set
+    difficultySource?: DifficultySource;   // lead | router | default
   };
   roles: RoleView[];
   costUsd: number;
@@ -634,6 +636,7 @@ export class Router {
       turns: { prompts: prompts.length, notifications, continuations: Math.max(0, prompts.length - 1 - notifications) },
       subtasks: subs.map(s => ({
         id: s.id, role: s.role, slot: s.slot, step: s.step, upCount: s.upCount, status: s.status, verdict: s.verdict, attempts: s.attempts, costUsd: subCost(s.id),
+        ...(s.difficulty ? { difficulty: s.difficulty, difficultySource: s.difficultySource } : {}),   // decision 230
         ...(s.review ? { review: { verdict: s.review.verdict, by: s.review.by } } : {}),
       })),
       // decision 135: where each slot ended, with the raises that still count and its step-downs
@@ -834,10 +837,18 @@ export class Router {
     // session and tag). A subtask of this request that was allowed but never started may be re-dispatched.
     const neverStarted = (s: SubtaskRow) => s.requestId === req.id && s.status === 'pending' && !s.agentId;
     const tagBusy = this.ledger.activeSubtasksInSession(ev.sessionId).some(s => s.id === tag && !neverStarted(s));
+    // decision 230 (items 5, 6): this call's difficulty — its [difficulty:] tag, else the request's; a coder that can
+    // change source files may not be tagged below a set request difficulty (resolveCallDifficulty raises it, source 'floor').
+    const callDiff = resolveCallDifficulty({
+      role, ...(parseDifficultyTag(prompt) ? { tag: parseDifficultyTag(prompt)! } : {}),
+      requestDifficulty: req.triage.difficulty ?? DEFAULT_DIFFICULTY,
+      requestDifficultySet: req.triage.difficultySource === 'lead' || req.triage.difficultySource === 'router',
+      scope: scope.allowed, unscoped: scope.unscoped,
+    });
     const check = checkAgentCall({
       tag, role, level: req.level, preset: req.team, budgetUsd: req.budgetUsd, spentUsd: req.usedUsd,
       fableOptIn: this.#config.fableOptIn === true,
-      difficulty: req.triage.difficulty, profile: profileOf(this.#config),   // decisions 225, 226: set each role's start cell
+      difficulty: callDiff.difficulty, profile: profileOf(this.#config),   // decisions 225, 226, 230: the call's own difficulty sets the start cell
       busySlots: subtasks.filter(s => s.role === role && active(s) && s.id !== tag).map(s => s.slot),
       tagBusy,
       slotSteps: Object.fromEntries(this.ledger.getSlots(req.id).filter(x => x.role === role).map(x => [x.slot, x.step])),
@@ -880,6 +891,7 @@ export class Router {
     this.ledger.dispatchSubtask({
       requestId: req.id, id: tag, role, slot: check.slot, step: check.step, writeScope: scope.allowed,
       unscoped: scope.unscoped, agentType: agentType!, toolUseId: str(ev.raw.tool_use_id) ?? null, at: this.#at(),
+      difficulty: callDiff.difficulty, difficultySource: callDiff.source,   // decision 230: the subtask's own difficulty
     });
     this.ledger.updateSubtask(req.id, tag, { repro: reproOn ? this.#reproAtDispatch(req, reproTag, scope.allowed, scope.unscoped) : null }, this.#at());
     this.#slotDispatched(req.id, role, check.slot);   // step-down (decision 135)
@@ -984,22 +996,41 @@ export class Router {
    * once per slot per request and within the request budget, before it is left to the lead. routine/moderate tasks
    * are left unverified as before. Returns true when it jumped (the subtask is left failed for a new attempt).
    */
-  #hardUnverifiedJump(requestId: string, sub: SubtaskRow, at: string): boolean {
+  #unverifiedRetry(requestId: string, sub: SubtaskRow, at: string): boolean {
     const req = this.ledger.getRequest(requestId);
-    if (!req || req.triage.difficulty !== 'hard') return false;
-    if (this.ledger.listStepChanges({ requestId }).some(c => c.role === sub.role && c.slot === sub.slot && c.detail === 'hard-unverified-jump')) return false;   // one jump per slot
+    if (!req) return false;
+    // decision 230 (item 3): the SUBTASK's own difficulty decides (its [difficulty:] tag, else the request's).
+    const difficulty = sub.difficulty ?? req.triage.difficulty ?? DEFAULT_DIFFICULTY;
+    if (difficulty === 'routine') return false;   // a routine unverified result goes back to the lead as today
+    if (this.ledger.listStepChanges({ requestId }).some(c => c.role === sub.role && c.slot === sub.slot && c.detail === 'unverified-retry')) return false;   // one retry per slot
     if (req.usedUsd >= req.budgetUsd) return false;   // no budget for a stronger worker
     const state = this.ledger.getSlots(requestId).find(x => x.role === sub.role && x.slot === sub.slot);
     const ups = state?.upCount ?? 0;
     if (ups >= MAX_STEP_UPS) return false;
     const from = state?.step ?? sub.step;
-    const to = modelJump(from, this.#config.fableOptIn === true);
+    const fable = this.#config.fableOptIn === true;
+    // the next model's up-path cell (s3/s4 -> s5); at s5 with no next model (Fable off), effort up to s6.
+    const to = modelJump(from, fable) ?? stepUp(from, fable);
     if (!to) return false;
     this.#raiseSlot(requestId, sub.role, sub.slot, to, ups + 1, at);
-    this.ledger.addStepChange({ requestId, subtaskId: sub.id, role: sub.role, slot: sub.slot, from, to, reason: 'miss', detail: 'hard-unverified-jump', at });
+    this.ledger.addStepChange({ requestId, subtaskId: sub.id, role: sub.role, slot: sub.slot, from, to, reason: 'miss', detail: 'unverified-retry', at });
     this.ledger.updateSubtask(requestId, sub.id, { status: 'failed', verdict: 'fail_once', upCount: ups + 1 }, at);
-    this.#log.info('hard task unverified: jumped model once before handing back', { requestId, subtaskId: sub.id, from, to });
+    this.#log.info('unverified moderate/hard subtask: one retry on a stronger cell before handing back', { requestId, subtaskId: sub.id, difficulty, from, to });
     return true;
+  }
+
+  /**
+   * Decision 230 (items 3, 4): while a moderate/hard subtask's one unverified retry is still PENDING — set up at the
+   * stop (the slot raised, the subtask left failed) and not yet re-dispatched — these are the Agent-call values that
+   * retry must use. Undefined when there is no pending retry (routine, already retried, or already re-dispatched).
+   */
+  #pendingUnverifiedRetry(requestId: string, sub: SubtaskRow): { step: LadderId; model: string; effort: string; subagentType: string } | undefined {
+    if (sub.status !== 'failed' || sub.verdict !== 'fail_once') return undefined;
+    if (!this.ledger.listStepChanges({ requestId }).some(c => c.subtaskId === sub.id && c.detail === 'unverified-retry')) return undefined;
+    const slot = this.ledger.getSlots(requestId).find(x => x.role === sub.role && x.slot === sub.slot);
+    const step = slot?.step ?? sub.step;
+    const s = ladderStep(step);
+    return { step, model: s.alias, effort: s.effort, subagentType: sub.agentType ?? `do-it-all-claude-code:${sub.role}` };
   }
 
   /** Spec 3.5: the step a slot now runs at after this subtask's miss, for the lead's next call. */
@@ -1225,7 +1256,12 @@ export class Router {
           : files === '0' ? 'it changed no files, so there is nothing to test'
           : 'verify ran no tests for this change: if the changed code has tests, run those once yourself, a targeted run, not the whole suite'}).`
           + this.#passedNote(agent.requestId, sub, agentId) + leadNote(sub.repro);
-      case 'failed':
+      case 'failed': {
+        // decision 230 (item 3): a moderate/hard subtask that could not be verified has one stronger attempt set up.
+        const retry = this.#pendingUnverifiedRetry(agent.requestId, sub);
+        if (retry) {
+          return `${head}: it could not be verified here (verify did not run). Because this is a ${sub.difficulty ?? 'moderate or hard'} subtask, the router set up one stronger attempt: its slot now runs at ${retry.step} (model="${retry.model}", effort="${retry.effort}"). Dispatch subtask ${sub.id} again now with these values before you accept it, and do not tell the user it is done until that attempt has finished${tail}.`;
+        }
         if (sub.verdict === 'rejected') {
           return `${head}: its result was reported as wrong (review by ${sub.review?.by ?? 'the lead'})${tail}.` + this.#afterFailure(sub, 'what was wrong');
         }
@@ -1234,6 +1270,7 @@ export class Router {
         }
         return `${head}: verify failed again after one fix attempt (miss) — ${checks}${firstFailure ? `. First failure: ${firstFailure}` : ''}${tail}.`
           + this.#sharedTreeNote(sub) + this.#afterFailure(sub, 'what failed');
+      }
       case 'hitl': {
         if (sub.verdict === 'held') {
           const busy = signals.map(x => (x.detail ?? '').split(SHARED_BUSY_MARK)[1]).find(Boolean);
@@ -1425,6 +1462,8 @@ export class Router {
       const failed = signals.filter(x => !x.ok && !isEnvFailure(x));
       if (!failed.length && signals.some(isEnvFailure)) {
         this.ledger.updateAgent(agentId, { stopCount: attempt, stoppedAt: at });
+        // decision 230 (item 3): one retry on a stronger cell for a moderate/hard subtask before an unverified hand-back.
+        if (this.#unverifiedRetry(agent.requestId, sub, at)) return NONE;
         this.ledger.updateSubtask(agent.requestId, sub.id, { status: 'hitl', verdict: 'unverified' }, at);
         this.#log.warn('verify could not run in this environment: subtask left unverified', { agentId, subtaskId: sub.id, commands: outcome.envMissing });
         return NONE;
@@ -1456,8 +1495,8 @@ export class Router {
       // unverified and the lead is told once.
       if (failed.every(isNotStarted) && this.#notStartedBefore(agent.requestId, sub.id, agentId, attempt)) {
         this.ledger.updateAgent(agentId, { stopCount: attempt, failCount: fails, stoppedAt: at });
-        // decision 225: a hard task that could not be verified jumps the model once before going back to the lead.
-        if (this.#hardUnverifiedJump(agent.requestId, sub, at)) return NONE;
+        // decision 230 (item 3): a moderate/hard subtask that could not be verified gets one retry on a stronger cell before the hand-back.
+        if (this.#unverifiedRetry(agent.requestId, sub, at)) return NONE;
         this.ledger.updateSubtask(agent.requestId, sub.id, { status: 'hitl', verdict: 'unverified' }, at);
         this.#log.warn('the tests did not start, before and after a fix attempt: subtask left unverified, step kept', { agentId, subtaskId: sub.id, step: sub.step });
         return NONE;
@@ -2123,6 +2162,7 @@ export class Router {
         subtasks: this.ledger.listSubtasks(r.id).slice(-MAX_PLAN_SUBTASKS).map(s => ({
           id: s.id, role: s.role, slot: s.slot, step: s.step, status: s.status, verdict: s.verdict, attempts: s.attempts,
           scope: s.unscoped ? null : s.writeScope, unscoped: s.unscoped, protectedGranted: s.protectedGranted,
+          ...(s.difficulty ? { difficulty: s.difficulty, difficultySource: s.difficultySource } : {}),   // decision 230
           review: s.review ? { verdict: s.review.verdict, by: s.review.by } : null,
           ...(s.repro ? { repro: { required: s.repro.required, ...(s.repro.state ? { state: s.repro.state } : {}), ...(s.repro.reason ? { reason: s.repro.reason } : {}) } } : {}),
         })),
@@ -2142,11 +2182,19 @@ export class Router {
     if (this.ledger.listSubtasks(req.id).length) return toolError('too_late');
     const v = normalizeLeadTriage(raw);
     this.ledger.setLeadTriage(req.id, { ...v, at: this.#at(), plannedLevel: req.level, plannedLeadDirect: req.team.leadDirect === true });
-    // decision 225: stamp the difficulty on the request so dispatch and the office use it (moderate when the lead gave none).
-    const leadClass = leadModelClass(req.leadModel ?? undefined);
-    const difficulty = v.difficulty ?? DEFAULT_DIFFICULTY;
-    req = this.ledger.setRequestDifficulty(req.id, difficulty, v.difficulty ? 'lead' : 'default');
+    // Decision 230 (item 2): the request's difficulty is the HIGHER of the lead's report and the router's rule floor
+    // (set at triage, difficultySource 'router'). The report never lowers the floor; the floor never lowers the report.
+    const reported = v.difficulty;
+    const floorDiff = req.triage.difficultySource === 'router' ? req.triage.difficulty : undefined;
+    const cands = [reported, floorDiff].filter((d): d is Difficulty => d !== undefined);
+    const difficulty: Difficulty = cands.length ? cands.reduce((a, b) => maxDifficulty(a, b)) : DEFAULT_DIFFICULTY;
+    const source: DifficultySource = cands.length === 0 ? 'default'
+      : floorDiff !== undefined && (reported === undefined || difficultyRank(floorDiff) > difficultyRank(reported)) ? 'router' : 'lead';
+    req = this.ledger.setRequestDifficulty(req.id, difficulty, source, undefined, reported !== undefined);
     let now = req;
+    // Decision 119/226 (narrowed by decision 230 item 1): the only re-plan a report still makes is L2 -> L3 for an
+    // architecture change. The lead-direct re-plans are gone: a lead at L1+ always delegates, so a 'direct' report no
+    // longer flips a team request back to lead-direct, and a 'hard direct' report no longer delegates a lead-direct one.
     if (v.kind === 'team') {
       const { presets } = this.#resolver.resolve(bind.cwd, req.leadModel ?? undefined);
       const wantL3 = v.level === 'L3' && !presets.L3.leadDirect;
@@ -2157,43 +2205,31 @@ export class Router {
       } else if (wantL3 && this.#offersL3(req)) {
         now = this.#replanAs(req, 'L3', presets, why);
       }
-    } else if (smallChangeDirect(v, leadClass, this.#config.delegateFrom) && !req.team.leadDirect && !req.forcedFrom && req.triage.source !== 'manual') {
-      // decisions 178, 220: a small change by the lead's own look (<= 1 file / 15 lines for an Opus lead, <= 2 files / 60 lines otherwise): the lead makes it alone
-      const { presets } = this.#resolver.resolve(bind.cwd, req.leadModel ?? undefined);
-      const level: Level = v.level === 'L0' ? 'L0' : 'L1';
-      const team: TeamPreset = { ...presets[level], leadDirect: true };
-      const t = withKind({
-        ...req.triage, level, preset: team.id, budgetUsd: team.budgetUsd,
-        rationale: `re-planned as lead-direct ${level}: the lead judged the change as ${v.files === 1 ? 'one file' : `${v.files} files`} and about ${v.lines} line${v.lines === 1 ? '' : 's'} (confidence ${v.confidence.toFixed(2)}) (${req.triage.rationale})`,
-      }, team);
-      this.#log.info('request re-planned as lead-direct', { requestId: req.id, from: req.level, to: level });
-      now = this.ledger.escalateRequest(req.id, t, team);
-    } else if (req.team.leadDirect && v.kind === 'direct' && difficulty === 'hard' && leadClass !== 'opus' && !req.forcedFrom && req.triage.source !== 'manual') {
-      // decision 225: a small change the lead-direct path would keep, but the lead judged it hard — a non-Opus lead
-      // delegates it to a stronger worker (a one-coder L1 team; the coder starts at opus-high from the difficulty).
+    } else if (req.team.leadDirect && difficulty === 'hard' && !req.forcedFrom && req.triage.source !== 'manual') {
+      // Decision 230: on a lead-direct level (L0, or a teams.yaml lead_direct) a HARD change — by the lead's report or
+      // the router floor — does not stay with the lead: it goes to a one-coder team at the hard cell (s5, a worker above
+      // the lead's model). routine/moderate direct reports stay with the lead. (The brief's "hard invite" promises this.)
       const { presets } = this.#resolver.resolve(bind.cwd, req.leadModel ?? undefined);
       const team: TeamPreset = { ...presets.L1, leadDirect: false };
       const t = withKind({
         ...req.triage, level: 'L1', preset: team.id, budgetUsd: team.budgetUsd,
-        rationale: `re-planned as a delegated L1: the lead judged a ${v.files === 1 ? 'one-file' : `${v.files}-file`} change hard (confidence ${v.confidence.toFixed(2)}), so it goes to a stronger worker (${req.triage.rationale})`,
+        rationale: `re-planned as a delegated L1: a ${v.files === 1 ? 'one-file' : `${v.files}-file`} change judged hard goes to a worker on a stronger model (${req.triage.rationale})`,
       }, team);
-      this.#log.info('hard change delegated from lead-direct', { requestId: req.id, from: req.level });
+      this.#log.info('hard change delegated from a lead-direct level', { requestId: req.id, from: req.level });
       now = this.ledger.escalateRequest(req.id, t, team);
     }
     // decision 225: a hard task that is delegated gets room for an Opus worker (L2 budget floor x1.5), never above a user-set budget.
     if (difficulty === 'hard' && now.team.leadDirect !== true && this.#config.budgetsUsd?.[now.level] === undefined) {
       const bumped = Math.round(Math.max(now.budgetUsd, PROVISIONAL_BUDGET_USD.L2) * 1.5 * 100) / 100;
-      if (bumped > now.budgetUsd) now = this.ledger.setRequestDifficulty(now.id, difficulty, v.difficulty ? 'lead' : 'default', bumped);
+      if (bumped > now.budgetUsd) now = this.ledger.setRequestDifficulty(now.id, difficulty, source, bumped, reported !== undefined);
     }
     const replanned = now.level !== req.level || now.team.leadDirect !== req.team.leadDirect;
-    // show the (possibly difficulty-shifted) call values whenever the lead reported a non-default difficulty too (decision 225).
-    const briefNeeded = replanned || (v.difficulty !== undefined && difficulty !== DEFAULT_DIFFICULTY);
     return {
       ok: true,
       result: {
         requestId: req.id, recorded: true, replanned, level: now.level, preset: now.preset, leadDirect: now.team.leadDirect === true,
-        budgetUsd: now.budgetUsd, difficulty, difficultySource: v.difficulty ? 'lead' : 'default',
-        ...(briefNeeded ? { brief: this.#triageContext(now.triage, now.team, bind.cwd, now.leadModel) } : {}),
+        budgetUsd: now.budgetUsd, difficulty, difficultySource: source,
+        ...(replanned ? { brief: this.#triageContext(now.triage, now.team, bind.cwd, now.leadModel) } : {}),
       },
     };
   }
@@ -2335,6 +2371,18 @@ export class Router {
       if (judge.role !== i.by) return toolError('not_allowed', `subtask ${judge.id} is a ${judge.role}, not a ${i.by}.`);
       const finished = judge.status === 'passed' || (judge.status === 'hitl' && (judge.verdict === 'held' || judge.verdict === 'unverified'));
       if (!finished) return toolError('not_allowed', `subtask ${judge.id} must be finished without a failure of its own before its verdict counts.`);
+    }
+    // Decision 230 (item 4): the lead cannot close an unverified subtask with verdict accept while its one stronger
+    // retry is still pending — the router answers with the retry's Agent-call values so the lead dispatches it instead.
+    if (i.verdict === 'accept') {
+      const retry = this.#pendingUnverifiedRetry(req.id, sub);
+      if (retry) {
+        return {
+          ok: false, code: 'not_allowed',
+          message: routerToolErrorText('not_allowed', `subtask ${sub.id} could not be verified and has one stronger attempt left: dispatch it again at ${retry.step} (model="${retry.model}", effort="${retry.effort}") before accepting it.`),
+          result: { requestId: req.id, subtaskId: sub.id, recorded: false, retry: { subagentType: retry.subagentType, model: retry.model, effort: retry.effort, step: retry.step } },
+        };
+      }
     }
     const at = this.#at();
     const review: SubtaskReview = { verdict: i.verdict, by: i.by, ...(i.bySubtaskId ? { bySubtaskId: i.bySubtaskId } : {}), ...(i.margin ? { margin: i.margin } : {}), at };
@@ -2715,12 +2763,7 @@ export class Router {
   /** How a new request planned by the rules is staffed: as its level says, or lead-direct on purpose (holdout, released). */
   #routingPlan(requestId: string, t: TriageResult, presets: Record<Level, TeamPreset>, leadClass: string): { triage: TriageResult; team: TeamPreset; holdout?: Holdout } {
     const base = presets[t.level];
-    // decision 211: what the wording settles as small stays with a Sonnet lead (and a lead whose model is not
-    // known yet), although L1 is a delegated level; a delegateFrom the user set for the class wins
-    if (!base.leadDirect && smallStaysWithLead(t as TriageResult & { kind?: string }, leadClass as LeadModelClass, this.#config.delegateFrom)) {
-      const team: TeamPreset = { ...base, leadDirect: true };
-      return { triage: withKind({ ...t, rationale: `${t.rationale}; small by its wording, so the lead does it` }, team), team };
-    }
+    // Decision 230 (item 1) removed the decision-211 "small stays with the lead" path: a lead at L1+ always delegates.
     const mode = routingMode(this.#config);
     if (mode === 'off' || base.leadDirect || !RELEASE_LEVELS.includes(t.level)) return { triage: t, team: base };
     const auto = mode === 'on' ? this.ledger.getRelease(leadClass)?.autoDelegateFrom ?? null : null;
@@ -2814,6 +2857,7 @@ export class Router {
         leadDirect: r.team.leadDirect === true, outcome: r.outcome,
         presetSource: r.presetSource, forcedFrom: r.forcedFrom, replannedFrom: r.replannedFrom?.level ?? null,
         leadModel: r.leadModel, leadClass: r.leadClass,
+        ...(r.triage.difficulty ? { difficulty: r.triage.difficulty, difficultySource: r.triage.difficultySource } : {}),   // decision 230
       },
       roles,
       costUsd: round6(r.usedUsd + r.leadCostUsd),

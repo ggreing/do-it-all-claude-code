@@ -2,9 +2,9 @@ import type { Elements, RenderElement } from 'claude-code'
 
 import {
   DIFFICULTY_COLOR, DIFFICULTY_SHORT, PERIODS, PERIOD_NAME, SLACK, appliedLines, bar, cellText, choices, clockTime, columns, confirmLine, cycle,
-  difficultyNote, difficultyText, dur, filesText, fit, holdoutText, isDifficulty, levelText, modelName, moveText, packParts, pct, pendingSet,
-  pointLabel, settingText, shownValue, spanName, spentLine, statBar, timelineCells, upDown, usd, workHeadline, workMark,
-  type Difficulty, type DifficultyOf, type Glyphs, type LimitWindow, type OfficeSettings, type Period, type Savings, type SettingItem, type SettingValue, type Team,
+  detailDifficulty, difficultyNote, difficultyText, dur, filesText, fit, holdoutText, isDifficulty, levelText, modelName, moveText, packParts, pct, pendingSet,
+  pointLabel, settingText, shownValue, spanName, spentLine, statBar, subtaskDifficultyText, timelineCells, upDown, usd, workHeadline, workMark,
+  type Difficulty, type DifficultyOf, type Glyphs, type SubtaskDifficulty, type LimitWindow, type OfficeSettings, type Period, type Savings, type SettingItem, type SettingValue, type Team,
   type WorkDetail, type WorkList, type WorkRow,
 } from './model'
 import type { OfficeDaemonState, OfficeSettingsState, OfficeTabData } from '../types/office'
@@ -60,10 +60,13 @@ function noteOf(ctx: TabContext, st: OfficeTabData): string {
   return reachLine(ctx.dstate) || st.error || ''
 }
 
-/** The difficulty badge's look: its color when the lead judged it, dim when it is the default (decision 225). */
-function badgeLook(d: DifficultyOf): { color?: string; dimColor?: boolean } {
+/**
+ * The difficulty badge's look: its color when the lead or the router's floor set it, dim when it is the default
+ * (decisions 225, 230); a subtask's, dim when it ran at the request's for want of a tag.
+ */
+function badgeLook(d: DifficultyOf | SubtaskDifficulty): { color?: string; dimColor?: boolean } {
   if (!isDifficulty(d.difficulty)) return {}
-  return d.difficultySource === 'default' ? { dimColor: true } : { color: DIFFICULTY_COLOR[d.difficulty] }
+  return d.difficultySource === 'default' || d.difficultySource === 'request' ? { dimColor: true } : { color: DIFFICULTY_COLOR[d.difficulty] }
 }
 
 /** Lines past `max` left out, the last kept line saying how many: the pane keeps to the rows it has. */
@@ -160,11 +163,12 @@ function workDetail(els: Els, ctx: TabContext, st: OfficeTabData): El {
   }
   const m = workMark({ state: d.state, passed: d.passed }, g)
   const lines: El[] = []
+  const diff = detailDifficulty(d)
   // the answer: how it went, how long, what it cost
   lines.push(
     <Text key="head" wrap="wrap">
       <Text bold>{`${levelText(d.level.judged, d.level.final, g)} `}</Text>
-      {difficultyText(d.level) ? <Text {...badgeLook(d.level)}>{`${difficultyText(d.level)} `}</Text> : null}
+      {difficultyText(diff) ? <Text {...badgeLook(diff)}>{`${difficultyText(diff)} `}</Text> : null}
       {d.kind ? <Text bold>{`${d.kind} `}</Text> : null}
       <Text color={m.color}>{`${m.mark} ${m.word}`}</Text>
       {` · ${dur(d.time.durationMs)} · ${usd(d.cost.totalUsd)}${d.cost.estimated ? ' estimated' : ''}${d.cost.budgetExceeded ? ' (over budget)' : ''}`}
@@ -173,7 +177,7 @@ function workDetail(els: Els, ctx: TabContext, st: OfficeTabData): El {
   const judged = `judged ${d.level.judged} by ${d.level.source}${d.level.rule ? ` ${d.level.rule}` : ''}${d.level.confidence !== null ? ` ${pct(d.level.confidence)}` : ''}`
   const changed = d.level.changes.map(c => `${c.from}${g.arrow}${c.to} (${c.why})`).join(', ')
   const plan = d.plan.leadDirect ? 'the lead alone' : `team ${d.plan.preset}`
-  lines.push(<Text key="level" dimColor wrap="wrap">{[judged, changed, difficultyNote(d.level), plan, d.plan.leadModel ? `lead ${modelName(d.plan.leadModel)}` : '', d.plan.holdout ? `holdout ${d.plan.holdout}` : ''].filter(Boolean).join(' · ')}</Text>)
+  lines.push(<Text key="level" dimColor wrap="wrap">{[judged, changed, difficultyNote(diff), plan, d.plan.leadModel ? `lead ${modelName(d.plan.leadModel)}` : '', d.plan.holdout ? `holdout ${d.plan.holdout}` : ''].filter(Boolean).join(' · ')}</Text>)
 
   // the timeline: plan, workers, verify, review on one time axis
   if (d.timeline.length) {
@@ -206,10 +210,13 @@ function workDetail(els: Els, ctx: TabContext, st: OfficeTabData): El {
       const ok = s.status === 'passed' || s.verdict === 'pass' || s.verdict === 'accept'
       // a writer sharing the work tree: its build and tests wait for the last writer's verify (decision 192)
       const held = s.verdict === 'held'
+      // the subtask's own difficulty (decision 230), after its cell; none from an older router
+      const sd = subtaskDifficultyText(s)
       lines.push(
         <Text key={`sub-${s.id}`} wrap="wrap">
           <Text bold>{`${s.id} ${s.role} `}</Text>
           <Text dimColor>{`${cellText(s)}${ran} · `}</Text>
+          {sd ? <Text {...badgeLook(s)}>{sd}</Text> : null}{sd ? <Text dimColor>{' · '}</Text> : null}
           <Text {...(ok ? { color: 'success' } : held ? { color: 'warning' } : s.status === 'failed' ? { color: 'error' } : {})}>{held ? 'waiting for the shared work tree verify' : s.verdict ?? s.status}</Text>
           <Text dimColor>{[s.attempts > 1 ? ` · ${s.attempts} tries` : '', moves ? ` · ${moves}` : '', tests ? ` · ${tests.testsPassed} passed${tests.testsFailed ? `, ${tests.testsFailed} failed` : ''}` : checks ? ` · ${checks}` : '',
             ` · ${dur(s.time.runMs)} · ${usd(s.cost.usd)}${s.cost.state === 'estimate' ? '~' : ''}`].join('')}</Text>

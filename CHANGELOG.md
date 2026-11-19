@@ -31,6 +31,29 @@ All notable changes to this project are documented here. This project adheres to
 
 ### Changed
 
+- **The lead is a coordinator: it delegates at L1 and above, and tags each subtask's own difficulty.** Every lead
+  model now delegates from L1 — only an L0 change (a typo, a one-line default) stays with the lead, and a user's
+  `delegateFrom` (or a teams.yaml `lead_direct`) still keeps lower levels direct. On a level that is lead-direct, a
+  change the lead reports (or the router floors) as **hard** is still handed to a one-coder team at the hard cell
+  rather than kept, since that is where a stronger model pays. The old per-lead-model rules that
+  let a Sonnet or Haiku lead keep small changes, and the "small change stays with the lead / a small hard change
+  is delegated" bounds, are gone. The lead splits a request into subtasks and tags each Agent call with
+  `[difficulty: routine|moderate|hard]` on a third header line (after `[subtask:…]` and `[scope:…]`): the router
+  starts that subtask at the role × difficulty cell, so hard parts go to Opus/Fable, moderate to Sonnet and easy
+  to Haiku, and independent coder subtasks of different difficulty run at the same time at different cells. A call
+  with no tag uses the request's difficulty. A coder subtask whose scope can change source files (paths outside the
+  test, doc, changelog and config patterns) may not be tagged below the request's difficulty, once that is set; a
+  lower tag is corrected up to the floor, the same way a wrong model is. The request's difficulty is the higher of
+  the lead's report and a router rule floor: the floor reads "hard" when the request shows a strong sign of a hard
+  bug — a traceback, an unexpected error or crash, a regression, "sometimes", a race, or an order- or
+  chunk-dependent symptom — and names no reproducing test (never for a typo-level L0 request). A moderate or hard
+  subtask that comes back unverified (the checks could not run or did not start) now gets one more attempt on the
+  next model up — s3/s4 → s5, or at s5 with Fable off the effort rises to s6 — once per slot and within budget,
+  before it is handed back; a routine one is handed back as before. While that retry is pending the lead cannot
+  close the subtask with `router_report_result` accept: the router answers with the retry's Agent-call values
+  instead, so the stronger attempt runs first. The office and `router_get_plan` show each subtask's difficulty and
+  where it came from (its tag, the request, or the coder floor), and the request's difficulty source (lead, router
+  or default).
 - **Difficulty, and a model × effort grid, decide where a worker starts.** The lead now reports a difficulty
   (routine, moderate or hard) with its size, and the router sets each role's start from a difficulty table, not
   from the level: a coder starts at Haiku·low when routine, Sonnet·medium when moderate (the default when the
@@ -47,6 +70,17 @@ All notable changes to this project are documented here. This project adheres to
   to routine and moderate only — a small *hard* change goes to a stronger worker (an Opus lead keeps it). The
   profiles shift the whole table one notch; a `teams.yaml` start or a role override still wins. Provisional, and
   the estimated cells especially: see [docs/design/difficulty-steps.md](docs/design/difficulty-steps.md).
+- **The lead coordinates, and each subtask carries its own difficulty.** The brief and the lead-orchestrator skill
+  keep the lead's first look to sizing and grading the request: it reads the request, makes at most a couple of
+  quick searches, and does not trace the cause, read source in depth or draft the fix. Its prompt adds its
+  first-look notes to the request the router already hands each worker. A bug report in code the lead has not
+  traced counts as hard, and a floor the router sets wins when it is higher. The lead splits the request by
+  difficulty as well as by file, and tags each Agent call with `[difficulty: routine|moderate|hard]` on the
+  prompt's third line. The brief lists every role's model and effort at all three, so a hard fix runs on Opus
+  while the changelog and the checks run on Haiku at the same time. A coder that changes source code is not
+  tagged below the request's difficulty. An unverified result is not accepted: the lead sends the subtask once
+  more at the cell its result line names. The team office shows a difficulty the router raised, and each
+  worker's own.
 - **Bench.** `scripts/measure107.ts` takes `--profile save|balanced|quality` for the router runs, and passes the
   lead's model to the router as a session's environment would. Every run may now use `echo`, `pwd` and `wc`
   without a prompt, as a user at the terminal allows; earlier runs refused them. New:

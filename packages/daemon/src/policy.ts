@@ -5,8 +5,8 @@
 //   with the expected values. A role the preset lacks: deny when the lead may not adjust the team
 //   (L0), else expect the role's default start step for that level.
 // - s7 needs fableOptIn; usedUsd >= budgetUsd denies.
-import { DEFAULT_DIFFICULTY, DEFAULT_PROFILE, GRID_LADDER, PROTECTED_WRITE_PATHS, memberStartCell } from '@do-it-all-claude-code/core';
-import type { Difficulty, LadderId, LadderStep, Level, Profile, Role, Step, TeamPreset } from '@do-it-all-claude-code/core';
+import { DEFAULT_DIFFICULTY, DEFAULT_PROFILE, GRID_LADDER, PROTECTED_WRITE_PATHS, difficultyRank, memberStartCell } from '@do-it-all-claude-code/core';
+import type { Difficulty, DifficultySource, LadderId, LadderStep, Level, Profile, Role, Step, TeamPreset } from '@do-it-all-claude-code/core';
 
 export const MANAGED_PREFIX = 'do-it-all-claude-code:';
 export const ROLES: readonly Role[] = ['architect', 'ui-designer', 'coder', 'reviewer', 'tester'];
@@ -69,6 +69,72 @@ export function parseScope(prompt: string | undefined, opts: { readOnly?: boolea
   const bad = globs.filter(g => g.startsWith('/') || /^[A-Za-z]:/.test(g) || g.split('/').includes('..') || g.startsWith('~'));
   if (bad.length) return { ok: false, reason: `scope globs must be repo-relative (no absolute paths, "~" or ".."): ${bad.join(', ')}` };
   return { ok: true, allowed: globs, unscoped: false };
+}
+
+// ------------------------------------------------------------------ per-subtask difficulty (decision 230)
+
+const DIFFICULTY_TAG = /^\s*\[difficulty:\s*(routine|moderate|hard)\s*\]\s*$/i;
+
+/**
+ * Decision 230 (item 5): the `[difficulty: routine|moderate|hard]` header tag of an Agent prompt, read
+ * order-independently from the header lines before the spec (as repro.ts reads `[repro:]`). Undefined when absent;
+ * the caller then uses the request's difficulty.
+ */
+export function parseDifficultyTag(prompt: string | undefined): Difficulty | undefined {
+  for (const l of (prompt ?? '').split(/\r?\n/, 6)) {
+    const m = DIFFICULTY_TAG.exec(l);
+    if (m) return m[1]!.toLowerCase() as Difficulty;
+  }
+  return undefined;
+}
+
+// Decision 230 (item 6): "source files" are paths OUTSIDE the test/doc/changelog/config patterns. A scope glob
+// counts as non-source only when its literal pattern is confined to one of these; anything else (and the whole
+// repo) is treated as source-changing, conservatively.
+const NON_SOURCE_GLOB = new RegExp([
+  '(^|/)(tests?|__tests__|specs?|__mocks__|testdata|fixtures|__fixtures__|__snapshots__|docs?)(/|$)',  // a test/doc directory on the path
+  '(^|/)(test_[^/]*|[^/]*_test|[^/]*\\.(test|spec))\\.[^/]*$',                                          // a test file name
+  '(^|/)CHANGELOG[^/]*$',                                                                               // changelog
+  '\\.(md|mdx|rst|txt|json|ya?ml|toml|ini|cfg|conf|lock)$',                                             // doc/config extensions
+].join('|'), 'i');
+
+/** Whether one scope glob targets only non-source files (tests, docs, changelog, config). The whole repo is not. */
+export function globTargetsOnlyNonSource(glob: string): boolean {
+  const g = glob.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!g || g === '**' || g === '**/*' || g === '*') return false;
+  return NON_SOURCE_GLOB.test(g);
+}
+
+/** Decision 230 (item 6): whether a write scope can change source files (then a coder's difficulty may not go below the request floor). */
+export function scopeChangesSource(allowed: readonly string[], unscoped: boolean): boolean {
+  if (unscoped) return true;
+  return !allowed.every(globTargetsOnlyNonSource);
+}
+
+export interface CallDifficultyInput {
+  role: Role;
+  /** The call's `[difficulty:]` tag, if any. */
+  tag?: Difficulty;
+  /** The request's difficulty (the assumed default when the request has none set). */
+  requestDifficulty: Difficulty;
+  /** Decision 230 (item 6): the request difficulty was SET (lead report or router floor), not the assumed default. */
+  requestDifficultySet: boolean;
+  scope: readonly string[];
+  unscoped: boolean;
+}
+
+/**
+ * Decision 230 (items 5, 6): the difficulty one Agent call runs at. Its tag when given, else the request's. A coder
+ * subtask that can change source files may not be tagged below a SET request difficulty: a lower tag is raised to it
+ * (source 'floor'), so the router's answer then carries the floor's cell exactly as a wrong model is corrected today.
+ */
+export function resolveCallDifficulty(i: CallDifficultyInput): { difficulty: Difficulty; source: DifficultySource } {
+  if (i.tag === undefined) return { difficulty: i.requestDifficulty, source: 'request' };
+  if (i.role === 'coder' && i.requestDifficultySet && scopeChangesSource(i.scope, i.unscoped)
+    && difficultyRank(i.tag) < difficultyRank(i.requestDifficulty)) {
+    return { difficulty: i.requestDifficulty, source: 'floor' };
+  }
+  return { difficulty: i.tag, source: 'tag' };
 }
 
 // ------------------------------------------------------------------ writers at the same time (decision 178)

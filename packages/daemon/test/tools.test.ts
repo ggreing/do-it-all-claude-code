@@ -186,7 +186,8 @@ test('router_report_triage re-plans upward exactly as the first Agent call does,
   const r = await s.tool('router_report_triage', { kind: 'team', level: 'L2', files: 6, confidence: 0.8 });
   assert.equal(r.ok, true);
   assert.deepEqual([r.result?.recorded, r.result?.replanned, r.result?.level, r.result?.leadDirect], [true, true, 'L2', false]);
-  assert.match(r.result?.brief, /subagent_type "do-it-all-claude-code:coder", model "sonnet", effort "medium"/);
+  // decision 230: the call line lists each difficulty's cell (A's brief format)
+  assert.match(r.result?.brief, /subagent_type "do-it-all-claude-code:coder"; model\/effort: routine haiku\/low, moderate sonnet\/medium, hard opus\/high/);
   const row = rows(d, "SELECT level, preset, budget_usd, team, triage, replanned_from, lead_triage FROM requests WHERE session_id = 'tri'")[0]!;
   assert.deepEqual([row.level, row.preset, row.budget_usd, row.team], [refRow.level, refRow.preset, refRow.budget_usd, refRow.team]);
   assert.match(JSON.parse(String(row.triage)).rationale, /^re-planned at L2: the lead judged the request as L2 \(about 6 files, confidence 0\.80\) in a lead-direct L1 request/);
@@ -499,70 +500,31 @@ test('the request record keeps the lead\'s judgement and the reviews; a v7 ledge
   } finally { rmrf(dir); }
 });
 
-// decisions 178, 220: the lead's own look says a small change: the lead makes it alone. The bound is 1 file / 15
-// lines for an Opus lead (decision 178), widened to 2 files / 60 lines for a Sonnet or unknown-model lead (decision 220).
-test('decisions 178, 220: a direct report within the keep-direct bound re-plans a team request as lead-direct; over it stays a team; the bound widens for a non-Opus lead', () => withDaemon(async (d, repo) => {
+// decision 230 (item 1): a 'direct' report no longer re-plans a team request back to lead-direct — a lead at L1+ always
+// delegates. The report only records the lead's judgement (and may raise L2 -> L3 for an architecture change).
+test('decision 230: a direct report on a team request records the judgement but does not make it lead-direct', () => withDaemon(async (d, repo) => {
   const team = async (sid: string, model?: string) => {
     const s = session(d, sid, repo);
     await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT, ...(model ? { routerLaunchModel: model } : {}) });
     assert.equal(rows(d, `SELECT level FROM requests WHERE session_id = '${sid}'`)[0]!.level, 'L2');
     return s;
   };
-  // default lead (no model -> class "other"): one file, a few lines -> kept, with the decision-178 wording
-  const s = await team('one-file');
-  const r = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 8, confidence: 0.8 });
-  assert.deepEqual([r.ok, r.result?.replanned, r.result?.level, r.result?.leadDirect], [true, true, 'L1', true]);
-  assert.match(r.result?.brief, /Level L1 is handled by you directly \(team preset lead_direct\): make the change yourself, without subagents/);
-  const row = rows(d, "SELECT level, team, triage, lead_triage FROM requests WHERE session_id = 'one-file'")[0]!;
-  assert.equal(JSON.parse(String(row.team)).leadDirect, true);
-  assert.match(JSON.parse(String(row.triage)).rationale, /^re-planned as lead-direct L1: the lead judged the change as one file and about 8 lines \(confidence 0\.80\)/);
-  assert.equal(JSON.parse(String(row.lead_triage)).lines, 8);
-  // the lead may still change its mind: its first Agent call re-plans the request as a team again
-  assert.deepEqual(await s.post(s.call('A', 'coder', 'sonnet', 'medium')), {});
-  assert.equal(rows(d, "SELECT level FROM requests WHERE session_id = 'one-file'")[0]!.level, 'L2');
-  // decision 220: the wider bound for a non-Opus lead -> up to 2 files / 60 lines is kept, and the rationale names the file count
+  // a small direct report (any size), any lead class: the team stays, the request is not made lead-direct
   for (const [i, input] of [
-    { kind: 'direct', level: 'L1', files: 2, lines: 60, confidence: 0.8 },   // the file and line edges, both kept
-    { kind: 'direct', level: 'L1', files: 2, lines: 8, confidence: 0.9 },
-    { kind: 'direct', level: 'L1', files: 1, lines: 40, confidence: 0.9 },
-  ].entries()) {
-    const t = await team(`keep-${i}`);
-    const k = await t.tool('router_report_triage', input);
-    assert.deepEqual([k.ok, k.result?.replanned, k.result?.level, k.result?.leadDirect], [true, true, 'L1', true], JSON.stringify(input));
-    assert.match(JSON.parse(String(rows(d, `SELECT triage FROM requests WHERE session_id = 'keep-${i}'`)[0]!.triage)).rationale,
-      new RegExp(`as ${input.files === 1 ? 'one file' : `${input.files} files`} and about ${input.lines} lines`));
-  }
-  // over the bound, or not sure, or no line estimate, or a team judgement: the team stays
-  for (const [i, input] of [
-    { kind: 'direct', level: 'L1', files: 3, lines: 10, confidence: 0.9 },   // decision 220: 3 files -> delegated
-    { kind: 'direct', level: 'L1', files: 2, lines: 61, confidence: 0.9 },   // decision 220: 61 lines -> delegated
-    { kind: 'direct', level: 'L1', files: 1, lines: 5, confidence: 0.4 },
-    { kind: 'direct', level: 'L1', files: 1, confidence: 0.9 },
+    { kind: 'direct', level: 'L1', files: 1, lines: 8, confidence: 0.8 },
+    { kind: 'direct', level: 'L1', files: 2, lines: 60, confidence: 0.9 },
     { kind: 'team', level: 'L2', files: 1, lines: 5, confidence: 0.9 },
   ].entries()) {
-    const t = await team(`stay-${i}`);
+    const t = await team(`keep-${i}`, 'claude-sonnet-5-5');
     const k = await t.tool('router_report_triage', input);
     assert.deepEqual([k.ok, k.result?.replanned, k.result?.leadDirect], [true, false, false], JSON.stringify(input));
+    assert.equal(JSON.parse(String(rows(d, `SELECT team FROM requests WHERE session_id = 'keep-${i}'`)[0]!.team)).leadDirect ?? false, false);
   }
-  // decisions 220 / 211: an Opus lead keeps the narrow 1-file bound -> 2 files is delegated, one file / 15 lines is kept
-  const opus2 = await team('opus-2', 'claude-opus-5-5');
-  assert.deepEqual((k => [k.result?.replanned, k.result?.leadDirect])(await opus2.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 2, lines: 10, confidence: 0.9 })), [false, false], 'opus: 2 files delegated');
-  const opus1 = await team('opus-1', 'claude-opus-5-5');
-  assert.deepEqual((k => [k.result?.replanned, k.result?.leadDirect])(await opus1.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 12, confidence: 0.9 })), [true, true], 'opus: one file kept');
-  // a Sonnet lead gets the wide bound -> 2 files kept
-  const sonnet = await team('sonnet-2', 'claude-sonnet-5-5');
-  assert.deepEqual((k => [k.result?.replanned, k.result?.leadDirect])(await sonnet.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 2, lines: 50, confidence: 0.9 })), [true, true], 'sonnet: 2 files kept');
-}, { config: { delegateFrom: undefined } }));   // the real default: an unknown-model lead ("other") gets the wide bound (decisions 144, 220)
-
-// decision 220: a delegateFrom the user set for the lead's class wins — the narrow decision-178 bound stays for it.
-test('decision 220: a user-set delegateFrom for the lead class keeps the narrow 1-file bound', () => withDaemon(async (d, repo) => {
-  // the test daemon's own config sets delegateFrom.other = L2, so an unknown-model ("other") lead keeps the narrow bound
-  const s = session(d, 'cfg', repo);
-  await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
-  assert.equal(rows(d, "SELECT level FROM requests WHERE session_id = 'cfg'")[0]!.level, 'L2');
-  const two = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 2, lines: 20, confidence: 0.9 });
-  assert.deepEqual([two.result?.replanned, two.result?.leadDirect], [false, false], '2 files delegated under a user-set delegateFrom');
-}));
+  // the lead's size judgement is still kept on the request (for calibration), even though it changes no plan
+  const s = await team('recorded', 'claude-opus-5-5');
+  await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 8, confidence: 0.8 });
+  assert.equal(JSON.parse(String(rows(d, "SELECT lead_triage FROM requests WHERE session_id = 'recorded'")[0]!.lead_triage)).lines, 8);
+}, { config: { delegateFrom: undefined } }));
 
 test('decision 178: a level set by forceLevel is not re-planned down by the lead\'s report', () => withDaemon(async (d, repo) => {
   const s = session(d, 'forced-one', repo);
@@ -692,4 +654,90 @@ test('router_project_isolation: a session outside a git repo is refused (not_all
   const r = await s.tool('router_project_isolation', { enable: true, userConfirmed: true });
   assert.equal(r.ok, false);
   assert.equal(r.code, 'not_allowed');
+}));
+
+test('decision 230 (item 4): the lead cannot accept an unverified subtask while its one stronger retry is pending', () => withDaemon(async (d, repo) => {
+  const s = session(d, 'rt', repo);
+  await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });   // L2 team, default difficulty moderate
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'sonnet', 'medium')), {});
+  await s.post(s.start('a1'));
+  write(repo, 'src/a.ts', 'changed\n');
+  assert.deepEqual(await s.post(s.stop('a1')), {});
+  // moderate + unverified (the tool is missing): the slot jumped a model and the retry is pending (item 3)
+  assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'failed', verdict: 'fail_once' }]);
+  assert.deepEqual(rows(d, "SELECT step FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's5' }]);
+  // the lead tries to accept it: refused, with the retry's Agent-call values (item 4)
+  const r = await s.tool('router_report_result', { subtaskId: 'A', verdict: 'accept', by: 'lead' });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'not_allowed');
+  assert.deepEqual(r.result?.retry, { subagentType: 'do-it-all-claude-code:coder', model: 'opus', effort: 'high', step: 's5' });
+  assert.match(r.message ?? '', /could not be verified and has one stronger attempt left: dispatch it again at s5 \(model="opus", effort="high"\) before accepting/);
+  // re-dispatching at the raised cell consumes the retry (the subtask is running again)
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'opus', 'high')), {});
+  assert.deepEqual(rows(d, "SELECT status FROM subtasks WHERE id = 'A'"), [{ status: 'pending' }]);
+}, { verify: { resolveCommands: async () => [{ kind: 'test' as const, command: 'no-such-tool-xyz --check' }] } }));
+
+test('decision 230 end to end (no delegateFrom pin): floor -> per-subtask difficulty + coder floor -> parallel cells -> unverified retry', () => withDaemon(async (d, repo) => {
+  const s = session(d, 'e2e', repo);
+  // an Opus lead; an L1 bug whose prompt trips the router floor (an unexpected crash, no repro test named)
+  await s.post({ hook_event_name: 'UserPromptSubmit', prompt: 'Fix the crash: parse() throws an unexpected error on empty input in src/parse.ts', routerLaunchModel: 'claude-opus-5-5' });
+  const r = d.ledger.latestRequest('e2e')!;
+  assert.deepEqual([r.level, r.team.leadDirect ?? false, r.leadClass], ['L1', false, 'opus'], 'Opus lead delegates L1');
+  assert.deepEqual([r.triage.difficulty, r.triage.difficultySource], ['hard', 'router'], 'the floor made it hard');
+  // the lead reports moderate: the request stays hard, source still router (the floor is the higher of the two)
+  const rep = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 20, confidence: 0.8, difficulty: 'moderate' });
+  assert.deepEqual([rep.result?.difficulty, rep.result?.difficultySource], ['hard', 'router']);
+
+  // two Agent calls in one turn: a source coder tagged moderate (floored up to the hard cell s5) and a tester tagged routine (s1)
+  const coder: HookInput = { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_e2e_c',
+    tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: '[subtask:C] fix it\n[scope: src/**]\n[difficulty: moderate]', model: 'opus', effort: 'high' } };
+  const tester: HookInput = { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: 'toolu_e2e_t',
+    tool_input: { subagent_type: 'do-it-all-claude-code:tester', prompt: '[subtask:T] add a reproducing test\n[scope: tests/**]\n[difficulty: routine]', model: 'haiku', effort: 'low' } };
+  assert.deepEqual(await s.post(coder), {}, 'coder accepted at the floored hard cell s5');
+  await s.post(s.start('c1', 'coder'));
+  assert.deepEqual(await s.post(tester), {}, 'tester accepted at the routine cell s1');
+  await s.post(s.start('t1', 'tester'));
+  // both run at the same time, at different cells; the coder's moderate tag was corrected up to the request floor
+  assert.deepEqual(rows(d, "SELECT id, status, step, difficulty, difficulty_source FROM subtasks ORDER BY id"), [
+    { id: 'C', status: 'running', step: 's5', difficulty: 'hard', difficulty_source: 'floor' },
+    { id: 'T', status: 'running', step: 's1', difficulty: 'routine', difficulty_source: 'tag' },
+  ]);
+
+  // the coder ends unverified (the test tool is missing, so verify cannot run) -> one stronger retry is set up
+  // (s5 -> s6: modelJump has no model above Opus with Fable off, so the effort rises). Its scope stays src/**; the
+  // tester (tests/**) verifies cleanly alongside it.
+  assert.deepEqual(await s.post(s.stop('c1', 'coder')), {});
+  assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'C'"), [{ status: 'failed', verdict: 'fail_once' }]);
+  assert.deepEqual(rows(d, "SELECT step FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's6' }]);
+  assert.equal(rows(d, 'SELECT detail FROM step_changes')[0]!.detail, 'unverified-retry');
+  // the lead cannot accept it while the retry is pending: the router answers with the retry at s6 (opus/xhigh)
+  const acc = await s.tool('router_report_result', { subtaskId: 'C', verdict: 'accept', by: 'lead' });
+  assert.equal(acc.ok, false);
+  assert.deepEqual(acc.result?.retry, { subagentType: 'do-it-all-claude-code:coder', model: 'opus', effort: 'xhigh', step: 's6' });
+  // the tester passes
+  assert.deepEqual(await s.post(s.stop('t1', 'tester')), {});
+  assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'T'"), [{ status: 'passed', verdict: 'meet' }]);
+}, { config: { delegateFrom: undefined }, verify: { resolveCommands: async ({ role }: { role: string }) => role === 'tester' ? [{ kind: 'test' as const, command: 'node -e "process.exit(0)"' }] : [{ kind: 'test' as const, command: 'no-such-tool-xyz --check' }] } }));
+
+test('decision 230: a hard direct report on a lead-direct level hands the change to a one-coder team at the hard cell (s5)', () => withDaemon(async (d, repo) => {
+  const s = session(d, 'ld', repo);
+  await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });   // unknown lead; the home pins other -> L2, so L1 is lead-direct
+  assert.equal(d.ledger.latestRequest('ld')!.team.leadDirect, true);
+  const r = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 20, confidence: 0.8, difficulty: 'hard' });
+  assert.deepEqual([r.result?.replanned, r.result?.level, r.result?.leadDirect, r.result?.difficulty], [true, 'L1', false, 'hard']);
+  assert.match(r.result?.brief, /subagent_type "do-it-all-claude-code:coder"; model\/effort: routine haiku\/low, moderate sonnet\/medium, hard opus\/high/);
+  assert.deepEqual([d.ledger.latestRequest('ld')!.level, d.ledger.latestRequest('ld')!.team.leadDirect ?? false], ['L1', false]);
+  // a coder below the hard cell is denied with s5; the hard cell (opus/high) is accepted
+  assert.match(denied(await s.post(s.call('A', 'coder', 'sonnet', 'medium'))), /the coder runs at step s5/);
+  assert.deepEqual(await s.post(s.call('A', 'coder', 'opus', 'high')), {});
+}));
+
+test('decision 230: a routine or moderate direct report on a lead-direct level stays with the lead', () => withDaemon(async (d, repo) => {
+  for (const [sid, difficulty] of [['rt', 'routine'], ['md', 'moderate']] as const) {
+    const s = session(d, sid, repo);
+    await s.post({ hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT });
+    assert.equal(d.ledger.latestRequest(sid)!.team.leadDirect, true);
+    const r = await s.tool('router_report_triage', { kind: 'direct', level: 'L1', files: 1, lines: 8, confidence: 0.8, difficulty });
+    assert.deepEqual([r.result?.replanned, r.result?.leadDirect, r.result?.difficulty], [false, true, difficulty], difficulty);
+  }
 }));

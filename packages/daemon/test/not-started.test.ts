@@ -255,7 +255,7 @@ const notify = async (f: Flow) => (await f.post({ hook_event_name: 'UserPromptSu
 const subtask = (f: Flow) => rows(f.d, 'SELECT status, verdict, step FROM subtasks')[0];
 const coderSlot = (f: Flow) => rows(f.d, "SELECT step, up_count FROM slots WHERE role = 'coder' AND slot = 0")[0];
 
-test('the tests do not start, before and after the fix attempt, by an error outside the change: one block, then unverified; the slot keeps its step and the lead is told once', async () => {
+test('decision 230: a moderate subtask whose tests never start ends unverified, and the router sets up one stronger retry before the hand-back', async () => {
   const f = await flow([[REMOVED_ALIAS, 2]]);
   try {
     write(f.repo, 'pkg/core/variable.py', 'A = 2\n');
@@ -267,14 +267,15 @@ test('the tests do not start, before and after the fix attempt, by an error outs
     assert.deepEqual(subtask(f), { status: 'running', verdict: 'fail_once', step: 's3' });
 
     assert.deepEqual(await stop(f, true), {});
-    assert.deepEqual(subtask(f), { status: 'hitl', verdict: 'unverified', step: 's3' });
-    assert.equal(coderSlot(f), undefined, 'the slot was never raised: it has no row of its own');
-    assert.equal(rows(f.d, 'SELECT COUNT(*) AS c FROM step_changes')[0]!.c, 0);
+    // decision 230 (item 3): a moderate subtask that ends unverified gets one stronger retry (the slot jumps a model)
+    // before it is handed back — overriding decision 212's "keep the step" for a moderate/hard subtask (routine still keeps it).
+    assert.deepEqual(subtask(f), { status: 'failed', verdict: 'fail_once', step: 's3' });
+    assert.deepEqual(coderSlot(f), { step: 's5', up_count: 1 });   // modelJump s3 (sonnet) -> s5 (opus)
+    assert.equal(rows(f.d, 'SELECT COUNT(*) AS c FROM step_changes')[0]!.c, 1);
+    assert.equal(rows(f.d, 'SELECT detail FROM step_changes')[0]!.detail, 'unverified-retry');
 
     const line = await notify(f);
-    assert.match(line, /^\[do-it-all-claude-code\] subtask A \(coder @s3, model=sonnet, effort=medium\): verify could not start the tests, before and after one fix attempt \(sh tools\/pytest\.sh '[^']+': tests did not start: pkg\/tests\/test_variable\.py - AttributeError: .* \(pytest: collection error; exit 2\)\)\. The error is in no file this subtask changed, so it is not counted as a failure and the coder slot keeps its step/);
-    assert.match(line, /Do not dispatch the subtask again for this and do not try to repair the test setup: read the change \(git diff\), then tell the user what was changed and that the tests could not be run here\./);
-    assert.doesNotMatch(line, /one step higher|miss/);
+    assert.match(line, /could not be verified here \(verify did not run\)\. Because this is a moderate subtask, the router set up one stronger attempt: its slot now runs at s5 \(model="opus", effort="high"\)\. Dispatch subtask A again now with these values before you accept it/);
   } finally { await f.close(); }
 });
 

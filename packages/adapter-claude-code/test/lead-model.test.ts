@@ -69,12 +69,11 @@ test('the resolved lead model drives core delegation tiers end to end (decision 
   const fromTranscript = leadModelFromTranscript(path.join(fixturesDir, 'transcript-main.jsonl'), readUtf8);
   assert.equal(leadModelClass(fromTranscript ?? undefined), 'opus');
 
-  // an Opus- or Sonnet-class lead delegates from L1 (decision 124); a Haiku-class lead keeps L1 lead-direct.
+  // decision 230: every lead class delegates from L1 (only L0 is lead-direct by default).
   const opusPresets = withLeadModel(DEFAULT_PRESETS, 'claude-opus-4-8');
   assert.equal(opusPresets.L1.leadDirect ?? false, false, 'Opus lead: L1 is delegated');
   assert.equal(withLeadModel(DEFAULT_PRESETS, 'claude-sonnet-5-5').L1.leadDirect ?? false, false, 'Sonnet lead: L1 is delegated');
-  const haikuPresets = withLeadModel(DEFAULT_PRESETS, 'claude-haiku-5-5');
-  assert.equal(haikuPresets.L1.leadDirect, true, 'Haiku lead: L1 is handled directly');
+  assert.equal(withLeadModel(DEFAULT_PRESETS, 'claude-haiku-5-5').L1.leadDirect ?? false, false, 'Haiku lead: L1 is delegated too (decision 230)');
   // L0 is always lead-direct regardless of lead model.
   assert.equal(opusPresets.L0.leadDirect, true);
 });
@@ -87,8 +86,8 @@ test('decision 144: the real Claude Code 2.1.322 SessionStart (no model) and Use
   assert.equal(start.leadModel, undefined);
   const prompt = toRouterEvent({ session_id: 's', transcript_path: '/x.jsonl', cwd: '/p', hook_event_name: 'UserPromptSubmit', prompt: 'fix it', prompt_id: 'p-1' });
   assert.equal(prompt.leadModel, undefined);
-  // unknown is the 'other' class, which delegates from L1 like Opus and Sonnet; a known Haiku lead keeps L2
+  // unknown is the 'other' class, which delegates from L1 like every class (decision 230)
   assert.equal(leadModelClass(start.leadModel), 'other');
   assert.equal(withLeadModel(DEFAULT_PRESETS, undefined).L1.leadDirect, undefined);
-  assert.equal(withLeadModel(DEFAULT_PRESETS, 'claude-haiku-5-5').L1.leadDirect, true);
+  assert.equal(withLeadModel(DEFAULT_PRESETS, 'claude-haiku-5-5').L1.leadDirect, undefined);
 });

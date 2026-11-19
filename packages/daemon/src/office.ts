@@ -9,7 +9,7 @@ import type { Ledger } from './ledger.ts';
 import type { RoleView, StatusView } from './router.ts';
 import { latestLimits, type SessionLimits } from './limits.ts';
 import { checksByKind } from './checks.ts';
-import { ladderStep, type Step } from '@do-it-all-claude-code/core';
+import { ladderStep, type Difficulty, type DifficultySource, type Step } from '@do-it-all-claude-code/core';
 
 export const OFFICE_PATH = '/router/v1/office';
 
@@ -28,6 +28,10 @@ export interface OfficeSubtask {
   /** The step's planned model alias and effort: what the router asked the Agent call to carry. */
   model: string;
   effort: string;
+  /** Decision 225: the step's cell is estimated (not Phase-0 measured). Decision 230: the subtask's own difficulty and source. */
+  estimated?: boolean;
+  difficulty?: Difficulty;
+  difficultySource?: DifficultySource;
   status: string;
   verdict: string | null;
   attempts: number;
@@ -90,6 +94,7 @@ export function officeView(ctx: OfficeContext, sessionId: string): OfficeView {
     const planned = ladderStep(s.step as Step);
     return {
       id: s.id, role: s.role, slot: s.slot, step: s.step, model: planned.alias, effort: planned.effort,
+      ...(planned.estimated ? { estimated: true } : {}), ...(s.difficulty ? { difficulty: s.difficulty, difficultySource: s.difficultySource } : {}),
       status: s.status, verdict: s.verdict, attempts: s.attempts, agentId: s.agentId ?? null, scope: s.writeScope,
       checks,
       repro: s.repro ? { required: s.repro.required, state: s.repro.state ?? (s.repro.required ? 'pending' : 'off'), ...(s.repro.reason ? { reason: s.repro.reason } : {}) } : null,

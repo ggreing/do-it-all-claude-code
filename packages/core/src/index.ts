@@ -4,6 +4,7 @@ export * from './paths.ts';
 export * from './security.ts';
 export * from './presets.ts';
 export * from './profiles.ts';
+export * from './difficulty-floor.ts';
 export * from './triage.ts';
 export * from './pricing.ts';
 export * from './roles.ts';

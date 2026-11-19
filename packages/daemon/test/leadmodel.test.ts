@@ -31,60 +31,49 @@ const req = async (d: TestDaemon, sid: string) => ((await getStatus(d.port, sid)
 // A request of unclear size: the wording names no size, so the level's team decides (L2 when L1 is delegated).
 const UNCLEAR_PROMPT = 'Make the date picker remember the last chosen month';
 
-test('decisions 117, 124, 144, 211: an Opus-class lead delegates what the wording settles as small; a Sonnet lead and an unknown one keep it, and delegate from L1 otherwise; a Haiku lead delegates from L2; L0 is always the lead\'s', () => withDaemon(async d => {
+test('decision 230: every lead class delegates from L1 (one coder); only L0 is lead-direct; the lead is a coordinator', () => withDaemon(async d => {
   const ctx = (o: Out) => o.hookSpecificOutput?.additionalContext ?? '';
-  await ask(d, 'opus', L1_PROMPT, transcript(d, 'opus', 'claude-opus-5-5'));
-  let r = await req(d, 'opus');
-  assert.deepEqual([r.level, r.leadDirect, r.leadModel, r.leadClass], ['L1', false, 'claude-opus-5-5', 'opus']);
-  assert.deepEqual(JSON.parse(String(rows(d, "SELECT team FROM requests WHERE session_id = 'opus'")[0]!.team)).roles, [{ role: 'coder', count: 1, start: 's1' }]);
+  // a small L1 fix is now DELEGATED for every lead class (the decision-211 "small stays with the lead" path is gone)
+  for (const [sid, model, cls] of [['opus', 'claude-opus-5-5', 'opus'], ['sonnet', 'claude-sonnet-5-5', 'sonnet'], ['haiku', 'claude-haiku-5-5', 'haiku']] as const) {
+    const brief = ctx(await ask(d, sid, L1_PROMPT, transcript(d, sid, model)));
+    const r = await req(d, sid);
+    assert.deepEqual([r.level, r.leadDirect, r.leadModel, r.leadClass], ['L1', false, model, cls], `${cls}: small L1 delegated`);
+    assert.deepEqual(JSON.parse(String(rows(d, `SELECT team FROM requests WHERE session_id = '${sid}'`)[0]!.team)).roles, [{ role: 'coder', count: 1, start: 's1' }], `${cls}: one-coder L1 team`);
+    assert.match(brief, /subagent_type "do-it-all-claude-code:coder"/, `${cls}: the brief delegates`);
+    assert.doesNotMatch(brief, /handled by you directly|small by its wording/, `${cls}: no lead-direct path`);
+  }
+  // L0 (a typo) stays the lead's
   await ask(d, 'opus', 'fix the typo in README.md', transcript(d, 'opus', 'claude-opus-5-5'));
   assert.deepEqual([(await req(d, 'opus')).level, (await req(d, 'opus')).leadDirect], ['L0', true]);
 
-  // decision 211: small by a rule (stage 1 answers direct, L1): a Sonnet lead does it, with the short brief
-  const small = ctx(await ask(d, 'sonnet', L1_PROMPT, transcript(d, 'sonnet', 'claude-sonnet-5-5')));
-  r = await req(d, 'sonnet');
-  assert.deepEqual([r.level, r.leadDirect, r.leadClass], ['L1', true, 'sonnet']);
-  assert.match(small, /^\[do-it-all-claude-code\] level L1 \(source=rule, confidence=0\.75\): .*; small by its wording, so the lead does it\nLevel L1 is handled by you directly/);
-  // decision 225: the one router tool it names is the hard invite (a small hard change goes to a stronger worker)
-  assert.doesNotMatch(small, /subagent_type|Routing is ON/);
-  assert.equal(small.match(/router_report_triage/g)?.length, 1, 'only the hard invite');
-  assert.ok(small.length < 800, `the short brief: ${small.length} characters`);
-  // ... and still delegates from L1: a request of unclear size gets the L2 team, where the lead staffs it
+  // an unclear-size request gets the L2 team, where the lead staffs it
   const unclear = ctx(await ask(d, 'sonnet', UNCLEAR_PROMPT, transcript(d, 'sonnet', 'claude-sonnet-5-5')));
-  r = await req(d, 'sonnet');
-  assert.deepEqual([r.level, r.leadDirect], ['L2', false]);
+  assert.deepEqual([(await req(d, 'sonnet')).level, (await req(d, 'sonnet')).leadDirect], ['L2', false]);
   assert.match(unclear, /source=default.*-> L2 team, the lead picks the roles/);
-  assert.match(unclear, /- Otherwise delegate, and the staffing is yours/);
+  assert.match(unclear, /The staffing is yours/);
 
-  await ask(d, 'haiku', L1_PROMPT, transcript(d, 'haiku', 'claude-haiku-5-5'));
-  r = await req(d, 'haiku');
-  assert.deepEqual([r.leadDirect, r.leadClass], [true, 'haiku']);
-
-  // the first prompt of a session names no model: it follows Sonnet (decisions 144, 211)
+  // an unknown lead model ('other') also delegates from L1
   await ask(d, 'unknown', L1_PROMPT);
-  r = await req(d, 'unknown');
-  assert.deepEqual([r.level, r.leadDirect, r.leadModel, r.leadClass], ['L1', true, null, 'other']);
+  assert.deepEqual([(await req(d, 'unknown')).level, (await req(d, 'unknown')).leadDirect, (await req(d, 'unknown')).leadModel, (await req(d, 'unknown')).leadClass], ['L1', false, null, 'other']);
   await ask(d, 'unknown', UNCLEAR_PROMPT);
-  r = await req(d, 'unknown');
-  assert.deepEqual([r.level, r.leadDirect], ['L2', false], 'decision 144: an unknown lead delegates from L1, like Opus and Sonnet');
-  // a lead-direct request by decision 211 is direct by configuration: it is in no arm of the auto-release
-  assert.deepEqual(rows(d, "SELECT holdout FROM requests WHERE session_id IN ('sonnet', 'unknown') AND level = 'L1'").map(x => x.holdout), [null, null]);
+  assert.deepEqual([(await req(d, 'unknown')).level, (await req(d, 'unknown')).leadDirect], ['L2', false]);
 }, { delegateFrom: undefined }));   // the real defaults (the test homes pin other: L2)
 
-test('decision 211: a delegateFrom the user set for the lead\'s class wins, and so does /router level', () => withDaemon(async d => {
+test('decision 230: a user delegateFrom override still decides where delegation starts, and /router level wins', () => withDaemon(async d => {
+  // sonnet set to L2 by the user: an L1 request stays lead-direct for a Sonnet lead (the override wins)
   await ask(d, 'own', L1_PROMPT, transcript(d, 'own', 'claude-sonnet-5-5'));
   let r = await req(d, 'own');
-  assert.deepEqual([r.level, r.leadDirect, r.leadClass], ['L1', false, 'sonnet'], 'delegateFrom.sonnet L1, set by the user: small requests are delegated as before');
-  // the class the user did not set follows the rule
+  assert.deepEqual([r.level, r.leadDirect, r.leadClass], ['L1', true, 'sonnet'], 'delegateFrom.sonnet L2: L1 kept with the lead');
+  // a class the user did not set follows the default (decision 230: delegate from L1)
   await ask(d, 'first', L1_PROMPT);
   r = await req(d, 'first');
-  assert.deepEqual([r.level, r.leadDirect, r.leadClass], ['L1', true, 'other']);
+  assert.deepEqual([r.level, r.leadDirect, r.leadClass], ['L1', false, 'other']);
   // a level the user sets by hand gets that level's team: the open request is planned again, as the L1 team
   await ask(d, 'first', '/router level L1');
   r = await req(d, 'first');
   assert.deepEqual([r.level, r.leadDirect], ['L1', false]);
   assert.equal(JSON.parse(String(rows(d, "SELECT triage FROM requests WHERE session_id = 'first'")[0]!.triage)).source, 'manual');
-}, { delegateFrom: { sonnet: 'L1' } }));
+}, { delegateFrom: { sonnet: 'L2' } }));
 
 test('decision 117: the lead model is decided at each request (a /model switch), else from the session\'s SessionStart', () => withDaemon(async d => {
   // SessionStart names the model; the first prompt has no transcript yet
@@ -123,7 +112,7 @@ test('decision 218: a -p run\'s first prompt takes ANTHROPIC_MODEL as the relay 
   assert.deepEqual(await classOf(d, 'p'), ['opus', false]);
   assert.match((first.body as Out).hookSpecificOutput?.additionalContext ?? '', /coder x1/);
   assert.deepEqual(rows(d, "SELECT lead_model, lead_class FROM requests WHERE session_id = 'p'"), [{ lead_model: 'claude-opus-5-5', lead_class: 'opus' }]);
-  // an alias counts too; without the variable the lead is not known and keeps the small fix (decision 211)
+  // an alias counts too; without the variable the lead is 'other' (and the test home pins other -> L2, so lead-direct)
   await postHook(d.port, { session_id: 'alias', cwd: d.home, hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT, routerLaunchModel: 'opus' });
   assert.deepEqual(await classOf(d, 'alias'), ['opus', false]);
   await ask(d, 'none', L1_PROMPT);
@@ -132,10 +121,10 @@ test('decision 218: a -p run\'s first prompt takes ANTHROPIC_MODEL as the relay 
   transcriptAt(d, 'p', 'claude-sonnet-5-5', new Date().toISOString());
   await postHook(d.port, { session_id: 'p', cwd: d.home, hook_event_name: 'UserPromptSubmit', prompt: 'Fix the bug where trim() fails on empty input in src/trim.ts',
     routerLaunchModel: 'claude-opus-5-5', transcript_path: path.join(d.home, 'p.jsonl') });
-  assert.deepEqual(await classOf(d, 'p'), ['sonnet', true]);
+  assert.deepEqual(await classOf(d, 'p'), ['sonnet', false]);   // decision 230: a Sonnet lead delegates L1
   await postHook(d.port, { session_id: 'i', cwd: d.home, hook_event_name: 'SessionStart', source: 'startup', model: 'claude-haiku-5-5' });
   await postHook(d.port, { session_id: 'i', cwd: d.home, hook_event_name: 'UserPromptSubmit', prompt: L1_PROMPT, routerLaunchModel: 'claude-opus-5-5' });
-  assert.deepEqual(await classOf(d, 'i'), ['haiku', true]);
+  assert.deepEqual(await classOf(d, 'i'), ['haiku', false]);   // decision 230: a Haiku lead delegates L1 too
 }));
 
 test('decision 218: the observation seen later counts: the status line right after /model, the transcript once another model has answered', () => withDaemon(async d => {
@@ -143,14 +132,14 @@ test('decision 218: the observation seen later counts: the status line right aft
   await postHook(d.port, { session_id: 'm', cwd: d.home, hook_event_name: 'SessionStart', source: 'startup', model: 'claude-sonnet-5-5' });
   const answered = transcriptAt(d, 'm', 'claude-sonnet-5-5', LONG_AGO);
   await ask(d, 'm', L1_PROMPT, answered);
-  assert.deepEqual(await classOf(d, 'm'), ['sonnet', true]);
+  assert.deepEqual(await classOf(d, 'm'), ['sonnet', false]);   // decision 230: a Sonnet lead delegates L1
   await statusLine(d, 'm', 'claude-opus-5-5');
   await ask(d, 'm', 'Fix the bug where split() fails on empty input in src/split.ts', answered);
   assert.deepEqual(await classOf(d, 'm'), ['opus', false], 'the request right after the switch is planned for the new model');
   // no status line: the record is from SessionStart, and a later answer by another model is the newer observation
   await postHook(d.port, { session_id: 'n', cwd: d.home, hook_event_name: 'SessionStart', source: 'startup', model: 'claude-opus-5-5' });
   await ask(d, 'n', L1_PROMPT, transcriptAt(d, 'n', 'claude-haiku-5-5', FAR_AHEAD));
-  assert.deepEqual(await classOf(d, 'n'), ['haiku', true]);
+  assert.deepEqual(await classOf(d, 'n'), ['haiku', false]);   // decision 230: a Haiku lead delegates L1 too
   // a resumed interactive session: SessionStart names the model now, the transcript's last answer is older
   await postHook(d.port, { session_id: 'r', cwd: d.home, hook_event_name: 'SessionStart', source: 'resume', model: 'claude-opus-5-5' });
   await ask(d, 'r', L1_PROMPT, transcriptAt(d, 'r', 'claude-haiku-5-5', LONG_AGO));
@@ -170,7 +159,7 @@ test('decision 218: a SessionStart replayed from the spool gives the session its
   await replay('kept', 'claude-opus-5-5', LONG_AGO);
   assert.equal(d.ledger.sessionLead('kept')?.model, 'claude-sonnet-5-5');
   await ask(d, 'kept', L1_PROMPT);
-  assert.deepEqual(await classOf(d, 'kept'), ['sonnet', true]);
+  assert.deepEqual(await classOf(d, 'kept'), ['sonnet', false]);   // decision 230: a Sonnet lead delegates L1
 }));
 
 test('decision 118: config.delegateFrom changes the start; an explicit lead_direct in teams.yaml still wins', () => withDaemon(async d => {

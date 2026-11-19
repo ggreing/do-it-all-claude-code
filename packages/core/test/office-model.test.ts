@@ -5,10 +5,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   CLASSIC_GLYPHS, DESK_H, DESK_W, DIFFICULTY_COLOR, DIFFICULTY_SHORT, GLYPHS, LAYOUT_SPARE, MAX_ROWS, TINY_STEP, OFFICE_MIN_CLAUDE, SLACK, NARROW_DESK_H, NARROW_DESK_W, SMALL_DESK_H, SMALL_DESK_W,
-  STEP_ALIAS, TABS, appliedLines, bar, callRow, cellOf, cellText, checksLine, deskCell, difficultyNote, difficultyText, isDifficulty, moveText, packParts,
+  STEP_ALIAS, TABS, appliedLines, bar, callRow, cellOf, cellText, checksLine, deskCell, detailDifficulty, difficultyNote, difficultyText, isDifficulty, moveText, packParts,
   choices, clockTime, columns, compileSecrets, confirmLine, cycle, dur, filesText, fit, holdoutText, homeCandidates, labelFor, levelText, mask, modelName,
   nextPeriod, officeLayout, officeSwitch, parseHelperLine, pendingSet, requestLine, resultRow, roleOf, routerLine, settingText, spentLine, statBar, statusWord, stepLine,
-  subtaskOf, tabLabelsFit, tagOf, takeLines, textRow, timelineCells, unicodeTerminal, upDown, versionAtLeast, wantedRoom, withRow, workHeadline, workMark,
+  subtaskDifficultyText, subtaskOf, tabLabelsFit, tagOf, takeLines, textRow, timelineCells, unicodeTerminal, upDown, versionAtLeast, wantedRoom, withRow, workHeadline, workMark,
   type DaemonOffice, type DaemonSubtask, type OfficeAgent, type SettingItem,
 } from '../../../plugin/office/model.ts';
 import { MIN_CLAUDE } from '../../cli/src/doctor.ts';
@@ -119,6 +119,22 @@ test('decision 225: the difficulty beside the level, and where it came from', ()
     assert.ok(DIFFICULTY_SHORT[d].length <= 4, 'the Work list keeps four cells for it');
     assert.ok(DIFFICULTY_COLOR[d]);
   }
+});
+
+test('decision 230: the router\'s floor as a source, and each subtask\'s own difficulty', () => {
+  assert.equal(difficultyNote({ difficulty: 'hard', difficultySource: 'router' }), 'difficulty hard, raised by the router above the lead\'s');
+  assert.equal(difficultyNote({ difficulty: 'hard', difficultySource: 'router', reported: false }), 'difficulty hard, set by the router (the lead gave none)');
+  // the Work detail's shape: { value, source, reported } beside the level; none from an older router
+  assert.deepEqual(detailDifficulty({ difficulty: { value: 'hard', source: 'router', reported: true } }), { difficulty: 'hard', difficultySource: 'router', reported: true });
+  assert.deepEqual(detailDifficulty({ difficulty: { value: 'moderate', source: 'default' } }), { difficulty: 'moderate', difficultySource: 'default' });
+  assert.deepEqual(detailDifficulty({ difficulty: null }), {});
+  assert.deepEqual(detailDifficulty({}), {});
+  assert.equal(subtaskDifficultyText({ difficulty: 'routine', difficultySource: 'tag' }), 'routine');
+  assert.equal(subtaskDifficultyText({ difficulty: 'moderate', difficultySource: 'request' }), 'moderate (the request\'s)');
+  assert.equal(subtaskDifficultyText({ difficulty: 'hard', difficultySource: 'floor' }), 'hard (raised to the request\'s)');
+  assert.equal(subtaskDifficultyText({ difficulty: 'hard' }), 'hard', 'a tag without its source');
+  assert.equal(subtaskDifficultyText({ ...SUB }), '', 'an older router sends none');
+  assert.equal(subtaskDifficultyText(undefined), '');
 });
 
 test('decision 225: a desk adds the alias and "est." only while the member runs at its slot\'s cell', () => {

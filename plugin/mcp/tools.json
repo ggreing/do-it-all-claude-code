@@ -10,7 +10,7 @@
   },
   {
     "name": "router_report_triage",
-    "description": "Do It All Claude Code, lead only. Reports your judgement of a request before the first subtask: kind direct (L0/L1 small fix) or team (L2 module, L3 architecture); files, lines and confidence; and difficulty — routine, moderate or hard (hard = a subtle bug, heavy reasoning or no repro test; default moderate). Report team level L3 for an architecture change and the router re-plans as L3, returning the L3 team values. Small and not hard (<=2 files/~60 lines for a Sonnet or unknown lead, 1/~15 for Opus): kept with you. Small but hard: delegated to a stronger worker.",
+    "description": "Do It All Claude Code, lead only. Reports your judgement of a request before the first subtask: kind direct (L0 trivial, kept by you) or team (L1+ you delegate; L2 module, L3 architecture); files, lines, confidence; and difficulty — routine, moderate or hard (hard = a subtle bug, heavy reasoning, a race, or no repro test; default moderate). The router takes the higher of your difficulty and its own floor for the request. Report team level L3 for an architecture change and it re-plans as L3, returning the L3 team values. You then tag each subtask's own difficulty on its Agent call.",
     "inputSchema": {
       "type": "object",
       "properties": {

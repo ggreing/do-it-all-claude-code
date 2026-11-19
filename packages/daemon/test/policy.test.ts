@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_PRESETS, PROTECTED_WRITE_PATHS } from '@do-it-all-claude-code/core';
 import { AWAITING_USER_MARKER, awaitsUser, classifyPrompt } from '../src/continuation.ts';
-import { checkAgentCall, defaultStartStep, managedRole, parseScope, parseTag, scopeFileBody, stepOf, type AgentCallInput } from '../src/policy.ts';
+import { checkAgentCall, defaultStartStep, globTargetsOnlyNonSource, managedRole, parseDifficultyTag, parseScope, parseTag, resolveCallDifficulty, scopeChangesSource, scopeFileBody, stepOf, type AgentCallInput } from '../src/policy.ts';
 
 test('only do-it-all-claude-code:<role> agent types are managed', () => {
   assert.equal(managedRole('do-it-all-claude-code:coder'), 'coder');
@@ -136,4 +136,56 @@ test('decision 178: a writer sent while another runs needs a scope of its own; t
   assert.equal(concurrentWriterProblem({ tag: 'B', role: 'coder', scope: ['**'], isolation: undefined, running: [] }), null);
   assert.equal(concurrentWriterProblem({ tag: 'A', role: 'coder', scope: ['src/**'], isolation: undefined, running }), null);
   assert.equal(concurrentWriterProblem({ tag: 'B', role: 'coder', scope: ['src/**'], isolation: undefined, running: [{ id: 'R', role: 'reviewer', scope: ['**'] }] }), null);
+});
+
+// ------------------------------------------------------------------ decision 230: per-subtask difficulty
+
+test('decision 230: the [difficulty:] header tag is read from the header lines, order-independently', () => {
+  assert.equal(parseDifficultyTag('[subtask:A]\n[scope: src/**]\n[difficulty: hard]\nspec'), 'hard');
+  assert.equal(parseDifficultyTag('[subtask:A]\n[difficulty: ROUTINE]\n[scope: src/**]'), 'routine');   // case-insensitive, any header line
+  assert.equal(parseDifficultyTag('[subtask:A]\n[scope: src/**]\nspec with [difficulty: hard] inline'), undefined);   // not a full header line
+  assert.equal(parseDifficultyTag('[subtask:A]\n[scope: src/**]'), undefined);
+  assert.equal(parseDifficultyTag('[subtask:A]\n[difficulty: enormous]'), undefined);   // not a known value
+});
+
+test('decision 230: "source files" are paths outside the test/doc/changelog/config patterns', () => {
+  // non-source scopes
+  for (const g of ['tests/**', 'pkg/__tests__/x.ts', 'src/a.test.ts', 'src/a_test.go', 'docs/**', 'README.md', 'CHANGELOG.md', 'config.json', 'app.yaml', 'tox.ini']) {
+    assert.equal(globTargetsOnlyNonSource(g), true, g);
+  }
+  // source scopes (and the whole repo)
+  for (const g of ['src/**', 'src/parse.ts', 'pkg/core/x.py', '**', '**/*']) {
+    assert.equal(globTargetsOnlyNonSource(g), false, g);
+  }
+  assert.equal(scopeChangesSource(['tests/**', 'docs/**'], false), false);
+  assert.equal(scopeChangesSource(['tests/**', 'src/a.ts'], false), true);   // any source glob -> source-changing
+  assert.equal(scopeChangesSource([], true), true);                           // the whole repo
+});
+
+test('decision 230: a call difficulty is its tag, else the request; a source coder may not go below a set request floor', () => {
+  const base = { requestDifficulty: 'hard' as const, requestDifficultySet: true, scope: ['src/**'], unscoped: false };
+  // no tag -> the request's difficulty, source 'request'
+  assert.deepEqual(resolveCallDifficulty({ role: 'coder', requestDifficulty: 'moderate', requestDifficultySet: true, scope: ['src/**'], unscoped: false }), { difficulty: 'moderate', source: 'request' });
+  // a tag at or above the request is honoured, source 'tag'
+  assert.deepEqual(resolveCallDifficulty({ role: 'coder', tag: 'hard', ...base }), { difficulty: 'hard', source: 'tag' });
+  // a source coder tagged below the set request floor is raised to it, source 'floor'
+  assert.deepEqual(resolveCallDifficulty({ role: 'coder', tag: 'routine', ...base }), { difficulty: 'hard', source: 'floor' });
+  // a test-only coder, or a non-coder role, may go below the floor
+  assert.deepEqual(resolveCallDifficulty({ role: 'coder', tag: 'routine', requestDifficulty: 'hard', requestDifficultySet: true, scope: ['tests/**'], unscoped: false }), { difficulty: 'routine', source: 'tag' });
+  assert.deepEqual(resolveCallDifficulty({ role: 'tester', tag: 'routine', ...base }), { difficulty: 'routine', source: 'tag' });
+  // no floor when the request difficulty is not set (only the assumed default)
+  assert.deepEqual(resolveCallDifficulty({ role: 'coder', tag: 'routine', requestDifficulty: 'moderate', requestDifficultySet: false, scope: ['src/**'], unscoped: false }), { difficulty: 'routine', source: 'tag' });
+});
+
+test('decision 230: a call difficulty sets the start cell, so two coder subtasks run at different cells (item 7)', () => {
+  const common = { level: 'L2' as const, preset: DEFAULT_PRESETS.L2, budgetUsd: 5, spentUsd: 0, fableOptIn: false, tagBusy: false };
+  // a routine coder starts at s1 (haiku/low); a hard coder at s5 (opus/high) — different free slots, different cells
+  const routine = checkAgentCall({ ...common, tag: 'A', role: 'coder', difficulty: 'routine', busySlots: [], model: 'haiku', effort: 'low' } as AgentCallInput);
+  assert.deepEqual([routine.ok, (routine as { step?: string }).step], [true, 's1']);
+  const hard = checkAgentCall({ ...common, tag: 'B', role: 'coder', difficulty: 'hard', busySlots: [0], model: 'opus', effort: 'high' } as AgentCallInput);
+  assert.deepEqual([hard.ok, (hard as { slot?: number; step?: string }).slot, (hard as { step?: string }).step], [true, 1, 's5']);
+  // a call whose model/effort does not match its difficulty's cell is denied with the right values
+  const wrong = checkAgentCall({ ...common, tag: 'C', role: 'coder', difficulty: 'hard', busySlots: [], model: 'haiku', effort: 'low' } as AgentCallInput);
+  assert.equal(wrong.ok, false);
+  assert.match((wrong as { reason: string }).reason, /the coder runs at step s5 \(model="opus", effort="high"\)/);
 });

@@ -269,7 +269,10 @@ after its model and effort only while the member runs at its slot's cell, and on
 full desk has room for both, a small desk for one, a narrow desk for neither. The difficulty the lead reported
 (`routine`, `moderate`, `hard`) stands beside the level: in the router's line (`L2 hard · rule · …`), in each
 Work row (the word from 66 columns, else `rtn`, `mod`, `hard` in four cells; dim when the lead gave none and the
-default applied) and in the request's detail, which also says where it came from. A request from before
+default applied) and in the request's detail, which also says where it came from: by the lead, raised by the
+router's floor (decision 230), or the default. Each worker line in the detail adds the subtask's own difficulty
+after its cell (decision 230): `hard` as the lead tagged it, `moderate (the request's)` when the call had no tag
+(dim), `hard (raised to the request's)` for a coder of source tagged below it. A request from before
 difficulty was kept shows none, and an older router's payload draws as before.
 
 ## 4. Tabs (0.5.0, decision 193; as built)

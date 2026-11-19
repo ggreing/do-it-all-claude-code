@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import type {
-  Difficulty, LadderId, Level, RequestRecord, Role, SignalKind, Step, SubtaskRecord, SubtaskStatus, TeamPreset, TriageResult, Verdict,
+  Difficulty, DifficultySource, LadderId, Level, RequestRecord, Role, SignalKind, Step, SubtaskRecord, SubtaskStatus, TeamPreset, TriageResult, Verdict,
   UsageRow, VerifySignal,
 } from '@do-it-all-claude-code/core';
 import type { AcceptSignal } from '@do-it-all-claude-code/core';
@@ -17,7 +17,7 @@ import type { ReproRecord } from './repro.ts';
 import { scrubProse, scrubStoredPrompts } from './data.ts';
 import { storedPromptKind } from './payload.ts';
 
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 export type RequestStatus = 'open' | 'awaiting_user' | 'closed';
 
@@ -284,6 +284,8 @@ CREATE TABLE IF NOT EXISTS subtasks (
   protected_granted TEXT,
   repro       TEXT,
   changes     TEXT,
+  difficulty  TEXT,
+  difficulty_source TEXT,
   PRIMARY KEY (request_id, id)
 );
 CREATE INDEX IF NOT EXISTS subtasks_pending ON subtasks(status, agent_type, dispatch_seq);
@@ -539,6 +541,8 @@ function toSubtask(r: Row): SubtaskRow {
     protectedGranted: r.protected_granted === null || r.protected_granted === undefined ? [] : json<string[]>(r.protected_granted),
     repro: r.repro === null || r.repro === undefined ? null : json<ReproRecord>(r.repro),
     changes: r.changes === null || r.changes === undefined ? null : json<SubtaskChanges>(r.changes),
+    ...(sn(r.difficulty) ? { difficulty: s(r.difficulty) as Difficulty } : {}),
+    ...(sn(r.difficulty_source) ? { difficultySource: s(r.difficulty_source) as DifficultySource } : {}),
   };
 }
 
@@ -596,6 +600,9 @@ export interface DispatchInput {
   agentType: string;
   toolUseId: string | null;
   at: string;
+  /** Decision 230: the subtask's own difficulty and where it came from (tag/request/floor). */
+  difficulty?: Difficulty;
+  difficultySource?: DifficultySource;
 }
 
 export type AgentPatch = Partial<Pick<AgentRow,
@@ -717,6 +724,8 @@ export class Ledger {
     if (!subCols.includes('repro')) this.db.exec('ALTER TABLE subtasks ADD COLUMN repro TEXT');
     // v17 -> v18 (decision 193): the files a subtask changed; step_changes is created by SCHEMA
     if (!subCols.includes('changes')) this.db.exec('ALTER TABLE subtasks ADD COLUMN changes TEXT');
+    // v18 -> v19 (decision 230): each subtask's own difficulty and where it came from (tag/request/floor)
+    for (const c of ['difficulty', 'difficulty_source']) if (!subCols.includes(c)) this.db.exec(`ALTER TABLE subtasks ADD COLUMN ${c} TEXT`);
     this.#keepOutput = opts.keepPrompts === true;
     if (!this.#keepOutput) {
       const n = Number(this.db.prepare("UPDATE signals SET detail = substr(detail, 1, instr(detail, char(10)) - 1) WHERE instr(detail, char(10)) > 0").run().changes);
@@ -929,11 +938,12 @@ export class Ledger {
    * Decision 225: stamps the lead's difficulty on a request's triage (and, for a hard task, a raised budget)
    * without re-planning its level or team. The start cells are computed from this at dispatch.
    */
-  setRequestDifficulty(id: string, difficulty: Difficulty, source: 'lead' | 'default', budgetUsd?: number): RequestRow {
+  setRequestDifficulty(id: string, difficulty: Difficulty, source: DifficultySource, budgetUsd?: number, reported?: boolean): RequestRow {
     this.tx(() => {
       const r = this.db.prepare('SELECT triage FROM requests WHERE id = ?').get(id) as Row | undefined;
       if (!r) return;
-      const t = { ...json<TriageResult>(r.triage), difficulty, difficultySource: source, ...(budgetUsd !== undefined ? { budgetUsd } : {}) };
+      const t = { ...json<TriageResult>(r.triage), difficulty, difficultySource: source,
+        ...(reported !== undefined ? { difficultyReported: reported } : {}), ...(budgetUsd !== undefined ? { budgetUsd } : {}) };
       if (budgetUsd !== undefined) this.db.prepare('UPDATE requests SET triage = ?, budget_usd = ? WHERE id = ?').run(JSON.stringify(t), budgetUsd, id);
       else this.db.prepare('UPDATE requests SET triage = ? WHERE id = ?').run(JSON.stringify(t), id);
     });
@@ -1175,17 +1185,18 @@ export class Ledger {
   /** Registers (or re-dispatches) a subtask at PreToolUse(Agent): pending until SubagentStart pairs it. */
   dispatchSubtask(d: DispatchInput): SubtaskRow {
     this.db.prepare(`INSERT INTO subtasks (request_id, id, role, slot, step, write_scope, unscoped, agent_type, agent_id,
-        attempts, status, verdict, tool_use_id, dispatch_seq, created_at, updated_at)
+        attempts, status, verdict, tool_use_id, dispatch_seq, created_at, updated_at, difficulty, difficulty_source)
       VALUES (:requestId, :id, :role, :slot, :step, :scope, :unscoped, :agentType, NULL, 1, 'pending', NULL, :toolUseId,
-        (SELECT COALESCE(MAX(dispatch_seq), 0) + 1 FROM subtasks), :at, :at)
+        (SELECT COALESCE(MAX(dispatch_seq), 0) + 1 FROM subtasks), :at, :at, :difficulty, :difficultySource)
       ON CONFLICT (request_id, id) DO UPDATE SET
         role = excluded.role, slot = excluded.slot, step = excluded.step, write_scope = excluded.write_scope,
         unscoped = excluded.unscoped, agent_type = excluded.agent_type, agent_id = NULL, attempts = attempts + 1,
         status = 'pending', verdict = NULL, review = NULL, tool_use_id = excluded.tool_use_id, dispatch_seq = excluded.dispatch_seq,
-        updated_at = excluded.updated_at`)
+        updated_at = excluded.updated_at, difficulty = excluded.difficulty, difficulty_source = excluded.difficulty_source`)
       .run({
         requestId: d.requestId, id: d.id, role: d.role, slot: d.slot, step: d.step, scope: JSON.stringify(d.writeScope),
         unscoped: d.unscoped ? 1 : 0, agentType: d.agentType, toolUseId: d.toolUseId, at: d.at,
+        difficulty: d.difficulty ?? null, difficultySource: d.difficultySource ?? null,
       });
     return this.getSubtask(d.requestId, d.id)!;
   }

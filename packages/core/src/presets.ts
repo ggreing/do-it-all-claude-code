@@ -94,38 +94,14 @@ export function leadModelClass(modelId?: string): LeadModelClass {
 }
 
 /**
- * First level that is delegated, per lead model tier (decisions 117, 124). Below it the lead handles the
- * request itself. L0 is always lead-direct. Unknown lead model -> 'other', which delegates from L1 as well
- * (decision 144): both measured lead classes do, a Haiku main session is rare, and being wrong for one costs
- * little. Claude Code names the model in SessionStart only for an interactive session (2.1.326) and in no
- * other hook input, so a first prompt can still come without one: a -p run without ANTHROPIC_MODEL, a session
- * after /clear before its status line ran (decision 218).
- * Decision-107 measurement: delegating L1 cost 49% less with an Opus lead at the same speed, and 42% less
- * with a Sonnet lead (about 20 s slower per request), so both delegate from L1. A Haiku lead is not
- * measured: its workers would run the same model, so it keeps L1 itself.
+ * First level that is delegated, per lead model tier. Below it the lead handles the request itself. Decision 230:
+ * the lead is a coordinator, so EVERY lead class delegates from L1 — only L0 is lead-direct by default (the
+ * per-lead-model L1 lead-direct defaults of decisions 117/118/124 are gone). A user's `delegateFrom` (or teams.yaml
+ * lead_direct) still wins. Claude Code names the model in SessionStart only for an interactive session (2.1.326) and
+ * in no other hook input, so a first prompt can still come without one: a -p run without ANTHROPIC_MODEL, a session
+ * after /clear before its status line ran (decision 218) — 'other' then, which also delegates from L1.
  */
-export const DEFAULT_DELEGATE_FROM: Record<LeadModelClass, Level> = { opus: 'L1', sonnet: 'L1', haiku: 'L2', other: 'L1' };
-
-/**
- * Decision 211: a request the wording settles as small (stage 1 answers `direct` at L1 by a rule: a short bug fix
- * or option request, or a short one with a log) stays with the lead for these lead classes, although L1 is a
- * delegated level for them. Quality baseline (20 SWE-bench Verified tasks, a Sonnet lead): the seven such requests
- * cost 72% more delegated than done by the lead and passed one task fewer. The lead works out the fix to brief
- * the worker, so the hand-off saves nothing. A lead whose model is not known ('other') follows
- * Sonnet. An Opus-class lead is not measured on these requests and keeps delegating them.
- * A request of unclear size is not touched: it goes to the L2 team, where the lead staffs it and keeps a one-file
- * change (decisions 121, 178). That path is where delegating paid off on the bench's own tasks.
- */
-export const SMALL_STAYS_WITH_LEAD: Record<LeadModelClass, boolean> = { opus: false, sonnet: true, haiku: true, other: true };
-
-/**
- * True when the lead does this request itself by decision 211. `own` is the `delegateFrom` the user set: a value
- * there for the lead's class wins (`L1` delegates these requests as before).
- */
-export function smallStaysWithLead(t: { level: Level; source: string; kind?: string }, leadClass: LeadModelClass,
-  own: Partial<Record<LeadModelClass, Level>> = {}): boolean {
-  return t.level === 'L1' && t.source === 'rule' && t.kind === 'direct' && SMALL_STAYS_WITH_LEAD[leadClass] && own[leadClass] === undefined;
-}
+export const DEFAULT_DELEGATE_FROM: Record<LeadModelClass, Level> = { opus: 'L1', sonnet: 'L1', haiku: 'L1', other: 'L1' };
 
 const ORDER: Level[] = ['L0', 'L1', 'L2', 'L3'];
 

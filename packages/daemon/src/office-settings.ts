@@ -4,7 +4,7 @@
 // is and lands in the same history, with source "office". The panel has no text input, so every item here can be
 // drawn with buttons; what needs an editor is listed as text with the CLI line that edits it.
 import {
-  CONFIG_KEYS, DEFAULT_LADDER, DEFAULT_PRESETS, MANAGED_CONFIG_KEYS, PROFILES, PROFILE_INFO, PROFILE_LAYERS, SMALL_STAYS_WITH_LEAD, SettingsRejected, TEAM_PATH, applyTeamPaths, checkRevision,
+  CONFIG_KEYS, DEFAULT_LADDER, DEFAULT_PRESETS, MANAGED_CONFIG_KEYS, PROFILES, PROFILE_INFO, PROFILE_LAYERS, SettingsRejected, TEAM_PATH, applyTeamPaths, checkRevision,
   getProjectWorktree, ladderStep, profileOf, profilePresets, profileSets, readText, revisionOf, rolesView, teamsFile, validateConfigSet,
   type ConfigKeySpec, type LadderId, type LeadModelClass, type Level, type Profile, type SettingsError,
 } from '@do-it-all-claude-code/core';
@@ -144,9 +144,8 @@ export async function officeSettingsView(ctx: OfficeSettingsContext, sessionId?:
     const v = delegateFromOf(profile, ownFrom, c);
     items.push({
       path: `delegateFrom.${c}`, group: 'team', title: `Delegate from (${c} lead)`,
-      // decision 211: said only where it applies (the value is L1 and not the user's own)
-      description: 'The first level that gets a team with this lead model; below it the lead does the work itself'
-        + (SMALL_STAYS_WITH_LEAD[c] && v.value === 'L1' && v.source !== 'own' ? '. A request whose wording shows a small fix stays with the lead until you set this value yourself' : ''),
+      // decision 230: every lead class delegates from L1 by default; only L0 is lead-direct.
+      description: 'The first level that gets a team with this lead model; below it the lead does the work itself',
       type: 'enum', options: ['L1', 'L2', 'L3'], value: v.value, source: v.source, default: delegateFromOf('balanced', undefined, c).value,
       ...(v.source === 'own' ? { profileValue: delegateFromOf(profile, undefined, c).value } : {}), appliesAt: 'next request', editable: true,
     });

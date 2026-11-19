@@ -72,12 +72,19 @@ test('spec 3.5: after 3 step-ups a further miss is the user\'s decision', () => 
   assert.match(n.hookSpecificOutput?.additionalContext ?? '', /verify failed again at step s4 after 3 step-ups .*Ask the user how to continue/);
 }));
 
-test('decision 122: a command that is not installed here leaves the subtask unverified (no retry, no step-up)', () => withRepo({
-  'cmdstyle.cjs': 'console.log("> pretest\\n> eslint ."); console.error("\'eslint\' is not recognized as an internal or external command,\\noperable program or batch file."); process.exit(1)\n',
-}, [{ kind: 'build', command: 'node cmdstyle.cjs' }, { kind: 'test', command: 'no-such-tool-xyz --check' }], async (d, repo) => {
+const ENV_FILES = { 'cmdstyle.cjs': 'console.log("> pretest\\n> eslint ."); console.error("\'eslint\' is not recognized as an internal or external command,\\noperable program or batch file."); process.exit(1)\n' };
+const ENV_COMMANDS: Array<{ kind: 'test' | 'build'; command: string }> = [{ kind: 'build', command: 'node cmdstyle.cjs' }, { kind: 'test', command: 'no-such-tool-xyz --check' }];
+/** An Agent call with a per-subtask [difficulty:] tag (decision 230). */
+const callD = (tag: string, difficulty: string, model: string, effort: string, scope = 'src/**'): HookInput => ({
+  hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_use_id: `toolu_sd${++seq}`,
+  tool_input: { subagent_type: 'do-it-all-claude-code:coder', prompt: `[subtask:${tag}] work\n[scope: ${scope}]\n[difficulty: ${difficulty}]`, model, effort },
+});
+
+test('decision 122 + 230: a ROUTINE subtask left unverified by a missing tool keeps its step (no retry, no step-up)', () => withRepo(ENV_FILES, ENV_COMMANDS, async (d, repo) => {
   const post = session(d, 'env', repo);
   await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
-  assert.deepEqual(await post(call('A', 'sonnet', 'medium')), {});
+  // a routine coder starts at s1 (haiku/low); decision 230 item 3 does not retry a routine subtask
+  assert.deepEqual(await post(callD('A', 'routine', 'haiku', 'low')), {});
   await post(start('e1'));
   write(repo, 'src/a.ts', 'changed\n');
   assert.deepEqual(await post(stop('e1')), {});                              // not blocked
@@ -85,6 +92,21 @@ test('decision 122: a command that is not installed here leaves the subtask unve
   assert.deepEqual(rows(d, 'SELECT COUNT(*) AS c FROM slots')[0]!.c, 0);
   const n = await post(notify('e1'));
   assert.match(n.hookSpecificOutput?.additionalContext ?? '', /verify could not run in this environment \(node cmdstyle\.cjs: environment: eslint not found \(exit 1\); no-such-tool-xyz --check: environment: no-such-tool-xyz not found \(exit 127\)\); this is not counted as a failure/);
+}));
+
+test('decision 230 (item 3): a MODERATE subtask left unverified by a missing tool gets one stronger retry before the hand-back', () => withRepo(ENV_FILES, ENV_COMMANDS, async (d, repo) => {
+  const post = session(d, 'envm', repo);
+  await post({ hook_event_name: 'UserPromptSubmit', prompt: L2_PROMPT });
+  assert.deepEqual(await post(call('A', 'sonnet', 'medium')), {});           // moderate: coder starts at s3
+  await post(start('m1'));
+  write(repo, 'src/a.ts', 'changed\n');
+  assert.deepEqual(await post(stop('m1')), {});
+  // the slot jumps a model (s3 -> s5) and the subtask is left to re-dispatch, not accepted
+  assert.deepEqual(rows(d, "SELECT status, verdict FROM subtasks WHERE id = 'A'"), [{ status: 'failed', verdict: 'fail_once' }]);
+  assert.deepEqual(rows(d, "SELECT step, up_count FROM slots WHERE role = 'coder' AND slot = 0"), [{ step: 's5', up_count: 1 }]);
+  assert.equal(rows(d, 'SELECT detail FROM step_changes')[0]!.detail, 'unverified-retry');
+  const n = await post(notify('m1'));
+  assert.match(n.hookSpecificOutput?.additionalContext ?? '', /could not be verified here \(verify did not run\)\. Because this is a moderate subtask, the router set up one stronger attempt: its slot now runs at s5 \(model="opus", effort="high"\)/);
 }));
 
 test('decision 122: a real failure next to a missing tool is still a failure (only the real one is reported)', () => withRepo({ 'fail.cjs': 'console.error("assertion failed"); process.exit(1)\n' },

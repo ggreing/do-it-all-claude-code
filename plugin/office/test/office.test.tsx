@@ -181,7 +181,8 @@ const WORK = {
 }
 const DETAIL = {
   requestId: 'r-2', state: 'closed', createdAt: ISO(20), closedAt: ISO(18), kind: 'feature', taskType: null,
-  level: { judged: 'L1', source: 'rule', rule: 'multi-file', confidence: 0.82, final: 'L2', changes: [{ from: 'L1', to: 'L2', why: 'replanned' }], difficulty: 'hard', difficultySource: 'lead' },
+  level: { judged: 'L1', source: 'rule', rule: 'multi-file', confidence: 0.82, final: 'L2', changes: [{ from: 'L1', to: 'L2', why: 'replanned' }] },
+  difficulty: { value: 'hard', source: 'lead', reported: true },
   plan: { preset: 'L2', leadDirect: false, leadModel: 'claude-sonnet', leadClass: 'sonnet', budgetUsd: 4, holdout: null },
   outcome: 'delegated', passed: true, acceptance: 'accepted',
   subtasks: [
@@ -272,7 +273,7 @@ const SETTINGS = {
 }
 
 /** A helper that answers each tab with its fixture, and an apply with `applied`; the inputs the applies were given. */
-function tabsEngine(on: On, env: Record<string, string> = {}, applied: unknown = { ok: true, changed: ['profile'], nextStart: [], notes: [], revision: { config: 'c-2', presets: 'p-1' } }, work: unknown = WORK) {
+function tabsEngine(on: On, env: Record<string, string> = {}, applied: unknown = { ok: true, changed: ['profile'], nextStart: [], notes: [], revision: { config: 'c-2', presets: 'p-1' } }, work: unknown = WORK, detail: unknown = DETAIL) {
   const spawned: string[][] = []
   const inputs: string[] = []
   const clock = mock.clock(on, { now: 1_000_000 })
@@ -295,7 +296,7 @@ function tabsEngine(on: On, env: Record<string, string> = {}, applied: unknown =
     if (which === 'work') {
       yield say({ type: 'work', data: work })
       const id = arg('--detail')
-      if (id) yield say({ type: 'work-detail', id, data: DETAIL })
+      if (id) yield say({ type: 'work-detail', id, data: detail })
     }
     if (which === 'savings') yield say({ type: 'savings', period: p, data: savingsOf(p) })
     if (which === 'team') yield say({ type: 'team', period: p, data: teamOf(p) })
@@ -340,6 +341,24 @@ test('Work: the first line says what runs and how today went; running requests f
   await ui.press({ key: 'back' })
   await settle()
   must('back to the list', await ui.find({ key: 'req-r-2' }))
+  await ui.unmount()
+})
+
+test('Work: a difficulty the router\'s floor raised, and each worker\'s own (decision 230)', async ($, on) => {
+  const [a, r] = DETAIL.subtasks
+  const detail = {
+    ...DETAIL, difficulty: { value: 'hard', source: 'router', reported: true },
+    subtasks: [{ ...a!, difficulty: 'hard', difficultySource: 'floor' }, { ...r!, difficulty: 'routine', difficultySource: 'tag' }, { ...r!, id: 'T', role: 'tester', difficulty: 'moderate', difficultySource: 'request' }],
+  }
+  const { clock } = tabsEngine(on, {}, undefined, WORK, detail)
+  const { ui, settle } = await openTab($, clock, 'work')
+  await ui.press({ key: 'req-r-2' })
+  await settle()
+  must('raised by the router', await ui.find({ type: 'Text', text: /· difficulty hard, raised by the router above the lead's ·/ }))
+  must('the badge beside the level', await ui.find({ type: 'Text', text: /^L1→L2 hard feature/ }))
+  must('a coder tagged below the request', await ui.find({ type: 'Text', text: /^A coder Haiku · high \(s2\) · hard \(raised to the request's\) · passed/ }))
+  must('a tagged reviewer', await ui.find({ type: 'Text', text: /^R reviewer Opus · medium est\. · routine · accept/ }))
+  must('no tag: the request\'s', await ui.find({ type: 'Text', text: /^T tester Opus · medium est\. · moderate \(the request's\) · accept/ }))
   await ui.unmount()
 })
 

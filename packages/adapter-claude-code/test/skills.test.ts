@@ -148,6 +148,28 @@ test('skill covers the uncertain-size escalation and shares the brief\'s rubric/
   assert.match(body, /re-plans|re-plan/i);
 });
 
+test('decision 230: the lead coordinates, splits by difficulty and does not accept an unverified result', () => {
+  const body = read('skills/lead-orchestrator/SKILL.md');
+  // a thin lead: the first look judges size and difficulty only
+  assert.match(body, /only to judge the size and the difficulty/);
+  assert.match(body, /Do not trace the root cause, read source files in depth, or draft the fix yourself/);
+  assert.match(body, /first-look notes/);
+  // a bug report in code the lead has not traced is hard; the router's floor wins when higher
+  assert.match(body, /wrong behaviour or an error in code you have not fully traced/);
+  assert.match(body, /higher of your report and the floor is used/);
+  // each subtask carries its own difficulty on the prompt's third line, and its cell follows from the table
+  assert.match(body, /the third `\[difficulty: <routine\|moderate\|hard>\]`/);
+  assert.match(body, /\| coder, tester \| haiku · low \| sonnet · medium \| opus · high \|/);
+  assert.match(body, /never tagged below the request's difficulty/);
+  assert.match(body, /\[difficulty: hard\]\\n…"\)\nAgent\(.*\n.*\[difficulty: routine\]/, 'the parallel example sends a hard and a routine part together');
+  // an unverified result: one retry, same subtask, before anything is accepted
+  assert.match(body, /\*\*unverified\*\*/);
+  assert.match(body, /you do not accept it\*\* \(decision 230\)/);
+  assert.match(body, /`retry`/);
+  // from L1 up even a small change is delegated: no one-file hand-back to the lead
+  assert.doesNotMatch(body, /hands the request to you \(`leadDirect` true\)/);
+});
+
 test('router skill documents both commands', () => {
   const md = read('skills/router/SKILL.md');
   assert.match(md, /^name:\s*router/m);
