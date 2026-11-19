@@ -10,7 +10,7 @@
 | `config/budget.json` | 전체 상한 $150, 1회 실행 단계별 상한 |
 | `config/estimates.json` | 계획용 사전 추정치 (시범 실행 후 실측으로 교체) |
 | `tasks/custom/` | 직접 만든 과제 13개: `task.json`, 숨김 테스트(`hidden/`), 정답 풀이(`oracle/`) |
-| `tasks/custom/c-hs-*` | 작지만 어려운 과제 3개(`"set": "hard-small"`, 저장소 `fixtures/datakit`). 단계나 출처로 고르는 계획에는 들어가지 않고 `--tasks`로 이름을 줄 때만 실행됩니다. `decoys/`에는 그럴듯하지만 틀린 수정이 있고, `bench/test/hard-small.test.ts`가 정답은 통과하고 틀린 수정은 숨김 테스트에서 떨어지는지 확인합니다 |
+| `tasks/custom/c-hs-*` | 작지만 어려운 과제 3개(`"set": "hard-small"`, 저장소 `fixtures/datakit`). 단계나 출처로 고르는 계획에는 들어가지 않고 `--tasks`로 이름을 줄 때만 실행됩니다. `decoys/`에는 그럴듯하지만 틀린 수정이 있고, `bench/test/hard-small.test.ts`가 정답은 통과하고 틀린 수정은 숨김 테스트에서 떨어지는지 확인합니다. 첫 측정(Sonnet 5.5 리드 · high, 구성마다 1회)에서는 라우터를 켠 쪽과 끈 쪽이 세 과제를 모두 통과해(3/3 대 3/3) 두 구성을 가르지 못했습니다. 켠 쪽에서도 리드가 세 과제의 난도를 보통으로 판단해 작업자 없이 직접 풀었습니다 |
 | `fixtures/` | 직접 만든 과제가 쓰는 작은 TypeScript 저장소 (의존성 없음, `node --test`) |
 | `tasks/public/manifest.json` | SWE-bench Verified 20개 (L2 12 · L3 8)와 선정 규칙 |
 | `src/` | 하네스 (Node 24가 TypeScript를 바로 실행, 빌드 없음) |

@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { analysePhases, phaseReport, type LedgerTiming, type StreamLine } from '../src/kpi/phases.ts';
 import { runCaptured, TIMING_FLAGS } from '../src/kpi/capture.ts';
 import { ROUTER_TOOL_PREFIX, mcpSeen } from '../src/kpi/router-mcp.ts';
-import { projectFolderName, projectFolderOf, transcriptsLine } from '../src/kpi/subscription.ts';
+import { projectFolderName, projectFolderOf, subscriptionRunEnv, transcriptUnread, transcriptsLine } from '../src/kpi/subscription.ts';
 import { freePort, noPluginCalls, safeEnv, type SafeEnv } from './kpi-safe-env.ts';
 
 const BENCH = fileURLToPath(new URL('..', import.meta.url));
@@ -366,6 +366,8 @@ test('measure107 --subscription: the run gets no key, no credential variable and
   // nothing that names a credential or another provider reaches the run, in the run or in a reading
   for (const c of s.calls) for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'BENCH_CLAUDE_BIN']) assert.ok(!c.env.includes(k), `${k} reached ${c.usage ? 'a reading' : 'the run'}`);
   for (const k of ['CLAUDE_CODE_DISABLE_CLAUDE_MDS', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', 'ENABLE_CLAUDEAI_MCP_SERVERS', 'DISABLE_AUTOUPDATER', 'ANTHROPIC_MODEL']) assert.ok(run.env.includes(k), k);
+  // a direct run and a reading write nothing of the session to disk: the switch that turns persistence off is on in both
+  for (const c of s.calls) assert.ok(c.env.includes('CLAUDE_CODE_SKIP_PROMPT_HISTORY'), c.usage ? 'a reading' : 'the run');
   // the config folder is the caller's own (here the test's), never a folder of the run: Claude Code reads its own login
   for (const c of s.calls) assert.equal(path.normalize(String(c.configDir)), path.normalize(s.userConfigDir));
   // the user's settings are not loaded, no MCP server, and a direct run writes no transcript
@@ -439,6 +441,20 @@ test('measure107 --subscription, a router run: the plugin and its transcript as 
   assert.equal(run.args[run.args.indexOf('--plugin-dir') + 1], path.join(ROOT, 'plugin'));
   // the daemon reads the transcript, so this run keeps one; other MCP servers stay out by the switch, not by --strict-mcp-config
   assert.ok(!run.args.includes('--no-session-persistence') && !run.args.includes('--strict-mcp-config'), run.args.join(' '));
+  // CLAUDE_CODE_SKIP_PROMPT_HISTORY turns session persistence off as a whole: with it in the environment Claude
+  // Code writes no transcript, the router reads none and records no cost of the lead. The run goes without it;
+  // the reading, which nothing reads back, keeps it.
+  assert.ok(!run.env.includes('CLAUDE_CODE_SKIP_PROMPT_HISTORY'), 'the switch that turns persistence off reached a run that keeps its transcript');
+  assert.ok(s.readings[0]!.env.includes('CLAUDE_CODE_SKIP_PROMPT_HISTORY'));
+  const parentEnv = { PATH: '/bin', ANTHROPIC_API_KEY: 'not-a-real-key' };
+  assert.deepEqual(['CLAUDE_CODE_SKIP_PROMPT_HISTORY', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', 'ANTHROPIC_API_KEY'].map(k => k in subscriptionRunEnv('sonnet', '/home-of-the-run', parentEnv, true)), [false, true, false]);
+  assert.deepEqual(['CLAUDE_CODE_SKIP_PROMPT_HISTORY', 'ANTHROPIC_API_KEY'].map(k => k in subscriptionRunEnv('sonnet', '/home-of-the-run', parentEnv)), [true, false], 'a run that keeps none (--no-transcripts, direct)');
+  // the lead's share is the router's own row, read from the transcript: a run where it recorded none says so, not $0.000
+  assert.match(s.text, /-> (PASS|FAIL) .* lead not recorded \/ workers \$0\.000;/);
+  // a transcript Claude Code named to the router and did not write: the run is not the arrangement being measured
+  assert.equal(transcriptUnread(['/c/projects/-ws/0f1e.jsonl', '/c/projects/-ws/0f1e.jsonl'], () => true), null);
+  assert.equal(transcriptUnread([]), null);
+  assert.match(String(transcriptUnread(['/c/projects/-ws/0f1e.jsonl', '/c/projects/-ws/0f1e.jsonl'], () => false)), /^the router could not read the session's transcript \(not on disk: \/c\/projects\/-ws\/0f1e\.jsonl\): it had no request text for its workers and recorded no cost of the lead$/);
   assert.ok(run.env.includes('DO_IT_ALL_CLAUDE_CODE_HOME') && run.env.includes('ENABLE_CLAUDEAI_MCP_SERVERS') && !run.env.includes('ANTHROPIC_API_KEY'));
   assert.equal(path.normalize(String(run.configDir)), path.normalize(s.userConfigDir));
   assert.match(s.text, /router runs keep their transcript \(the daemon reads it\), in Claude Code's own projects folder/);

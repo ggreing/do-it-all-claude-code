@@ -58,7 +58,8 @@
 // The measurement's last line names that folder (the path Claude Code gave the router when a worker ran, else
 // the name by Claude Code's naming rule); removing it is left to the user.
 // --no-transcripts runs the router arrangements without one too (the router then works from estimates), and a
-// direct run never writes one.
+// direct run never writes one. A router run that was to keep its transcript and left none stops the measurement
+// and gets no record: the router could not read the request or the lead's cost in it.
 // Decision 174: each run's record carries `phases` (bench/src/kpi/phases.ts), from its stream-json, stamped on
 // arrival and kept in <out>/streams/, and the daemon ledger; `node scripts/kpi-phases.ts` reports them.
 import { execFileSync } from 'node:child_process';
@@ -78,7 +79,7 @@ import { ALLOWED_SINCE_222, claudeArgs } from '../bench/src/kpi/run-args.ts';
 import { analysePhases, type LedgerTiming, type StreamLine } from '../bench/src/kpi/phases.ts';
 import { mcpSeen, routerMcpReady } from '../bench/src/kpi/router-mcp.ts';
 import { leadTurns } from '../bench/src/kpi/session.ts';
-import { loginSeen, meterLine, meterMoved, meterStop, readMeter, subscriptionRunEnv, subscriptionRunSettings, transcriptsLine } from '../bench/src/kpi/subscription.ts';
+import { loginSeen, meterLine, meterMoved, meterStop, readMeter, subscriptionRunEnv, subscriptionRunSettings, transcriptUnread, transcriptsLine } from '../bench/src/kpi/subscription.ts';
 import type { Reading } from '../bench/src/subscription/meter.ts';
 import { loadSubConfig } from '../bench/src/subscription/plan.ts';
 import { redact } from '../bench/src/secrets.ts';
@@ -201,7 +202,7 @@ async function runClaude(repo: string, configDir: string, prompt: string, a: Arr
   // -p run tells the router through ANTHROPIC_MODEL, which the relay hook passes on with the prompt. It is the
   // value of --model, so the run itself is the same; every arrangement gets it, router off included.
   // decision 226: on the subscription login the run gets no config folder of ours and no credential variable
-  const env = SUB ? subscriptionRunEnv(LEAD, home)
+  const env = SUB ? subscriptionRunEnv(LEAD, home, process.env, keepsTranscript(a))
     : { ...childEnv(configDir, { kind: 'api-key-helper' } as never), ANTHROPIC_MODEL: LEAD, ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
   const bin = claudeBin();
   const c = await runCaptured(bin.cmd, [...bin.prefix, ...args], { cwd: repo, env, input: prompt, timeoutSec, streamFile });
@@ -215,6 +216,20 @@ function workerTranscripts(home: string): string[] {
   const db = new DatabaseSync(dbFile, { readOnly: true });
   try { return (db.prepare('SELECT transcript_path FROM agents WHERE transcript_path IS NOT NULL').all() as Array<{ transcript_path: unknown }>).map(r => String(r.transcript_path)); }
   catch { return []; }
+  finally { db.close(); }
+}
+
+/** The session transcripts Claude Code named to the router in a run (the hook input of a session start or a prompt). */
+function sessionTranscripts(home: string): string[] {
+  const dbFile = path.join(home, 'router.db');
+  if (!fs.existsSync(dbFile)) return [];
+  const db = new DatabaseSync(dbFile, { readOnly: true });
+  try {
+    const rows = db.prepare(`SELECT payload FROM events WHERE type IN ('session_start', 'prompt_submit') AND agent_id IS NULL`).all() as Array<{ payload: unknown }>;
+    const named = new Set<string>();
+    for (const r of rows) { try { const p = JSON.parse(String(r.payload)) as { transcript_path?: unknown }; if (typeof p.transcript_path === 'string' && p.transcript_path) named.add(p.transcript_path); } catch { /* not JSON */ } }
+    return [...named];
+  } catch { return []; }
   finally { db.close(); }
 }
 
@@ -389,6 +404,11 @@ for (const [task, a] of order) {
   const login = SUB ? loginSeen(r.lines) : null;
   const notOnLogin = login?.problems.length ? login.problems.join('; ') : login?.limit;
   if (notOnLogin) { console.error(`stopped after ${key} ($${costUsd.toFixed(3)} counted for it): ${notOnLogin}`); process.exit(3); }
+  // The router reads the session's transcript: the request it hands its workers, the lead's cost, the workers'
+  // cost. A router run that was to keep one and left none is not the arrangement being measured: no record (so it
+  // is run again), and the measurement stops here.
+  const unread = home && (!SUB || keepsTranscript(a)) ? transcriptUnread(sessionTranscripts(home)) : null;
+  if (unread) { console.error(`stopped after ${key} ($${costUsd.toFixed(3)} ${SUB ? 'counted for' : 'spent on'} it): ${unread}`); process.exit(3); }
   // decision 213: the session must hold the router's MCP server in a router run that asked for it, and no other
   // server in any run. A run that does not is not the arrangement being measured: its cost is in the ledger, it
   // gets no record (so it is run again), and the measurement stops here.
@@ -422,7 +442,8 @@ for (const [task, a] of order) {
   fs.appendFileSync(runsFile, JSON.stringify(rec) + '\n');
   const f = facts as { levelChosen?: string | null; outcome?: string | null; leadEdits?: number; noChanges?: number };
   const routed = a === 'direct' ? '' : ` ${f.levelChosen ?? '?'} ${f.outcome ?? '?'}${f.leadEdits ? ` lead-edits=${f.leadEdits}` : ''}${f.noChanges ? ` no-changes=${f.noChanges}` : ''}`
-    + ` lead $${Number(rec.costLeadUsd ?? 0).toFixed(3)} / workers $${Number(rec.costSubagentsUsd ?? 0).toFixed(3)}`;
+    // the router's own rows: the lead's from its transcript (none read, none recorded), the workers' from theirs or an estimate
+    + ` lead ${rec.costLeadUsd === undefined ? 'not recorded' : `$${Number(rec.costLeadUsd).toFixed(3)}`} / workers $${Number(rec.costSubagentsUsd ?? 0).toFixed(3)}`;
   console.log(`  -> ${graded.pass ? 'PASS' : 'FAIL'} ${graded.detail} $${costUsd.toFixed(3)} ${rec.wallSeconds}s${routed}; spent $${spent().toFixed(2)} / $${BUDGET}`);
   const ws1 = phases.workers;
   console.log(`     phases: startup ${phases.startupSeconds ?? '?'}s, lead before 1st worker ${phases.leadBeforeFirstWorkerSeconds ?? '-'}s, ${ws1.length} worker(s) active ${phases.workersActiveSeconds ?? '-'}s (start delays ${ws1.map(w => w.startDelaySeconds ?? '?').join('/') || '-'}s), lead wrap-up ${phases.leadFinishSeconds ?? '-'}s, verify ${phases.verify.totalSeconds}s, hooks ${phases.hooks.totalSeconds}s x${phases.hooks.count}`);

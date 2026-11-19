@@ -17,9 +17,29 @@ import { meterDeltas, parseReading, type MeterDelta, type Reading } from '../sub
 import { parseStream } from '../subscription/stream.ts';
 import type { StreamLine } from './phases.ts';
 
-/** The child's environment: the allow-list and switches of a subscription run, the lead's model for the router's hooks, the run's router home. */
-export function subscriptionRunEnv(lead: string, home: string | undefined, parent: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  return { ...subscriptionEnv('direct', parent), ANTHROPIC_MODEL: lead, ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
+/**
+ * The child's environment: the allow-list and switches of a subscription run, the lead's model for the router's
+ * hooks, the run's router home. A run whose transcript the router reads (`transcript`) goes without
+ * CLAUDE_CODE_SKIP_PROMPT_HISTORY: that switch turns session persistence off as a whole (Claude Code 2.1.327,
+ * the same as --no-session-persistence), so with it no transcript is written whatever the command line says.
+ * A print-mode run writes no prompt history without the switch either: the API-key runs never had it, and their
+ * config folders hold none.
+ */
+export function subscriptionRunEnv(lead: string, home: string | undefined, parent: NodeJS.ProcessEnv = process.env, transcript = false): Record<string, string> {
+  const env: Record<string, string> = { ...subscriptionEnv('direct', parent), ANTHROPIC_MODEL: lead, ...(home ? { DO_IT_ALL_CLAUDE_CODE_HOME: home } : {}) };
+  if (transcript) delete env.CLAUDE_CODE_SKIP_PROMPT_HISTORY;
+  return env;
+}
+
+/**
+ * Why a router run is not the arrangement being measured: Claude Code named the session's transcript to the
+ * router and the file is not on disk. The router then has no request text to give its workers (it refuses the
+ * first Agent call for that), records no cost of the lead, and counts its workers by an estimate. Null when
+ * every named transcript is there, or none was named.
+ */
+export function transcriptUnread(named: Iterable<string>, exists: (file: string) => boolean = fs.existsSync): string | null {
+  const missing = [...new Set(named)].filter(file => !exists(file));
+  return missing.length ? `the router could not read the session's transcript (not on disk: ${missing.join(', ')}): it had no request text for its workers and recorded no cost of the lead` : null;
 }
 
 /** --settings of a subscription run: the credential deny rules and no auto memory; no key helper. */

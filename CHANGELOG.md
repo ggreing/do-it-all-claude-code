@@ -57,7 +57,9 @@ All notable changes to this project are documented here. This project adheres to
   Code instead of an API key: no key helper, no credential variable and no config folder of the run reach the
   session, and the script reads no credential. A run that shows a key, or that reached a limit, leaves no record
   and stops the measurement; `/usage` is read before each run and none starts with a meter at 80% or more. Costs
-  are then Claude Code's API-priced estimates, and each record says `subscription: true`. Three tasks were added
+  are then Claude Code's API-priced estimates, and each record says `subscription: true`. A router run keeps its
+  transcript, which the router reads for the request and the costs, and one that left none stops the measurement
+  the same way. Three tasks were added
   for it, `c-hs-01` to `c-hs-03` on a new fixture: a small change each that takes reasoning to get right, with
   wrong fixes kept beside them that the hidden tests must fail. They are loaded only when named.
 - **Parallel writers share the checkout.** When a change has independent parts, the lead now sends one coder

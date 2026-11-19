@@ -8,7 +8,8 @@
 //  - --setting-sources project,local: the user's settings.json (hooks, enabled plugins, status line, env, permission
 //    rules, apiKeyHelper, model) is not loaded; the workspace is a fresh fixture with no .claude folder
 //  - CLAUDE_CODE_DISABLE_CLAUDE_MDS, CLAUDE_CODE_DISABLE_AUTO_MEMORY: no CLAUDE.md or auto memory is read or written
-//  - --no-session-persistence, CLAUDE_CODE_SKIP_PROMPT_HISTORY: no transcript or prompt history on disk
+//  - --no-session-persistence, CLAUDE_CODE_SKIP_PROMPT_HISTORY: no transcript or prompt history on disk (either
+//    one alone turns the transcript off: a run that is to keep its transcript must go without both)
 //  - ENABLE_CLAUDEAI_MCP_SERVERS=false, and --strict-mcp-config in the direct arm: no MCP servers (the router arm
 //    loads only the plugin's own; --strict-mcp-config would drop that too, so another server there is refused)
 //  - DISABLE_AUTOUPDATER: the Claude Code version cannot change in the middle of a measurement
