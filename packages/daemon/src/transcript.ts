@@ -46,6 +46,23 @@ export function subagentTranscriptPath(mainTranscript: string | undefined, agent
   return path.join(path.dirname(mainTranscript), path.basename(mainTranscript, '.jsonl'), 'subagents', `agent-${agentId}.jsonl`);
 }
 
+/**
+ * The inverse of subagentTranscriptPath: the MAIN session transcript a subagent transcript belongs to.
+ * `<dir>/<name>/subagents/agent-<id>.jsonl` -> `<dir>/<name>.jsonl`. Used by the session-end cleanup, which
+ * reconciles a request from a LATER session's start and so has no event carrying the ended session's main
+ * transcript. Returns undefined when the path is not in that shape.
+ */
+export function mainTranscriptFromSubagent(subagentPath: string | undefined): string | undefined {
+  if (!subagentPath || !path.isAbsolute(subagentPath) || path.extname(subagentPath) !== '.jsonl') return undefined;
+  if (!/^agent-[A-Za-z0-9_-]+\.jsonl$/.test(path.basename(subagentPath))) return undefined;
+  const subagentsDir = path.dirname(subagentPath);
+  if (path.basename(subagentsDir) !== 'subagents') return undefined;
+  const sessionDir = path.dirname(subagentsDir);           // <dir>/<name>
+  const name = path.basename(sessionDir);
+  if (!name || name === '.' || name === path.sep) return undefined;
+  return path.join(path.dirname(sessionDir), `${name}.jsonl`);
+}
+
 export interface ModelUsage {
   modelId: string;
   calls: number;

@@ -34,7 +34,7 @@ import { classifyProbe, isCheckable, probeCommand, probeTestCommand, PROBE_TIMEO
 import { SessionQueue } from './queue.ts';
 import { TicketStore, addGlobs, removeGlobs, sortScopeGlobs, toolUseIdOf } from './tools.ts';
 import {
-  readEditedPaths, readLastModelAt, readLeadUsage, readSubtaskTag, readTranscriptUsage, readUserPrompts, subagentTranscriptPath, waitForQuiet,
+  mainTranscriptFromSubagent, readEditedPaths, readLastModelAt, readLeadUsage, readSubtaskTag, readTranscriptUsage, readUserPrompts, subagentTranscriptPath, waitForQuiet,
   type LeadUsage, type TranscriptUsage,
 } from './transcript.ts';
 import {
@@ -1010,8 +1010,12 @@ export class Router {
     const known = this.ledger.getAgent(agentId);
     // Decision 99: the toolchain variables the relay forwarded from this subagent's hook environment.
     const env = cleanVerifyEnv(ev.raw.verifyEnv ?? (ev as { verifyEnv?: unknown }).verifyEnv);
+    // Session-end cleanup: store the worker's own transcript path now (Claude Code sends it on SubagentStart),
+    // so a session that ends before this worker's SubagentStop can still have its cost read in the orphan sweep.
+    const atp = str(ev.raw.agent_transcript_path);
     if (known) {
       if (env) this.#rememberEnv(agentId, env);
+      if (atp) this.ledger.updateAgent(agentId, { transcriptPath: atp });
       // With async Agent runs, PostToolUse(Agent) ("async_launched") can arrive before SubagentStart and has
       // already confirmed the pairing (integration run 3, E2). The start state belongs to this event: keep
       // the cwd and take the work-tree snapshot now, so the stop check has its baseline.
@@ -1042,7 +1046,7 @@ export class Router {
     // Audit #11: an agent pairs with a pending subtask of the session's current request only.
     // Audit E16: by the tag in its own transcript when that is already readable, else by start order.
     const current = this.ledger.latestRequest(ev.sessionId)?.id;
-    const tag = readSubtaskTag(str(ev.raw.agent_transcript_path));
+    const tag = readSubtaskTag(atp);
     const tagged = tag && current ? this.ledger.getSubtask(current, tag) : undefined;
     const byTag = tagged && tagged.status === 'pending' && !tagged.agentId && tagged.agentType === ev.agentType ? tagged : undefined;
     const sub = byTag ?? (current ? this.ledger.nextPendingSubtask(ev.sessionId, ev.agentType!, current) : undefined);
@@ -1058,6 +1062,7 @@ export class Router {
     ctx.requestId = sub.requestId;
     this.ledger.insertAgent({ ...base, requestId: sub.requestId, subtaskId: sub.id, role: sub.role, slot: sub.slot, step: sub.step, snapshot: snapshot ?? null, pairing: byTag ? 'confirmed' : 'order' });
     if (env) this.#rememberEnv(agentId, env);
+    if (atp) this.ledger.updateAgent(agentId, { transcriptPath: atp });   // session-end cleanup: the worker's transcript, for the orphan sweep
     this.ledger.updateSubtask(sub.requestId, sub.id, { agentId, status: 'running' }, this.#at());
     this.#writeAgentFile(agentId, ev.sessionId, sub);
     return this.#workerStart(sub, ev);
@@ -1901,6 +1906,7 @@ export class Router {
 
   #sessionStart(ev: RouterEvent, ctx: Ctx): RouterDecision {
     if (!ev.spooled) this.#warmCheckability(ev.cwd);   // decision 232 (item 4): a head start so the first request's brief can list the cells
+    if (!ev.spooled) this.#reapOrphans(ev.sessionId);   // session-end cleanup: close workers orphaned by a session that ended without a SubagentStop
     const decision = this.#sessionStartContext(ev, ctx);
     // Decision 163: a newer release, at most once a day per version, for a live start only (not a replayed one).
     // It goes to the user as userMessage (systemMessage); it never joins the context the model reads.
@@ -2089,6 +2095,46 @@ export class Router {
     const before = new Date(this.#now().getTime() - STALE_PENDING_MS).toISOString();
     const gone = this.ledger.cancelStalePending(sessionId, before, this.#at());
     if (gone.length) this.#log.warn('subtasks allowed but never started were cancelled', { sessionId, subtasks: gone });
+  }
+
+  /**
+   * Session-end cleanup. A Claude Code session can end — quit, /clear, logout, a killed or crashed `-p` run — while
+   * a worker it dispatched is still running. Claude Code then sends no SubagentStop, so the subtask stays 'running',
+   * its request stays open, and the worker's cost is never counted. There is no reliable SessionEnd signal for every
+   * such path (headless and crash cases especially: see the plugin's hooks), and the daemon must not touch a running
+   * subtask at its own shutdown (a restart replays the real stop — shutdown.test.ts). So each live SessionStart
+   * reconciles OTHER sessions (`exceptSessionId` is the one starting now, which for a resume/compact is legitimately
+   * continuing): a subtask left running far longer than any worker + verify could take (ORPHAN_RUNNING_MS) belongs to
+   * a session that has gone. It is closed as cut off (status 'cancelled', verdict 'unverified'); once its request has
+   * nothing else pending or running, the request is closed, which reads the worker's cost from its transcript as for
+   * any close (#recordClose -> #rereadAgents; replaceAgentCosts is idempotent, so there is no double count).
+   */
+  #reapOrphans(exceptSessionId: string | undefined): void {
+    const before = new Date(this.#now().getTime() - ORPHAN_RUNNING_MS).toISOString();
+    let orphans: ReturnType<Ledger['orphanRunningSubtasks']> = [];
+    try { orphans = this.ledger.orphanRunningSubtasks(before, exceptSessionId); }
+    catch (e) { this.#log.error('orphan sweep failed', { error: errorText(e) }); return; }
+    if (!orphans.length) return;
+    const at = this.#at();
+    const byRequest = new Map<string, typeof orphans>();
+    for (const o of orphans) { const g = byRequest.get(o.requestId) ?? []; g.push(o); byRequest.set(o.requestId, g); }
+    for (const [requestId, group] of byRequest) {
+      // Cancel the orphan subtask (cut off, unverified). The agent's stoppedAt is left null on purpose: the worker
+      // truly never stopped, so #rereadAgents counts its transcript as a partial cost; the subtask is now 'cancelled'
+      // and so is excluded from any later sweep regardless.
+      for (const o of group) this.ledger.updateSubtask(requestId, o.subtaskId, { status: 'cancelled', verdict: 'unverified' }, at);
+      const req = this.ledger.getRequest(requestId);
+      if (!req || req.status === 'closed') continue;
+      // Leave the request open while a not-yet-stale worker of it is still running (it crosses the threshold later).
+      if (this.ledger.listSubtasks(requestId).some(x => x.status === 'pending' || x.status === 'running')) continue;
+      this.ledger.setRequestStatus(requestId, 'closed', at);
+      this.ledger.setOutcome(requestId, req.leadEdits ? 'lead_takeover' : 'delegated');
+      const main = mainTranscriptFromSubagent(group.map(o => o.transcriptPath).find((p): p is string => !!p));
+      const cwd = group.map(o => o.cwd).find((c): c is string => !!c);
+      const ev = { type: 'stop', sessionId: req.sessionId, raw: main ? { transcript_path: main } : {}, receivedAt: at, ...(cwd ? { cwd } : {}) } as unknown as RouterEvent;
+      this.#recordClose(requestId, ev);   // reads the worker cost (and lead usage, best effort) from the transcript, writes the request record
+      this.#log.warn('orphaned subtasks from an ended session closed as cut off (unverified)', { requestId, sessionId: req.sessionId, subtasks: group.map(o => o.subtaskId) });
+    }
   }
 
   /** Audit #11: a notification that the subagent was killed or failed ends its subtask (verify never ran). */
@@ -3044,6 +3090,12 @@ const TURN_END_WAIT_MS = 4000;
 const MAX_COMPACT_SUBTASKS = 20;
 /** Audit #11: an allowed subtask whose subagent has not started after this long never will. */
 const STALE_PENDING_MS = 30_000;
+/**
+ * Session-end cleanup: a subtask still 'running' this long after its worker started belongs to a session that has
+ * ended (no worker + its verify runs anywhere near an hour), so the next session's start closes it as cut off. Well
+ * above any real worker so a live session's worker is never reaped early; immediacy is not the point, correctness is.
+ */
+const ORPHAN_RUNNING_MS = 60 * 60_000;
 const LEVEL_ORDER: readonly Level[] = ['L0', 'L1', 'L2', 'L3'];
 /** Decision 127: this many rejects in a row on a slot raise it, as two verify failures do. */
 const REJECTS_FOR_RAISE = 2;

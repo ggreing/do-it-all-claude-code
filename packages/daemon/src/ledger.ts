@@ -1246,6 +1246,22 @@ export class Ledger {
     return stale.map(x => s(x.id));
   }
 
+  /**
+   * Session-end cleanup: subtasks still dispatched to a worker (status 'running', or 'pending' once an agent is
+   * bound) under a request that is still open/awaiting, last touched before `before`, in sessions other than
+   * `exceptSessionId`. Such a worker got no SubagentStop and no newer event — its session has ended — so the sweep
+   * closes it as cut off. The agent's transcript path and cwd come along to read its cost and the main transcript.
+   */
+  orphanRunningSubtasks(before: string, exceptSessionId?: string): Array<{ requestId: string; subtaskId: string; agentId: string | null; transcriptPath: string | null; cwd: string | null; sessionId: string }> {
+    const sql = `SELECT s.request_id AS r, s.id AS id, s.agent_id AS aid, a.transcript_path AS tp, a.cwd AS cwd, q.session_id AS sid
+      FROM subtasks s JOIN requests q ON q.id = s.request_id LEFT JOIN agents a ON a.agent_id = s.agent_id
+      WHERE q.status IN ('open', 'awaiting_user') AND s.status IN ('pending', 'running') AND s.agent_id IS NOT NULL
+        AND s.updated_at < ?${exceptSessionId ? ' AND q.session_id != ?' : ''}
+      ORDER BY s.request_id, s.dispatch_seq`;
+    const rows = this.db.prepare(sql).all(...(exceptSessionId ? [before, exceptSessionId] : [before])) as Row[];
+    return rows.map(x => ({ requestId: s(x.r), subtaskId: s(x.id), agentId: sn(x.aid), transcriptPath: sn(x.tp), cwd: sn(x.cwd), sessionId: s(x.sid) }));
+  }
+
   updateSubtask(requestId: string, id: string, p: SubtaskPatch, at: string): void {
     const sets: string[] = [];
     const vals: SQLInputValue[] = [];

@@ -7,6 +7,15 @@ All notable changes to this project are documented here. This project adheres to
 
 ### Fixed
 
+- **A worker left running when a session ends.** When a Claude Code session ended — quit, `/clear`, logout, or a
+  killed or crashed `claude -p` run — while a worker it had dispatched was still running, Claude Code sent no
+  SubagentStop, so the subtask stayed `running`, its request stayed open, and the worker's cost was never counted.
+  The next session to start now reconciles the sessions that are gone: a subtask still running far longer than any
+  worker and its checks could take is closed as cut off (verdict unverified), its request is closed, and the
+  worker's cost is read from its transcript. Running `claude -p` headless? Raise
+  `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` so the run waits for background workers to finish and report before it
+  exits, rather than leaving them to be reconciled by a later session. See
+  [docs/design/session-end-cleanup.md](docs/design/session-end-cleanup.md).
 - **The lead's model on a session's first request.** Claude Code names the model to hooks only when an
   interactive session starts, and the router planned a first request without one as if the lead were unknown:
   an Opus lead then kept a small fix it should have delegated. Now a non-interactive run (`claude -p`) is read
