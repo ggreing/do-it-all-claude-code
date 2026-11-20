@@ -9,7 +9,7 @@ into your router home and starts the daemon. The plugin is already installed fro
 not touch it (`--no-plugin`), and it runs unattended (`--yes`):
 
 ```bash
-npx -y do-it-all-claude-code@0.5.1 setup --yes --no-plugin
+npx -y do-it-all-claude-code@0.6.0 setup --yes --no-plugin
 ```
 
 Run that command now with the Bash tool, then tell the user, in a few lines:

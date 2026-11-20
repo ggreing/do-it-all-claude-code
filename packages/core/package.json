@@ -1,6 +1,6 @@
 {
   "name": "@do-it-all-claude-code/core",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "description": "Client-neutral core: types, ladder, presets, triage rules, adjustment rules",
   "license": "BUSL-1.1",

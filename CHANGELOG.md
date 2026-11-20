@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-11-21
+
 ### Fixed
 
 - **A worker left running when a session ends.** When a Claude Code session ended — quit, `/clear`, logout, or a
@@ -128,55 +130,23 @@ All notable changes to this project are documented here. This project adheres to
   to routine and moderate only — a small *hard* change goes to a stronger worker (an Opus lead keeps it). The
   profiles shift the whole table one notch; a `teams.yaml` start or a role override still wins. Provisional, and
   the estimated cells especially: see [docs/design/difficulty-steps.md](docs/design/difficulty-steps.md).
-- **The lead coordinates, and each subtask carries its own difficulty.** The brief and the lead-orchestrator skill
-  keep the lead's first look to sizing and grading the request: it reads the request, makes at most a couple of
-  quick searches, and does not trace the cause, read source in depth or draft the fix. Its prompt adds its
-  first-look notes to the request the router already hands each worker. A bug report in code the lead has not
-  traced counts as hard, and a floor the router sets wins when it is higher. The lead splits the request by
-  difficulty as well as by file, and tags each Agent call with `[difficulty: routine|moderate|hard]` on the
-  prompt's third line, so a hard fix runs on a strong model while the changelog and the checks run on a small
-  one at the same time. A coder that changes source code is not tagged below the request's difficulty. An
-  unverified result whose line names a retry is not accepted: the lead sends the subtask once more at that cell. The team office shows a difficulty the router raised, and each
-  worker's own.
-- **The router picks each worker's model, and the lead says where to look, not how to fix.** The brief no longer
-  lists model and effort per role: the router sets them from the subtask's difficulty and from whether it can
-  check the result in this repository, and the lead uses the values in its answer. The lead tags the hard parts;
-  an untagged coder that changes source runs at the request's difficulty, other untagged work (tests, the
-  changelog, the checks) as routine. The lead's notes name where to look and the behaviour to check, never the
-  fix, and the lead no longer runs or writes checks of its own. A coder given a bug reproduces it, traces the
-  cause and fixes it there, and names a cause outside its scope in a scope request instead of working around it.
-  A retry is the same subtask, with the earlier attempt as a candidate. The team office shows whether the
-  router can check the result ("checkable", "not checkable (no test command)").
-- **Bench.** `scripts/measure107.ts` takes `--profile save|balanced|quality` for the router runs, and passes the
-  lead's model to the router as a session's environment would. Every run may now use `echo`, `pwd` and `wc`
-  without a prompt, as a user at the terminal allows; earlier runs refused them. New:
-  `scripts/measure-session.ts` puts the six requests of a scenario (`bench/tasks/sessions/taskboard-01`) to one
-  session, router on and off, and records each step's result and cost and how the lead's context grows. A
-  resumed process reports the session's running total, so a step's cost is the difference from the step before.
-- **Bench on a subscription.** `scripts/measure107.ts --subscription` runs on the login of the machine's Claude
-  Code instead of an API key: no key helper, no credential variable and no config folder of the run reach the
-  session, and the script reads no credential. A run that shows a key, or that reached a limit, leaves no record
-  and stops the measurement; `/usage` is read before each run and none starts with a meter at 80% or more. Costs
-  are then Claude Code's API-priced estimates, and each record says `subscription: true`. A router run keeps its
-  transcript, which the router reads for the request and the costs, and one that left none stops the measurement
-  the same way. Three tasks were added
-  for it, `c-hs-01` to `c-hs-03` on a new fixture: a small change each that takes reasoning to get right, with
-  wrong fixes kept beside them that the hidden tests must fail. They are loaded only when named.
-- **Bench: a waiting lead no longer loses its worker after ten minutes.** In print mode (`claude -p`) Claude Code
-  stops background tasks that are still running ten minutes after the last turn, ends the session as a success,
-  and runs no SubagentStop hook for them. A measured run whose lead ended its turn to wait for a worker lost that
-  worker in the middle of its work. `scripts/measure107.ts` and `scripts/measure-session.ts` now start every run
-  with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`; the task's timeout and the cost cap end a run that hangs. A record
-  lists the workers Claude Code stopped (`killedWorkers`) and keeps the end of the process's stderr
-  (`stderrTail`). If you run the router under `claude -p` yourself, set that variable for work that takes longer.
-- **Bench: a `subagent` arrangement.** `scripts/measure107.ts --arrangements subagent` runs plain Claude Code, no
-  plugin and no router, with a fixed instruction before the task: hand the whole task, word for word, to one
-  general-purpose subagent (`--subagent-model`, default opus, at `--subagent-effort`, default high) and do nothing
-  else; `--lead` is the main session. It shows what a model does as a subagent of Claude Code with no router around
-  it, next to the same model alone (`direct`) and under the router (`auto`). A record carries `subagent`: what the
-  Agent call asked for, the models the subagent's messages ran on, what the main session did itself, and where the
-  run was not that hand-off. The stream does not show the effort a subagent ran at, so the record has the value
-  the call carried. Works with a key and with `--subscription`.
+- **Bench.** `scripts/measure107.ts` takes `--profile save|balanced|quality` and passes the lead's model to the
+  router as a session's environment would; every run may use `echo`, `pwd` and `wc` without a prompt. With
+  `--subscription` a run uses the machine's Claude Code login instead of an API key — no key helper, credential
+  variable or per-run config folder reaches the session, and the script reads no credential; `/usage` is read
+  before each run and none starts with a meter at 80% or more, costs are then Claude Code's API-priced estimates
+  and each record says `subscription: true`, and a run that shows a key or reached a limit leaves no record and
+  stops the measurement. `--arrangements subagent` runs plain Claude Code, no plugin and no router, handing the
+  whole task word for word to one general-purpose subagent (`--subagent-model`, default opus, at
+  `--subagent-effort`, default high), shown next to the same model alone (`direct`) and under the router (`auto`).
+  New `scripts/measure-session.ts` puts a scenario's six requests to one session, router on and off, and records
+  each step's result, cost and how the lead's context grows. Every run starts with
+  `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`, so a lead that ends its turn to wait for a worker does not lose it: in
+  print mode (`claude -p`) Claude Code otherwise stops background tasks still running ten minutes after the last
+  turn and runs no SubagentStop for them. A record lists any workers Claude Code stopped (`killedWorkers`) and
+  keeps the end of stderr (`stderrTail`). Three subscription tasks (`c-hs-01`–`c-hs-03`) were added on a new
+  fixture, loaded only when named. If you run the router under `claude -p` yourself, set
+  `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` for work that takes longer.
 - **Parallel writers share the checkout.** When a change has independent parts, the lead now sends one coder
   for each part in one message, in the working tree, and the router runs the build and tests once, when the last
   of them stops. A subtask the architect's plan marks `after: none` is such a part. Before, the brief asked for a
@@ -185,11 +155,11 @@ All notable changes to this project are documented here. This project adheres to
   writer is now only for a project with worktree isolation on, and only when no part needs an uncommitted file.
   This narrows decision 83: turning isolation on no longer means that every parallel writer gets a worktree.
   Details: [docs/design/team-speed.md](docs/design/team-speed.md).
-- **A reviewer may have an empty `[scope: ]` line.** It writes nothing, so the router takes the empty line as
-  that instead of refusing the call; a writer's empty line is still refused. In the re-measure a reviewer was
-  refused for it in three of five delegated runs, and the lead wrote the whole brief again.
-- **A reviewer's pass line no longer asks the lead to run tests.** It changed no file, so there is nothing to
-  test; the lead had spent a turn running the coder's tests, which the router had already run.
+- **A reviewer is read-only.** It writes nothing, so the router takes an empty `[scope: ]` line as "no writes"
+  instead of refusing the call (a writer's empty line is still refused); in the re-measure a reviewer was refused
+  for it in three of five delegated runs and the lead rewrote the whole brief. Its pass line no longer asks the
+  lead to run tests either — it changed no file, so there is nothing to test, where before the lead spent a turn
+  re-running the coder's tests the router had already run.
 - **Each worker gets the user's request from the router.** When a worker starts, the router reads the request
   from the lead's session transcript (the prompt that opened it and the user's answers to the lead's questions)
   and gives it to the worker, masked, so the lead writes only the subtask instead of copying the request into
@@ -202,14 +172,6 @@ All notable changes to this project are documented here. This project adheres to
   in the re-measure two workers' test runs were refused for a version check in front of them. The coder and
   tester roles also ask for one command per call from the folder they start in, without a `cd` in front, which
   avoids most of Claude Code's own approval questions.
-- **A Sonnet lead keeps a change of up to two files.** After its first look, when the lead estimates the whole
-  change at two files or fewer and about 60 changed lines or fewer, the router keeps it with the lead rather than
-  a team; before, the bound was one file and about 15 lines (decision 178). An Opus lead keeps the one-file bound
-  (its workers are cheap against its own calls), and a `delegateFrom` the user set for the lead's class still
-  delegates these requests. The uncertain-team brief now tells the lead to take one quick look at the file it
-  suspects before deciding, rather than not to explore. The bound was fitted on one run of the 20 public
-  SWE-bench tasks — the four requests the lead delegated or took back there were all two files, and two cost far
-  more than the lead alone — so treat the exact numbers as provisional.
 - **The team office names each slot by its model and effort.** A worker's step now reads `Sonnet · medium (s3)`
   where it was `s3`, with the old name in parentheses for the seven cells that have one, and `est.` on a cell whose
   cost has not been measured yet (`Sonnet · xhigh est.`); a step change reads `Haiku low→high`. The difficulty the
@@ -218,11 +180,6 @@ All notable changes to this project are documented here. This project adheres to
   routine to hard. Narrow docks and small desks drop the parenthesis first and keep within their width; requests
   from before show no difficulty. A Work row in a dock 47 columns wide or narrower no longer runs past the frame:
   the kind of work, then the state's padding give way first, and the state is cut last.
-- **The lead asks for the L3 team in its report.** With start cells set by difficulty, a first Agent call no
-  longer shows whether the lead chose the L2 or the L3 team, so the brief no longer asks for an architect (or any
-  role) as the first call. The lead reports level L3 in the `router_report_triage` call it makes before its first
-  Agent call, and the answer gives the L3 team's call values; a first call the router can still read as L3 counts
-  as before.
 
 ## [0.5.1] — 2026-11-18
 
@@ -561,7 +518,8 @@ First public pre-release.
   (or the dashboard shows a short page telling you to). `agentic-router doctor` reports the build
   state.
 
-[Unreleased]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ggreing/do-it-all-claude-code/compare/v0.3.0...v0.4.0

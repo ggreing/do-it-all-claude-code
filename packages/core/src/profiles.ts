@@ -43,7 +43,7 @@ export interface ProfileLayer {
 const member = (role: TeamPreset['roles'][number]['role'], count: number, start: Step) => ({ role, count, start });
 
 export const PROFILE_LAYERS: Record<Profile, ProfileLayer> = {
-  // Smaller teams on lower steps: the lead reviews an L2 change itself, and an L3 team starts on Sonnet.
+  // Smaller teams, a notch cheaper: the lead reviews an L2 change itself, and the difficulty start-cell table shifts one step down.
   save: {
     budgetFactor: 0.6,
     presets: {
@@ -67,17 +67,17 @@ export const PROFILE_LAYERS: Record<Profile, ProfileLayer> = {
 export const PROFILE_INFO: Record<Profile, { title: string; summary: string; measured: string | null }> = {
   save: {
     title: 'Save',
-    summary: 'Smaller teams on cheaper steps: no architect or reviewer at L2 (the lead reviews), L3 workers start on Sonnet, and budgets at 0.6 of the default.',
+    summary: 'Smaller teams, a notch cheaper: no architect or reviewer at L2 (the lead reviews the change itself), the difficulty start-cell table shifts one step down, and per-request budgets at 0.6 of the default.',
     measured: null,
   },
   balanced: {
     title: 'Balanced',
-    summary: 'The defaults: delegation from L1 for Opus and Sonnet leads (a Sonnet lead keeps a request whose wording shows a small fix), Haiku coders first, a reviewer and a tester at L2 and L3.',
+    summary: 'The defaults: every lead delegates from L1 (only an L0 change stays with the lead), each worker\'s start cell comes from the subtask\'s difficulty and whether the router can check the result in this repository, and a reviewer and a tester join at L2 and L3.',
     measured: 'Measured on the bench (see docs/measurements); the other profiles are not measured yet.',
   },
   quality: {
     title: 'Quality',
-    summary: 'The lead does L1 work itself, workers start one step higher, a slot is not lowered after easy results, and budgets at 1.5 of the default. Costs more.',
+    summary: 'The lead keeps L1 work itself, the difficulty start-cell table shifts one step up, a slot is not lowered after easy results, and budgets at 1.5 of the default. Costs more.',
     measured: null,
   },
 };

@@ -1,6 +1,6 @@
 {
   "name": "do-it-all-claude-code",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Difficulty-based team router for Claude Code: triage each request, build a right-sized subagent team, and move each session up or down a model × effort ladder. Hooks relay to a local daemon and pass through when it is down.",
   "license": "BUSL-1.1",
   "keywords": ["router", "subagents", "cost", "triage", "orchestration"],

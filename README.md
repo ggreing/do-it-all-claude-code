@@ -4,19 +4,21 @@
 ![Claude Code 2.1.325+](https://img.shields.io/badge/Claude%20Code-2.1.325%2B-d97757)
 ![Node 24+](https://img.shields.io/badge/Node-24%2B-339933)
 [![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
-[![cost per passed task: -12%](https://img.shields.io/badge/cost%20per%20passed%20task-%E2%88%9212%25-2ea44f)](docs/measurements/decision213-fair-remeasure.md)
+[![feature work cost: -67%](https://img.shields.io/badge/feature%20work%20cost-%E2%88%9267%25-2ea44f)](docs/measurements/decision230-234-subscription.md)
 
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
 If you run Claude Code on Opus or Sonnet, the main session does almost everything itself, including
 edits that a much cheaper model would get right. This project is a Claude Code plugin plus a small local
 daemon that changes that. For each request it decides whether the main session should just do it, or
-hand the work to a few subagents running on cheaper models while the main session plans and checks.
+coordinate a few subagents, each on the model its part needs: a small one for routine work, Opus for the
+hard part. The router checks every result.
 
-> **At a glance** (30 tasks, 20 of them from SWE-bench Verified; Sonnet 5.5 main session; one run each; [details](docs/measurements/decision213-fair-remeasure.md))
-> - A passed task cost 12% less than with plain Claude Code. 24 of 30 passed against 22, a gap within run-to-run variance.
-> - Where the main session did the work itself, it cost about the same as plain Claude Code.
-> - It is slower: on the bench's own tasks the team took 65% longer, since each hand-off starts a worker and runs the checks.
+> **At a glance** (one day, one machine, on a subscription; Sonnet 5.5 main session against plain Claude Code on Opus 5.5; costs are Claude Code's own estimates at API prices; [details](docs/measurements/decision230-234-subscription.md#2-the-final-comparison))
+> - **Feature work** (the bench's own 10 tasks, one run): 10 of 10 passed, as with Opus alone, at 67% less cost ($1.73 against $5.27) and in 25% less time.
+> - **Hard bugs** (5 SWE-bench Verified tasks, two runs each): 5 of 10 passed against 6 of 10, within run-to-run noise, at the same cost ($3.22 against $3.17). It took 57% less time, but most of that gap is one slow Opus-alone run on one task. A Sonnet session that hands the whole task to one Opus subagent cost $0.90 less. These projects' tests don't start on the measuring machine, so the router could check the result in only 2 of the 10 runs.
+> - Small samples: one run of the feature tasks, and on the bugs the same setup moved by up to three passes from one run to the next. There was no Sonnet-alone run.
+> - We recommend a Sonnet main session: it coordinates, and the router puts Opus where the work is hard.
 
 Measurements, and how we made them, are in [docs/measurements](docs/measurements/).
 
@@ -28,22 +30,37 @@ The CLI and package are called `do-it-all-claude-code`.
 
 The plugin forwards Claude Code's hook events to a daemon on `127.0.0.1`. When you send a prompt, the
 daemon sizes it up with plain rules (no model call) and tells the main session, which we call the lead,
-what to do: handle it directly, or delegate to a team.
+what to do.
 
-Small things (a typo, a one-line fix) stay with the lead. Anything bigger is delegated if the lead is an
-Opus-class or Sonnet model, or if the router can't tell which model it is. A Haiku lead keeps L1 work for
-itself, since its workers would run the same model anyway. When the rules can't tell how big a request
-is, it goes to a small team and the lead decides which roles it actually needs (a Haiku lead gets a short
-rubric and decides for itself).
+**The lead coordinates.** Only the smallest changes (a typo, a one-line default) stay with the lead.
+Anything bigger goes to subagents: the lead's first look only judges the request's size and difficulty,
+with the router, and it does not trace the cause or draft the fix itself, since each of its turns re-reads
+its whole context at the lead model's price. When the rules can't tell how big a request is, it goes to a
+small team and the lead decides which roles it needs. Workers may sit above the lead: a Sonnet lead can
+hand a hard part to an Opus coder.
 
-Workers start on the cheapest rung that usually works (Haiku at low effort for coders) and move up when
-they fail: two misses in a row, two rejections from a reviewer or tester, or the lead asking for it. A
-worker that keeps getting "easy" verdicts from a reviewer moves back down. After three raises the user is
-asked.
+**Each subtask has its own difficulty.** The lead splits the request by difficulty as well as by file and
+tags each part routine, moderate or hard. The router raises the floor when the request reads like a hard
+bug (a traceback, a regression, a race). A hard fix then runs on a strong model while the changelog entry
+runs on Haiku, at the same time.
 
-When a worker finishes, the daemon runs the project's build, typecheck, lint and tests in that working
-tree and checks that the worker stayed inside the files it was given. Everything goes into one local
-SQLite file: what was planned, what happened, what it cost.
+**Where a worker starts follows whether the router can check its result.** Once per repository and
+commit, the router checks in the background whether the project's tests start here. When they do, a coder
+starts on Haiku at low effort (Sonnet at medium for a hard part) and moves up only when it misses. When
+they don't, a miss would go unseen, so a coder that changes source code starts once on Opus at high
+effort. The team office shows which case applies ("checkable" or "not checkable").
+
+**Workers move on a grid** of models (Haiku, Sonnet, Opus, and Fable if you turn on `fableOptIn`) and
+efforts (low to max). A worker moves up in big, measured steps when it fails: two misses in a row, two
+rejections from a reviewer or tester, or the lead asking for it. One that keeps getting "easy" verdicts
+from a reviewer moves back down in small steps, effort first, then the model. After three raises the user
+is asked. Cells whose cost hasn't been measured yet are marked "est." in the team office.
+
+**Workers diagnose, the router verifies.** A coder given a bug reproduces it, traces the cause and fixes
+it there, and runs only the tests related to its change. When it finishes, the daemon runs the project's
+build, typecheck, lint and tests in that working tree and checks that the worker stayed inside the files
+it was given; the lead trusts that result instead of running the checks again. Everything goes into one
+local SQLite file: what was planned, what happened, what it cost.
 
 If the daemon isn't running, Claude Code behaves as if the plugin weren't there. The one exception is
 router workers: they can only write while the daemon is up, so they never edit outside their scope.
@@ -68,7 +85,8 @@ npx do-it-all-claude-code setup
 ```
 
 (or `npm i -g do-it-all-claude-code`, then `do-it-all-claude-code setup`). Then run `claude`; `/office demo`
-previews the team office.
+previews the team office. We recommend a Sonnet main session: the lead only coordinates, and the router
+puts Opus where the work is hard.
 
 **Inside Claude Code.** If you would rather start from a session:
 
@@ -139,7 +157,8 @@ what they added. `do-it-all-claude-code doctor` checks both directions.
 
 Router workers run Claude Code's normal tools behind a guard. The guard refuses writes outside a worker's
 scope, anything touching credential files or the router's own folder, and commands outside a small
-allowlist. It doesn't approve Bash on your behalf: a worker's `npm test` goes through your normal Claude
+allowlist. It also refuses a command started in the background or with a timeout over 180 seconds, and a
+`pip install` outside the project. It doesn't approve Bash on your behalf: a worker's `npm test` goes through your normal Claude
 Code permission rules. To let workers build and test without being asked each time:
 
 ```
@@ -220,9 +239,9 @@ another:
 
 | | save | balanced | quality |
 |---|---|---|---|
-| Delegation starts at | as balanced | L1 for an Opus or Sonnet lead, L2 for a Haiku lead | L2: the lead does L1 work itself |
-| L2 team | two coders and a tester; the lead reviews | architect, two coders, reviewer, tester | the same team, each one rung higher |
-| L3 team | coders start on Sonnet | coders start on Opus | coders on Opus; the architect and reviewer at its highest effort |
+| Delegation starts at | as balanced | L1, whatever the lead's model | L2: the lead does L1 work itself |
+| L2 team | two coders and a tester; the lead reviews | architect, two coders, reviewer, tester | as balanced |
+| Where workers start | one notch lower | by difficulty and by whether the router can check the result | one notch higher |
 | After "easy" verdicts | a worker moves back down | a worker moves back down | it stays where it is |
 | Budget of one request | 0.6 of the default | the default | 1.5 of the default |
 
@@ -265,6 +284,13 @@ have the comparison at all.
 The checks after a worker finishes are the project's own tests, so a fix that's wrong in a way the tests
 don't cover will still pass. When that happens the lead can send the work back up a rung, but it has to
 notice first.
+
+When the project's tests don't start in your environment, the router can't check a worker's result at all.
+A coder then starts once on Opus, and the lead tells you what changed and that it wasn't tested here.
+
+The lead's first look can keep a worker at the symptom. On one of the measured bugs the lead limited the
+coder to the file the issue names, while the fix belonged in another file: it failed all six times under the
+router and passed four times out of five without it.
 
 "Accepted" in the Savings tab's comparisons means nobody reverted the change, asked for it again, or complained within
 the next couple of prompts. That's a ceiling on how often the work was good, not a measurement of it.
